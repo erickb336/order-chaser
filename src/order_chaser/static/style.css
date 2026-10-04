@@ -104,7 +104,8 @@ p { margin: 0 0 .7em; }
 .seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 9px; padding: 3px; background: var(--surface-2); gap: 3px; }
 .seg button { font: inherit; font-size: 14px; border: 0; background: transparent; padding: 7px 16px; border-radius: 6px; cursor: pointer; color: var(--muted); }
 .seg button[aria-pressed="true"] { background: #343a46; color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.4); }
-.seg button[disabled] { cursor: not-allowed; text-decoration: line-through; }
+.seg button[disabled] { cursor: not-allowed; }
+#lev button[disabled] { text-decoration: line-through; }
 .seg.lg button { padding: 10px 22px; font-size: 15px; }
 .seg button[aria-pressed="true"].buy, .seg button[aria-pressed="true"].long { color: var(--bid); }
 .seg button[aria-pressed="true"].sell, .seg button[aria-pressed="true"].short { color: var(--ask); }
@@ -134,13 +135,14 @@ p { margin: 0 0 .7em; }
 .poslist .r { text-align: right; }
 
 /* Margin level gauge: 0% to 300%, with the call and liquidation marks */
-.gauge { position: relative; height: 64px; margin: 8px 6px 4px; }
+.gauge { position: relative; height: 80px; margin: 8px 6px 4px; }
 .gauge .track { position: absolute; left: 0; right: 0; top: 28px; height: 8px; border-radius: 99px;
   background: linear-gradient(90deg, var(--bad) 0 13.33%, var(--warn) 13.33% 26.67%, var(--fill) 26.67% 100%); opacity: .55; }
-.gauge .mk { position: absolute; top: 22px; width: 2px; height: 20px; background: var(--ink); }
-.gauge .mk span { position: absolute; top: 22px; transform: translateX(-50%); font-size: 11.5px; white-space: nowrap; color: var(--muted); }
-.gauge .mk.l span { transform: translateX(-90%); }
-.gauge .mk.r span { transform: translateX(-10%); }
+.gauge .mk { position: absolute; top: 22px; width: 2px; height: 20px; }
+.gauge .mk::before { content: ""; position: absolute; inset: 0; background: var(--ink); }
+/* The mark labels start at their mark, on two rows, so that they stay inside a narrow card. */
+.gauge .mk span { position: absolute; left: -3px; top: 22px; font-size: 11.5px; white-space: nowrap; color: var(--muted); }
+.gauge .mk.l span { top: 38px; }
 .gauge .pt { position: absolute; top: 0; transform: translateX(-50%); font-size: 12px; font-weight: 700; white-space: nowrap; font-family: var(--mono); }
 .gauge .pt i { display: block; width: 12px; height: 12px; border-radius: 50%; margin: 2px auto 0; border: 2px solid var(--surface); }
 .gauge .pt.now { color: var(--muted); top: 38px; }
@@ -149,7 +151,9 @@ p { margin: 0 0 .7em; }
 .gauge .pt.after i { background: var(--ink); }
 .gauge .pt.bad, .gauge .pt.bad i { color: var(--bad); }
 .gauge .pt.bad i { background: var(--bad); }
-.gauge .pt.rt { transform: translateX(-90%); }
+/* Near the right end: the text ends at the dot. */
+.gauge .pt.rt { transform: translateX(calc(-100% + 6px)); text-align: right; }
+.gauge .pt.rt i { margin-left: auto; margin-right: 0; }
 .pstat { display: flex; align-items: center; gap: 8px; font-weight: 650; }
 .pstat i { width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
 

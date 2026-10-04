@@ -39,8 +39,11 @@ function mrender(c, acct) {
     case 'ended': line = 'The tool stopped and started again. It did not continue the dry run.'; break;
     default: line = OC.LABEL[c.outcome] + '.';
   }
-  if (!m.close && filled < total) rest = `Not opened: ${OC.qty(total - filled)} ${B}.` + (filled > 0 && open ? ` The ${OC.qty(filled)} ${B} that filled stays open as a position.` : '');
-  if (m.close && posRest > 0) rest = `Not closed: ${OC.qty(posRest)} ${B}. This part of the ${c.dir} stays open, with rollover fees and liquidation risk.`;
+  if (c.outcome === 'liquidated') {
+    head = `Liquidated: the simulated exchange closed the ${m.close && filled > 0 ? 'rest of the ' : ''}${c.dir}`;
+    rest = `Liquidated by the simulated exchange: ${OC.qty(m.close ? posRest : filled)} ${B}, at the mark. A dry run has no position on Kraken.`;
+  } else if (!m.close && filled < total) rest = `Not opened: ${OC.qty(total - filled)} ${B}.` + (filled > 0 && open ? ` The ${OC.qty(filled)} ${B} that filled stays open as a position.` : '');
+  else if (m.close && posRest > 0 && open) rest = `Not closed: ${OC.qty(posRest)} ${B}. This part of the ${c.dir} stays open, with rollover fees and liquidation risk.`;
   if (gone === 'Liquidated by the simulated exchange') todo = ['The margin level is for the whole account: the form lists the positions that are left, under "Close a position".'];
   const level = acct && acct.level != null ? Math.round(Number(acct.level)) + '%' : 'no position';
   $('out').innerHTML = `
@@ -77,8 +80,8 @@ function mrender(c, acct) {
         <tr><td>Trading fees</td><td class="r num">${OC.usd(s.fee)} ${Q}</td></tr>
         ${!m.close ? `<tr><td>Opening fee, charged at the open</td><td class="r num">up to ${OC.usd(e.open_fee)} ${Q}</td></tr><tr><td>Rollover, each started 4 h while open</td><td class="r num">up to ${OC.usd(e.rollover_4h)} ${Q}</td></tr>`
           : `<tr><td>Rollover so far, at the start of the close</td><td class="r num">${OC.usd(m.rollover)} ${Q}</td></tr>
-             <tr><td>Profit or loss of the part closed, after the close fee</td><td class="r num ${Number(e.pl) >= 0 ? 'tone-fill' : 'tone-bad'}" id="pl"><b>${Number(e.pl) >= 0 ? '+' : '−'}${OC.usd(Math.abs(Number(e.pl)))} ${Q}</b></td></tr>
-             <tr><td class="tiny muted" colspan="2">${c.dir === 'long' ? `(${filled ? P(s.avg) : '—'} − ${P(m.entry)})` : `(${P(m.entry)} − ${filled ? P(s.avg) : '—'})`} × ${OC.qty(filled)} − ${OC.usd(e.close_fee)} close fee. The opening fee and the rollover are not in it.</td></tr>`}
+             ${!filled ? '<tr><td>Profit or loss of the part closed</td><td class="r muted">nothing closed</td></tr>' : `<tr><td>Profit or loss of the part closed, after the close fee</td><td class="r num ${Number(e.pl) >= 0 ? 'tone-fill' : 'tone-bad'}" id="pl"><b>${Number(e.pl) >= 0 ? '+' : '−'}${OC.usd(Math.abs(Number(e.pl)))} ${Q}</b></td></tr>
+             <tr><td class="tiny muted" colspan="2">${c.dir === 'long' ? `(${filled ? P(s.avg) : '—'} − ${P(m.entry)})` : `(${P(m.entry)} − ${filled ? P(s.avg) : '—'})`} × ${OC.qty(filled)} − ${OC.usd(e.close_fee)} close fee. The opening fee and the rollover are not in it.</td></tr>`}`}
       </table>
       <p class="tiny muted" style="margin:10px 0 0">${OC.MARGIN_FEES}</p>
     </div>

@@ -106,7 +106,7 @@ function stateOf(c, now) {
   if (c.phase === 'placing') return 'placing';
   if (c.phase === 'amending') return 'amending';
   if (c.phase === 'feed_lost' || (c.phase === 'reconcile' && c.reconcile_for === 'feed')) return 'disconnected';
-  if (c.phase === 'reconcile' || (c.reject && now - c.reject_at < 10)) return 'rejected';
+  if (c.phase === 'reconcile' || (c.reject && !c.replace && now - c.reject_at < 10)) return 'rejected';
   if (['cancelling', 'reread', 'ioc'].includes(c.phase)) return c.exit === 'stop' ? 'stopping' : 'fallback';
   if (c.slow) return 'ratenear';
   return Number(c.filled) > 0 ? 'partial' : 'resting';
@@ -315,7 +315,7 @@ function copy(st, c, snap, ageOff) {
     case 'liquidated':
       t.title = 'Ended: the simulated exchange liquidated the position';
       t.sub = `The account margin level fell to ${c.pair.margin_stop}%, so the simulated exchange closed every position at the mark. ` +
-        (w.close ? `Your reduce-only order had nothing left to close. ${qty(filled)} ${B} closed before. ` : `${qty(filled)} ${B} of the open filled before. `) +
+        (w.close ? 'Your reduce-only order had nothing left to close. ' : '') + (filled > 0 ? `${qty(filled)} ${B} ${w.close ? 'closed' : 'of the open filled'} before. ` : '') +
         'The tool cancelled its order and ended the chase.';
       t.todo = ['The margin level is for the whole account: the simulated account shows each position on the form, under "Close a position".', DRY_TODO];
       break;

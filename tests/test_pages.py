@@ -24,9 +24,12 @@ from order_chaser.server import create_app
 
 PAGES = Path(__file__).parent / "pages"
 CHROME = Path("/Applications/Google Chrome.app")
+MARGIN = {"margin_call": 80, "margin_stop": 40, "long_position_limit": 350, "short_position_limit": 250}
 PAIRS = feed.parse_pairs({
-    "BTC/USD": {"tick_size": "0.1", "ordermin": "0.00005", "costmin": "0.5", "pair_decimals": 1, "lot_decimals": 8, "status": "online"},
-    "ETH/USD": {"tick_size": "0.01", "ordermin": "0.002", "costmin": "0.5", "pair_decimals": 2, "lot_decimals": 8, "status": "online"}})
+    "BTC/USD": {"tick_size": "0.1", "ordermin": "0.00005", "costmin": "0.5", "pair_decimals": 1, "lot_decimals": 8, "status": "online",
+                "leverage_buy": list(range(2, 11)), "leverage_sell": list(range(2, 11)), **MARGIN},
+    "ETH/USD": {"tick_size": "0.01", "ordermin": "0.002", "costmin": "0.5", "pair_decimals": 2, "lot_decimals": 8, "status": "online",
+                "leverage_buy": [2, 3], "leverage_sell": [], **MARGIN}})
 SNAPSHOTS = {"BTC/USD": ([("62417.9", "1.0")], [("62418.5", "0.01"), ("62419.5", "3.0")]),
              "ETH/USD": ([("2500.10", "5")], [("2500.20", "5")])}
 
@@ -113,8 +116,9 @@ class Tool:
         self.call(self.feed._handle, {"channel": "trade", "type": "update",
                                       "data": [{"symbol": "BTC/USD", "side": side, "price": D(price), "qty": D(qty)}]})
 
-    def start(self, side="buy", qty="0.05", timeout=120):
-        assert self.call(self.eng.start, "BTC/USD", side, D(qty), None, timeout) == []
+    def start(self, side="buy", qty="0.05", timeout=120, leverage=None):
+        """side: buy or sell; or a margin choice: long, short, close-long, close-short."""
+        assert self.call(self.eng.start, "BTC/USD", side, D(qty), None, timeout, leverage) == []
         return self.eng.chase.id
 
     def timeout(self, seconds):
@@ -362,3 +366,121 @@ def test_page_connecting_text_is_readable(tool):
     got = tool.look([{"goto": "/new"}, {"waitFor": "OC.$('pnote').textContent.startsWith('Connecting')"},
                      contrast("#prices .tiny, #pnote, #bid, #ask"), {"shot": "connecting.png"}])
     assert got["contrast"] >= 4.5
+
+
+# ---------- margin (simulated account) ----------
+
+def opened_long(tool, qty="0.05", lev=3):
+    """A BTC/USD long in the simulated account, opened by a margin chase that filled at 62,417.90."""
+    cid = tool.start("long", qty, leverage=lev)
+    tool.trade("sell", "62417.0", qty)
+    assert tool.eng.chase.outcome == "filled"
+    return cid
+
+
+TEXTS = lambda sel: {"eval": f"Array.from(document.querySelectorAll({json.dumps(sel)})).filter(e => e.offsetParent).map(e => e.textContent.trim())", "as": sel}
+
+
+def test_page_the_form_offers_five_choices_and_an_open_shows_leverage_cost_collateral_and_the_gauge(tool):
+    got = tool.look([
+        {"goto": "/new"}, {"waitFor": "OC.$('ask').textContent === '62,418.50'"},
+        TEXTS("#what button"), {**ALL_TEXT, "as": "spot"}, {"shot": "m-new-spot-dark.png"},
+        {"click": "#what button[data-w=long]"}, {"waitFor": "!OC.$('mgbox').classList.contains('hidden') && OC.$('mgbox').querySelector('.gauge')"},
+        TEXTS("#lev button:not([disabled])"), {"eval": "OC.$('lev').querySelector('[aria-pressed=true]').textContent", "as": "lev"},
+        TEXTS("#mgbox table td:first-child"), {"eval": "OC.$('mgbox').querySelector('.gauge').getAttribute('aria-label')", "as": "gauge"},
+        {"text": "#lvlline", "as": "line"}, {"text": "#worst", "as": "worst"}, {"text": "#start", "as": "start"},
+        {"text": "#amthelp", "as": "free"}, ALL_TEXT, {"shot": "m-new-open-long.png"},
+        {"select": ["#pairsel", "ETH/USD"]}, {"waitFor": "OC.$('ask').textContent === '2,500.20'"},
+        TEXTS("#lev button:not([disabled])"), {"click": "#what button[data-w=short]"},
+        {"waitFor": "OC.$('levhelp').textContent.startsWith('Kraken allows no short')"}, {"text": "#mnote", "as": "noshort"},
+        {"eval": "OC.$('start').disabled", "as": "blocked"}, {"shot": "m-new-noshort.png"}])
+    assert got["#what button"] == ["Buy", "Sell", "Open long", "Open short", "Close a position"]
+    low = [got.pop("spot"), got.pop("all")]
+    assert min(x["c"] for x in low) >= 4.5, low
+    assert got["#lev button:not([disabled])"] == ["2x", "3x"]          # ETH/USD: AssetPairs leverage_buy [2, 3]
+    assert got["lev"] == "2x"                                         # the form starts at 2x
+    assert got["#mgbox table td:first-child"] == ["Position cost", "Collateral it uses", "Opening fee", "Rollover, each started 4 h"]
+    assert got["gauge"] == "Margin level now no position, after 320%. Margin call at 80%, liquidation at 40%."
+    assert got["line"] == ("Now no position. After this open: 320%. The tool does not stop an open for its margin level. "
+                           "It shows the level so that you decide.")
+    assert got["worst"].startswith("The open never costs more than 3,147.45 USD in price and fees: 0.0500 × 62,418.50 (cap) + 24.97 taker fee (0.80%) + 1.56 opening fee")
+    assert got["start"] == "Start dry run: open long"
+    assert got["free"].startswith("Free margin: 5,000.00 USD (simulated account, read at ")
+    assert got["noshort"].startswith("Kraken allows no short on ETH/USD.") and got["blocked"] is True
+
+
+def test_page_close_lists_the_simulated_positions_with_the_whole_size_reduce_only_and_the_level_after(tool):
+    opened_long(tool)
+    whole = "OC.$('amt').value === '0.0500'"
+    got = tool.look([
+        {"goto": "/new"}, {"waitFor": "OC.$('ask').textContent === '62,418.50'"},
+        {"click": "#what button[data-w=close]"}, {"waitFor": "document.querySelector('#poslist label') && " + whole},
+        TEXTS("#poslist label b"), {"text": "#est", "as": "est"}, {"text": "#amthelp", "as": "help"},
+        {"eval": "OC.$('mgbox').querySelector('.gauge').getAttribute('aria-label')", "as": "gauge"},
+        {"text": "#start", "as": "start"}, {"text": "#worst", "as": "worst"}, ALL_TEXT, {"shot": "m-new-close.png"},
+        {"fill": ["#amt", "0.04999"]}, {"waitFor": "!OC.$('mnote').classList.contains('hidden')"},
+        {"text": "#mnote", "as": "rest"}, {"eval": "OC.$('start').disabled", "as": "rest_blocked"}, {"shot": "m-new-close-remainder.png"},
+        {"fill": ["#amt", "0.06"]}, {"waitFor": "OC.$('amthelp').classList.contains('err')"},
+        {"text": "#amthelp", "as": "over"}, {"eval": "OC.$('start').disabled", "as": "over_blocked"},
+        {"click": "#whole"}, {"waitFor": whole}, {"text": "#est", "as": "after_all"}])
+    assert got.pop("all")["c"] >= 4.5
+    assert got["#poslist label b"] == ["BTC/USD Long 0.0500 BTC"]
+    assert got["est"] == "Whole position" and got["after_all"] == "Whole position"
+    assert got["help"].startswith("Reduce-only. The order can only make this long smaller. It can never open a short")
+    assert got["gauge"].startswith("Margin level now ") and ", after the close no position." in got["gauge"]
+    assert got["start"] == "Start dry run: close"
+    assert got["worst"].startswith("The close never brings less than 3,095.93 USD: 0.0500 × 62,417.90 (floor) − 24.97 taker fee (0.80%).")
+    assert got["rest"].startswith("This close leaves 0.00001 BTC open. That is below the Kraken minimum") and got["rest_blocked"] is False
+    assert got["over"] == ("A close cannot be larger than the position, 0.0500 BTC. Reduce-only orders never grow or flip a position. "
+                           "Enter 0.0500 or less.") and got["over_blocked"] is True
+
+
+def test_page_cancel_and_replace_shows_its_steps_and_its_costs(tool):
+    tool.eng.gw.refuse_margin_amends = True
+    send = tool.eng.gw.send
+    held = []
+    tool.eng.gw.send = lambda cmd, now: held.append(cmd) or [] if isinstance(cmd, core.Cancel) else send(cmd, now)
+    tool.start("long", leverage=3)
+    tool.trade("sell", "62417.0", "0.018")
+    tool.clock.t += 6
+    tool.book("BTC/USD", [("62418.3", "1")], [])                    # the bid rises: the amend is refused, the cancel goes out
+    assert tool.eng.chase.phase == "cancelling" and len(held) == 1
+    steps = "Array.from(document.querySelectorAll('#statuscard li')).map(x => x.textContent)"
+    got = tool.look([{"goto": "/chase"}, card_shown("replacing"), {"text": "#statuscard .head", "as": "head"},
+                     {"eval": steps, "as": "steps"}, {"text": "#cardnote", "as": "cost"}, {"text": "#ratetext", "as": "rate"},
+                     {"text": "#order", "as": "order"}, {"text": "#ro", "as": "ro"}, ALL_TEXT, {"shot": "m-chase-replace.png"}])
+    assert got.pop("all")["c"] >= 4.5
+    assert got["head"] == "Amend refused: the tool cancels and replaces"
+    assert got["steps"] == ["✓ Cancel the order.", "→ Wait for the simulated exchange to confirm the cancel.",
+                            "Read the fills again: 0.0180 BTC filled.", "Place a new post-only buy for the rest, 0.0320 BTC at 62,418.30, leverage 3x."]
+    assert got["cost"].startswith("What a replace costs: each move is a cancel and a new order, not one amend. A cancel adds up to 8")
+    assert (got["rate"], got["order"], got["ro"]) == ("Cancel and replace: a cancel adds up to 8", "Open long 0.0500 BTC, 3x", "No: this order opens")
+    tool.eng.gw.send = send
+    tool.call(lambda: send(held[0], tool.clock.t) and tool.eng.handle(core.Canceled(tool.clock.t)))
+    assert tool.eng.chase.legs[-1].endswith("-1") and tool.eng.chase.phase == "resting"
+    got = tool.look([{"goto": "/chase"}, card_shown("partial"), {"text": "#statuscard .sub", "as": "sub"}, {"shot": "m-chase-after-replace.png"}])
+    assert "The venue refuses amends of this order, so each move is a cancel and a new order (1 so far)." in got["sub"]
+
+
+def test_page_a_liquidation_ends_the_chase_on_the_chase_result_and_history_pages(tool):
+    tool.eng.gw.account.cash = D("700")                             # a small simulated account
+    opened_long(tool, lev=5)
+    tool.beat(1)
+    cid = tool.start("close-long")
+    tool.book("BTC/USD", [("62417.9", "0"), ("52000.0", "1")], [("62418.5", "0"), ("62419.5", "0"), ("52000.6", "3")])
+    assert tool.eng.chase.outcome == "liquidated"
+    got = tool.look([
+        {"goto": "/chase"}, card_shown("liquidated"), {"text": "#statuscard .head", "as": "head"}, {"text": "#pstat", "as": "pstat"},
+        ALL_TEXT, {"shot": "m-chase-liquidated.png"},
+        {"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"}, {"text": "#out .badge", "as": "badge"},
+        {**ALL_TEXT, "as": "result_all"}, {"shot": "m-result-liquidated.png"},
+        {"goto": "/history"}, {"waitFor": "document.querySelectorAll('tr.click').length === 2"}, {"click": "#filt button[data-f=spot]"},
+        {"eval": "document.querySelectorAll('tr.click:not(.hidden)').length", "as": "spot_rows"}, {"click": "#filt button[data-f=margin]"},
+        TEXTS("tr.click td:nth-child(3)"), TEXTS("tr.click td:last-child .badge"), {**ALL_TEXT, "as": "history_all"},
+        {"shot": "m-history.png"}, {"goto": "/setup"}, {"text": "#mgline", "as": "setup"}, {**ALL_TEXT, "as": "setup_all"}])
+    assert min(got.pop(k)["c"] for k in ("all", "result_all", "history_all", "setup_all")) >= 4.5
+    assert got["head"] == "Ended: the simulated exchange liquidated the position" and got["pstat"] == "Liquidated"
+    assert got["badge"] == "Liquidated" and got["spot_rows"] == 0
+    assert got["tr.click td:nth-child(3)"] == ["Margin Close long", "Margin Open long · 5x"]
+    assert got["tr.click td:last-child .badge"] == ["Liquidated", "Position opened"]
+    assert got["setup"].startswith("margin Margin uses the same key and needs no new permission.")

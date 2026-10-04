@@ -148,7 +148,7 @@ function position() {
   return p || null;
 }
 // "Close all": the whole position.
-function wholeSize() { const p = position(); if (p) $('amt').value = String(Number(p.qty)); }
+function wholeSize() { const p = position(); if (p) $('amt').value = OC.qty(p.qty); }
 function side() {
   if (what === 'buy' || what === 'long') return 'buy';
   if (what === 'sell' || what === 'short') return 'sell';
@@ -165,7 +165,7 @@ function draw() {
   const [B, Q] = pair.split('/');
   const margin = MARGIN.includes(what), close = what === 'close', open = margin && !close;
   const pos = close ? position() : null;
-  if (pos && sizeFor !== posKey) { $('amt').value = String(Number(pos.qty)); sizeFor = posKey; }   // a close starts at the whole position
+  if (pos && sizeFor !== posKey) { $('amt').value = OC.qty(pos.qty); sizeFor = posKey; }   // a close starts at the whole position
   const buy = side() === 'buy';
   const d = p ? p.price_decimals : 2;
   const P = v => OC.px(v, d);
