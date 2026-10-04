@@ -1,5 +1,6 @@
 """Margin in the dry run: the core and the simulated exchange and account, with no network."""
 import random
+from dataclasses import replace
 from decimal import Decimal as D
 
 from order_chaser import core
@@ -149,6 +150,52 @@ def test_cancel_and_replace_waits_15_s_above_40_on_the_rate_counter():
         if first is None and any(isinstance(x, core.Cancel) for x in r.sent[n:]):
             first = s
     assert first == 15
+
+
+def replacing(rate=0.0):
+    """A margin chase whose amend was refused: the first leg is cancelled and its rest waits for a new leg."""
+    c, _ = core.begin("oc0123456789ab", BTC, "buy", D("1"), BID, ASK, 900, T0, core.SIM_VENUE, rate=rate, margin=Margin(3))
+    c, _ = core.step(c, core.Placed(T0))
+    c, _ = core.step(c, Book(T0 + 6, BID + D("0.1"), ASK + D("0.1"), True))
+    c, _ = core.step(c, core.Rejected(T0 + 6, "amend", "EOrder:Invalid arguments"))
+    c, _ = core.step(c, core.Canceled(T0 + 6))
+    c, out = core.step(c, core.OrderState(T0 + 6, False, D(0), BID, c.leg))
+    return c, out
+
+
+def test_after_a_would_cross_refusal_new_legs_go_out_at_most_every_5_s():
+    # NEW-LEG-NO-SPACING: each new leg is refused (the book moved in flight); a book comes every 0.2 s for 60 s.
+    c, out = replacing()
+    places, now = [T0 + 6 for x in out if isinstance(x, core.MarginPlace)], T0 + 6
+    for _ in range(300):
+        if c.phase == "placing":
+            c, _ = core.step(c, core.Rejected(now, "place", "would_cross"))
+        now += 0.2
+        c, out = core.step(c, Book(now, BID + D("0.1"), ASK + D("0.1"), True))
+        places += [now for x in out if isinstance(x, core.MarginPlace)]
+    gaps = [round(b - a, 1) for a, b in zip(places, places[1:])]
+    assert (len(places), min(gaps)) == (13, 5.0)
+
+
+def test_a_new_leg_waits_while_the_rate_counter_has_no_room_for_its_cancel():
+    c, out = replacing()
+    assert [x.id for x in out if isinstance(x, core.MarginPlace)] == ["oc0123456789ab-1"]
+    c, _ = core.step(c, core.Rejected(T0 + 6, "place", "would_cross"))
+    # The counter is near 60 and the last move is long ago: only the room on the counter holds the leg back.
+    c = replace(c, rate=55.0, rate_at=T0 + 6, last_amend_at=T0 - 100)
+    placed = []
+    for s in range(7, 14):
+        c, out = core.step(c, Book(T0 + s, BID + D("0.1"), ASK + D("0.1"), True))
+        placed += [s for x in out if isinstance(x, core.MarginPlace)]
+    assert placed == [10]             # 1 for the leg + 8 for its cancel fit under 60 at 51: T0 + 10
+
+
+def test_no_order_price_after_the_order_is_gone():
+    # UX-PRICE-AFTER-ORDER-GONE (its cause): a maker fill ends the order, so the chase has no order price.
+    r = Run().start("buy", "0.05", Margin(3)).trade("sell", "62417.0", "0.05", T0 + 1)
+    assert (r.c.outcome, r.c.price, r.c.pending) == ("filled", None, None)
+    r = Run().start("buy", "0.05", None).ev(UserStop(T0 + 1)).ev(core.Canceled(T0 + 1))
+    assert (r.c.outcome, r.c.price) == ("stopped", None)
 
 
 # ---------- the account and the position ----------

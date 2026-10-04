@@ -117,7 +117,7 @@ class Chase:
     started: float
     venue: str           # SIM_VENUE in a dry run, LIVE_VENUE in live
     phase: str = "placing"
-    price: Decimal | None = None      # price of the resting order
+    price: Decimal | None = None      # price of the resting order; None when no order rests (also when done)
     pending: Decimal | None = None    # price of a place or amend in flight
     placed_at: float | None = None
     last_amend_at: float | None = None
@@ -671,23 +671,24 @@ def _maybe_amend(c: Chase, now: float) -> tuple[Chase, list]:
     if not c.fresh(now) or c.exit:
         return c, out
     target = _target(c)
+    every = AMEND_EVERY_SLOW if c.slow else AMEND_EVERY
     if c.price is None:
-        if c.replace and target is not None:   # the replace waits for a valid price: place the next leg now
+        # The replace waits for a valid price: the next leg, at most one new leg each `every` s.
+        if c.replace and target is not None and now - (c.last_amend_at or 0) >= every:
             c, more = _place_leg(c, now, target)
             out += more
         return c, out
     if target is None or not (target > c.price if c.buy else target < c.price):
         return c, out
-    every = AMEND_EVERY_SLOW if c.slow else AMEND_EVERY
     if now - max(c.placed_at or 0, c.last_amend_at or 0) < every:
         return c, out
     age = now - (c.placed_at or now)
     word = "Best bid rose" if c.buy else "Best ask fell"
     if c.replace:
         cost = cancel_cost(age)
-        if c.rate + cost + 1 > RATE_MAX:      # room for the cancel and the new leg, or wait
+        if c.rate + cost + 1 + cancel_cost(0) > RATE_MAX:   # room for the cancel, the new leg and its cancel, or wait
             return c, out
-        c = _add_rate(replace(c, phase="cancelling", pending=target, last_amend_at=now, cancel_tries=1, cancel_wait=False), cost)
+        c = _add_rate(replace(c, phase="cancelling", pending=target, cancel_tries=1, cancel_wait=False), cost)
         return c, out + [Log(now - c.started, f"{word} to {fmt_price(c.pair, target)}. Cancelling the order at "
                                               f"{fmt_price(c.pair, c.price)} to place a new one (cancel and replace).", "you"),
                          Cancel(c.leg)]
@@ -708,12 +709,13 @@ def _target(c: Chase) -> Decimal | None:
 
 
 def _place_leg(c: Chase, now: float, price: Decimal) -> tuple[Chase, list]:
-    """Cancel and replace: place a new leg for the rest, qty - the sum of the legs' cum, when the rate counter has room."""
-    if c.rate + 1 > RATE_MAX:
+    """Cancel and replace: place a new leg for the rest, qty - the sum of the legs' cum, when the rate counter has
+    room for it and for its cancel. A new leg is a move: it starts the wait for the next move (last_amend_at)."""
+    if c.rate + 1 + cancel_cost(0) > RATE_MAX:
         return c, []
     leg = f"{c.id}-{len(c.legs)}"
     rest = c.remainder
-    c = _add_rate(replace(c, phase="placing", pending=price, legs=c.legs + (leg,), cancel_tries=0), 1)
+    c = _add_rate(replace(c, phase="placing", pending=price, legs=c.legs + (leg,), cancel_tries=0, last_amend_at=now), 1)
     return c, [_order(c, leg, price, rest), Log(now - c.started, f"Placing a {_order_text(c, rest, price)}…", "you")]
 
 
@@ -860,7 +862,7 @@ def _end(c: Chase, now: float, outcome: str) -> tuple[Chase, list]:
     if c.exit in GONE and outcome != "filled":
         outcome = c.exit         # the position is gone: that ends the chase, whatever the path to the end
     end_px = (c.ask if c.buy else c.bid) if c.fresh(now) else None   # no valid price: feed lost or book stale
-    return replace(c, phase="done", outcome=outcome, ended_at=now, pending=None, end_ask=end_px), []
+    return replace(c, phase="done", outcome=outcome, ended_at=now, price=None, pending=None, end_ask=end_px), []   # no order rests
 
 
 # ---------- Result numbers ----------
