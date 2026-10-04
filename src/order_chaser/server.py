@@ -25,7 +25,7 @@ from starlette.staticfiles import StaticFiles
 
 from . import core, feed
 from .db import DEFAULT_DIR, Db, lock_folder
-from .sim import SimGateway
+from .sim import SimAccount, SimGateway
 
 HOST, PORT = "127.0.0.1", 5180
 WATCH_EVERY = 1.0   # s: at most one pair change each second, so that Kraken does not refuse the subscriptions
@@ -34,6 +34,8 @@ PAGES = ("new", "chase", "result", "history", "setup")
 MODE = "dry"   # T2 has only dry runs. No code path sends a private request to Kraken.
 PLAIN_NUMBER = re.compile(r"[0-9]{1,15}(\.[0-9]{1,18})?")   # ASCII digits only: no "١" or "０"
 NUMBER_MAX = Decimal(10) ** 12
+WHAT = {"buy": "buy", "sell": "sell", "long": "buy", "short": "sell", "close-long": "sell", "close-short": "buy"}  # -> side
+READ_EVERY = 3.0    # s: the account and positions are read at most this often (after fills; never each second)
 # No page of the tool may show inside a frame of another site (clickjacking).
 FRAME_HEADERS = [(b"x-frame-options", b"DENY"), (b"content-security-policy", b"frame-ancestors 'none'")]
 
@@ -61,9 +63,14 @@ def _plain(o):
 class Engine:
     """Owns the one chase. Runs core.step on each event and sends the commands to the gateway."""
 
-    def __init__(self, db: Db, clock=time.time, latency: float = 0.15, rate_start: float = 0.0) -> None:
+    def __init__(self, db: Db, clock=time.time, latency: float = 0.15, rate_start: float = 0.0,
+                 refuse_margin_amends: bool = False) -> None:
         self.db, self.clock, self.latency = db, clock, latency
-        self.gw = SimGateway()
+        saved = db.load_account()
+        self.gw = SimGateway(SimAccount.from_json(saved) if saved else None)
+        self.gw.refuse_margin_amends = refuse_margin_amends
+        self.account: dict | None = None      # the last read of the (simulated) account and positions
+        self.account_due = False              # a fill came after the last read
         self.pairs: dict[str, core.Pair] = {}
         self.pairs_error: str | None = None
         self.watched: str = "BTC/USD"
@@ -95,18 +102,36 @@ class Engine:
         fills = []
         if ok:
             self.book_at = self.clock()
-            fills = self.gw.on_book(book.top_bids(), book.top_asks(), self.clock())
+            fills = self.gw.on_book(book.top_bids(), book.top_asks(), self.clock(), self.watched)
         if self.active:
             for ev in fills:
                 self.handle(ev)
         if self.active:
             self.handle(core.Book(self.clock(), self.bid, self.ask, ok))
+        self._save_account()
         self.version += 1
 
     def on_trade(self, side: str, price: Decimal, qty: Decimal) -> None:
         if self.active:
             for ev in self.gw.on_trade(side, price, qty, self.clock()):
                 self.handle(ev)
+        self._save_account()
+
+    # ----- the simulated margin account -----
+    def read_account(self, force: bool = False) -> dict:
+        """Read the account and the positions (Kraken: TradeBalance and OpenPositions; simulated in a dry run):
+        at the start of a chase, at most every 3 s after a fill, at its end, and when a form asks."""
+        now = self.clock()
+        if force or self.account is None or now - self.account["at"] >= READ_EVERY:
+            self.account = json.loads(json.dumps(self.gw.read(now), default=_plain))
+            self.account_due = False
+            self.version += 1
+        return self.account
+
+    def _save_account(self) -> None:
+        if self.gw.account.changed:
+            self.db.save_account(self.gw.account.to_json())
+            self.gw.account.changed = False
 
     def on_link(self, up: bool, attempt: int, next_in: float) -> None:
         if up != self.link["up"]:
@@ -122,6 +147,8 @@ class Engine:
         if self.active:
             self.handle(core.Tick(self.clock()))
             self.version += 1
+        if self.account_due and self.clock() - self.account["at"] >= READ_EVERY:
+            self.read_account()
         if self.active and self.clock() - self.touched >= 2:
             self.touched = self.clock()
             self.db.touch(self.chase.id, self.touched)
@@ -139,19 +166,35 @@ class Engine:
         r, at = self.rates.get(symbol, (self.rate_start, self.clock()))
         return max(0.0, r - (self.clock() - at))
 
-    def start(self, symbol: str, side: str, qty: Decimal, limit: Decimal | None, timeout: int) -> list[str]:
+    def start(self, symbol: str, what: str, qty: Decimal, limit: Decimal | None, timeout: int,
+              leverage: int | None = None) -> list[str]:
+        """what: buy or sell (spot); long or short (a margin open with leverage); close-long or close-short."""
         if self.active:
             return ["A chase runs now. You can start a new chase when it ends."]
         pair = self.pairs.get(symbol)
         if pair is None:
             return ["Unknown pair, or the pair list did not load."]
+        if what not in WHAT:
+            return ["Pick what to do: buy, sell, open long, open short or close a position."]
         if symbol != self.watched or not self.fresh():
             return ["Start needs live prices."]
-        errors = core.validate(pair, side, qty, limit, self.bid, self.ask, self.book_ok, timeout)
+        side, close = WHAT[what], what.startswith("close-")
+        errors = core.validate(pair, side, qty, limit, self.bid, self.ask, self.book_ok, timeout, close)
+        margin = None
+        if what not in ("buy", "sell"):
+            acc = self.read_account(force=True)
+            errors += core.validate_margin(pair, what, qty, leverage, self.ask if side == "buy" else self.bid,
+                                           self.gw.account.list(), Decimal(acc["free_orders"]))
+            if not errors and close:
+                p = next(x for x in acc["positions"] if x["pair"] == symbol and x["dir"] == what[6:])
+                margin = core.Margin(p["leverage"], True, Decimal(p["qty"]), Decimal(p["entry"]), Decimal(p["rollover"]))
+            elif not errors:
+                margin = core.Margin(leverage)
         if errors:
             return errors
+        self.gw.pair = pair
         c, cmds = core.begin("oc" + uuid.uuid4().hex[:12], pair, side, qty, self.bid, self.ask, timeout,
-                             self.clock(), core.SIM_VENUE, limit, self.rate_for(symbol))
+                             self.clock(), core.SIM_VENUE, limit, self.rate_for(symbol), margin)
         self._apply(c, cmds)
         return []
 
@@ -162,8 +205,13 @@ class Engine:
         return True
 
     def handle(self, ev) -> None:
+        was = self.chase.phase
         c, cmds = core.step(self.chase, ev)
         self._apply(c, cmds)
+        if c.margin is not None and isinstance(ev, core.Filled):
+            self.account_due = True               # tick() reads it, at most every 3 s
+        if c.margin is not None and c.phase == "done" and was != "done":
+            self.read_account(force=True)         # at the end of a margin chase
 
     def _apply(self, c: core.Chase, cmds: list) -> None:
         self.chase = c
@@ -197,6 +245,7 @@ class Engine:
                     self.handle(ev)
         finally:
             self.draining = False
+            self._save_account()
 
     # ----- what the page sees -----
     def view(self, c: core.Chase | None, mode: str = MODE) -> dict | None:
@@ -209,7 +258,9 @@ class Engine:
         d["filled"] = str(c.filled)
         d["remainder"] = str(c.qty - c.filled)
         d["rest_below_min"] = c.rest_below_min
-        d["worst"] = str(core.worst_case(c.side, c.qty, c.limit))
+        d["worst"] = str(core.worst_case(c.side, c.qty, c.limit, c.margin))
+        d["dir"] = c.dir
+        d["margin_est"] = json.loads(json.dumps(core.margin_summary(c), default=_plain))
         if c.phase != "done":
             d["rate"] = max(0.0, c.rate - (self.clock() - c.rate_at))
         return d
@@ -226,6 +277,7 @@ class Engine:
             "pairs": {k: json.loads(json.dumps(dataclasses.asdict(p), default=_plain)) for k, p in self.pairs.items()},
             "pairs_error": self.pairs_error,
             "rate": self.rate_for(self.watched),
+            "account": self.account,
             "chase": self.view(self.chase),
         }
 
@@ -278,11 +330,11 @@ class Guard:
 # ---------- App ----------
 
 def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, clock=time.time, latency: float = 0.15,
-               port: int = PORT):
+               port: int = PORT, refuse_margin_amends: bool = False):
     """connect=False leaves out the Kraken feed and the pair list: tests drive the engine."""
     token = secrets.token_urlsafe(32)
     db = Db(data_dir)
-    eng = Engine(db, clock=clock, latency=latency, rate_start=rate_start)
+    eng = Engine(db, clock=clock, latency=latency, rate_start=rate_start, refuse_margin_amends=refuse_margin_amends)
     page_cache: dict[str, str] = {}
     watched_at = [float("-inf")]
 
@@ -351,7 +403,8 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
                  else None)
         if error:
             return JSONResponse({"errors": [error]}, status_code=400)
-        errors = eng.start(pair, str(d.get("side")), qty, limit, timeout)
+        lev = d.get("leverage")
+        errors = eng.start(pair, str(d.get("what", d.get("side"))), qty, limit, timeout, lev if type(lev) is int else None)
         if errors:
             return JSONResponse({"errors": errors}, status_code=400)
         return JSONResponse({"id": eng.chase.id})
@@ -377,7 +430,9 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
                          "filled": str(c.filled), "avg": str(s["avg"]), "saving": str(s["saving"]), "mode": mode,
                          "outcome": c.outcome, "maker_qty": str(s["maker_qty"]), "base": c.pair.base,
                          "price_decimals": c.pair.price_decimals, "exit": c.exit, "nofeed": c.end_ask is None,
-                         "beyond": c.end_ask is not None and (c.end_ask > c.limit if c.buy else c.end_ask < c.limit)})
+                         "beyond": c.end_ask is not None and (c.end_ask > c.limit if c.buy else c.end_ask < c.limit),
+                         "dir": c.dir, "close": bool(c.margin and c.margin.close),
+                         "leverage": c.margin.leverage if c.margin else None})
         return JSONResponse(rows)
 
     @contextlib.asynccontextmanager
@@ -396,6 +451,9 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
             with contextlib.suppress(BaseException):
                 await t
 
+    async def account(request: Request):
+        return JSONResponse(eng.read_account())
+
     async def no_icon(request: Request):
         return PlainTextResponse("", status_code=204)
 
@@ -403,7 +461,7 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         Route("/api/state", state), Route("/api/stream", stream),
         Route("/api/watch", watch, methods=["POST"]), Route("/api/chase", start, methods=["POST"]),
         Route("/api/chase/stop", action, methods=["POST"]), Route("/api/chase/fillnow", action, methods=["POST"]),
-        Route("/api/chase/{id:str}", one), Route("/api/history", history),
+        Route("/api/chase/{id:str}", one), Route("/api/history", history), Route("/api/account", account),
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
@@ -439,6 +497,8 @@ def main() -> None:
                     help="folder for the SQLite file (default: ~/Library/Application Support/order-chaser)")
     ap.add_argument("--rate-start", type=float, default=0.0,
                     help="demo only: the estimated rate counter at start, to show the 'rate limit near' state")
+    ap.add_argument("--refuse-margin-amends", action="store_true",
+                    help="demo only: refuse each amend of a simulated margin order, to show cancel and replace")
     a = ap.parse_args()
     import uvicorn
     logging.basicConfig(format="%(message)s")
@@ -448,5 +508,5 @@ def main() -> None:
         raise SystemExit(f"Another order chaser runs on {a.data_dir}. Stop it first.")
     print(f"Order chaser (DRY RUN: no real orders) on http://{HOST}:{a.port}  data: {a.data_dir}")
     # A short graceful shutdown: an open page (SSE) must not keep a stopped tool alive.
-    uvicorn.run(create_app(a.data_dir, rate_start=a.rate_start, port=a.port), host=HOST, port=a.port, log_level="warning",
+    uvicorn.run(create_app(a.data_dir, rate_start=a.rate_start, port=a.port, refuse_margin_amends=a.refuse_margin_amends), host=HOST, port=a.port, log_level="warning",
                 timeout_graceful_shutdown=2)

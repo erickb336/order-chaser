@@ -596,3 +596,59 @@ def test_the_demo_reaches_the_rest_below_the_minimum(tmp_path):
 
     asyncio.run(asyncio.wait_for(run(), 15))
     assert [(c.timeout, c.outcome) for c, _ in eng.db.history()] == [(60, "belowmin"), (120, "notfilled")]
+
+
+# ---------- margin through the API (simulated account) ----------
+
+MARGIN_BTC = feed.parse_pairs({"BTC/USD": {"tick_size": "0.1", "ordermin": "0.00005", "costmin": "0.5", "pair_decimals": 1,
+                                           "lot_decimals": 8, "status": "online", "leverage_buy": [2, 3, 4, 5, 6, 7, 8, 9, 10],
+                                           "leverage_sell": [2, 3, 4, 5, 6, 7, 8, 9, 10], "margin_call": 80, "margin_stop": 40,
+                                           "long_position_limit": 350, "short_position_limit": 250}})
+
+
+def test_a_margin_open_and_its_close_through_the_api_and_the_account_stays_after_a_restart(setup, tmp_path):
+    client, app, eng, f, clock, call = setup
+    eng.pairs = MARGIN_BTC
+    H = {**ORIGIN, "X-Session-Token": token_of(client)}
+    kb = FakeBook()
+    call(f._handle, kb.msg("snapshot", [("62417.9", "1.0")], [("62418.5", "0.01"), ("62419.0", "3.0")]))
+    post = lambda body: client.post("/api/chase", headers=H, json={"pair": "BTC/USD", "qty": "0.05", "timeout": 60, **body})
+    assert post({"what": "long", "leverage": 6}).json() == {"errors": ["Pick a leverage that BTC/USD allows: 2x, 3x, 4x, 5x."]}
+    assert post({"what": "close-long"}).json() == {"errors": ["You have no open long position on BTC/USD."]}
+    assert post({"what": "long", "leverage": 3}).status_code == 200
+    call(f._handle, trade_msg("sell", "62417.0", "0.05"))
+    acc = client.get("/api/account").json()
+    assert [(p["dir"], p["qty"], p["leverage"]) for p in acc["positions"]] == [("long", "0.05", 3)]
+    assert acc["simulated"] is True
+    assert post({"what": "short", "leverage": 2}).json() == {"errors": ["Close the long first. You have an open long position on BTC/USD."]}
+    assert post({"what": "close-long", "qty": "0.06"}).json()["errors"] == [
+        "A close cannot be larger than the position, 0.0500 BTC. Reduce-only orders never grow or flip a position. Enter 0.0500 or less."]
+    r = post({"what": "close-long", "qty": "0.02"})
+    c = client.get(f"/api/chase/{r.json()['id']}").json()
+    assert (c["side"], c["dir"], c["margin"]["close"], c["margin"]["pos_qty"]) == ("sell", "long", True, "0.05")
+    call(f._handle, trade_msg("buy", "62419.0", "0.02"))                  # the reduce-only sell at the ask fills
+    assert client.get(f"/api/chase/{c['id']}").json()["outcome"] == "filled"
+    # The simulated account is in the SQLite file: a new start of the tool shows the same position.
+    guard = create_app(tmp_path, connect=False, clock=clock, latency=0)
+    with TestClient(guard, base_url=BASE) as again:
+        acc = again.get("/api/account").json()
+    assert [(p["dir"], p["qty"]) for p in acc["positions"]] == [("long", "0.03")]
+
+
+def test_the_account_is_read_at_the_start_after_fills_at_most_every_3_s_and_at_the_end_never_each_second(setup):
+    client, app, eng, f, clock, call = setup
+    eng.pairs = MARGIN_BTC
+    reads = []
+    read = eng.gw.read
+    eng.gw.read = lambda now: reads.append(now - clock.t0) or read(now)
+    clock.t0 = clock.t
+    kb = FakeBook()
+    call(f._handle, kb.msg("snapshot", [("62417.9", "1.0")], [("62418.5", "0.01"), ("62419.0", "3.0")]))
+    assert call(eng.start, "BTC/USD", "long", D("0.05"), None, 60, 3) == []
+    for s in range(1, 21):                                                  # 20 s, a tick each 0.5 s
+        clock.t += 0.5
+        if s in (2, 3, 4):
+            call(f._handle, trade_msg("sell", "62417.0", "0.01"))          # three fills in 1.5 s
+        call(eng.tick)
+    call(eng.user, "stop")
+    assert reads == [0.0, 3.0, 10.0]                                        # start, one read for the fills, the end
