@@ -5,7 +5,7 @@
 <link rel="stylesheet" href="/static/style.css"></head>
 <body>
 <main class="app">
-  <div class="note info small" style="margin-bottom:16px">DRY RUN RESULT: simulated. No order went to Kraken. A real chase can fill less: a simulated order fills only when a public trade prints through your price, or when the other side of the public book comes to your price.</div>
+  <div class="note info small" style="margin-bottom:16px" id="drynote">DRY RUN RESULT: simulated. No order went to Kraken. A real chase can fill less: a simulated order fills only when a public trade prints through your price, or when the other side of the public book comes to your price.</div>
   <div id="out"><div class="card"><span class="skel">Loading the result…</span></div></div>
 </main>
 <script src="/static/app.js"></script>
@@ -13,6 +13,79 @@
 OC.chrome('result'); OC.stream(() => {});
 const $ = OC.$;
 const id = new URLSearchParams(location.search).get('id');
+
+// A margin result: the position, the margin costs (estimates) and, for a close, its profit or loss.
+function mrender(c, acct) {
+  const w = OC.words(c), P = w.p, B = c.pair.base, Q = c.pair.quote, s = c.summary, m = c.margin, e = c.margin_est;
+  const filled = Number(s.filled), total = Number(c.qty), pct = filled / total * 100, pctM = filled ? Math.round(Number(s.maker_qty) / filled * 100) : 0;
+  const dur = OC.mmss(c.ended_at - c.started), D = c.dir === 'long' ? 'Long' : 'Short';
+  const posRest = m.close ? Number(m.pos_qty) - filled : filled;
+  const open = OC.positionOpen(c);
+  const gone = c.outcome === 'liquidated' ? 'Liquidated by the simulated exchange' : c.outcome === 'nopos' ? 'Closed another way' : null;
+  let badge, head, line, rest = null, todo = null;
+  if (!m.close) {
+    head = filled >= total ? `Opened a ${m.leverage}x ${c.dir}: ${OC.qty(filled)} ${B}` : `Opened a ${m.leverage}x ${c.dir}: ${OC.qty(filled)} of ${OC.qty(total)} ${B}`;
+    badge = gone ? ['bad', 'Liquidated'] : filled >= total ? ['ok', 'Position open'] : filled > 0 ? ['plain', OC.LABEL[c.outcome] + ' · position open'] : ['bad', 'Nothing opened'];
+  } else {
+    head = posRest <= 0 ? `Closed the ${c.dir}: ${OC.qty(filled)} ${B}` : `Closed ${OC.qty(filled)} of ${OC.qty(m.pos_qty)} ${B} of the ${c.dir}`;
+    badge = gone ? ['bad', c.outcome === 'liquidated' ? 'Liquidated' : 'Position closed'] : posRest <= 0 ? ['ok', 'Position closed'] : ['bad', 'Part closed · position open'];
+  }
+  switch (c.outcome) {
+    case 'filled': line = `All of it filled${pctM === 100 ? ' as maker' : ''} in ${dur}${m.close ? ', reduce-only' : ''}. The tool never moved ${w.above} the ${w.limitWord}.`; break;
+    case 'stopped': line = `You stopped the chase at ${dur}. The simulated exchange confirmed the cancel.`; break;
+    case 'notfilled': line = `The price ${w.buy ? 'rose above your cap' : 'fell below your floor'} before the rest could ${m.close ? 'close' : 'fill'}, or the book had too little there. The ${m.close ? 'reduce-only ' : ''}IOC at the ${w.limitWord} filled ${c.fills.some(f => f.order === 'ioc') ? 'only part of the rest' : 'nothing'}.`; break;
+    case 'liquidated': line = `The account margin level fell to ${c.pair.margin_stop}%, and the simulated exchange closed every position at the mark. The tool cancelled its order.`; break;
+    case 'nopos': line = `The ${c.dir} position closed while the chase ran. The reduce-only order had nothing left to close.`; break;
+    case 'ended': line = 'The tool stopped and started again. It did not continue the dry run.'; break;
+    default: line = OC.LABEL[c.outcome] + '.';
+  }
+  if (!m.close && filled < total) rest = `Not opened: ${OC.qty(total - filled)} ${B}.` + (filled > 0 && open ? ` The ${OC.qty(filled)} ${B} that filled stays open as a position.` : '');
+  if (m.close && posRest > 0) rest = `Not closed: ${OC.qty(posRest)} ${B}. This part of the ${c.dir} stays open, with rollover fees and liquidation risk.`;
+  if (gone === 'Liquidated by the simulated exchange') todo = ['The margin level is for the whole account: the form lists the positions that are left, under "Close a position".'];
+  const level = acct && acct.level != null ? Math.round(Number(acct.level)) + '%' : 'no position';
+  $('out').innerHTML = `
+  <div class="mgstrip" style="margin-bottom:16px">MARGIN · ${m.close ? `close ${c.dir}, reduce-only` : `open ${c.dir}, ${m.leverage}x`} · simulated account: no position is on Kraken</div>
+  <div class="card">
+    <div class="row"><span class="badge ${badge[0]}">${badge[1]}</span><span class="badge mg">margin</span><span class="small muted">${OC.esc(c.pair.symbol)} · ${m.close ? `close ${c.dir} · reduce-only` : `open ${c.dir} · ${m.leverage}x`} · dry run · ${new Date(c.started * 1000).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} · 0:00 to ${dur}</span></div>
+    <h1 style="margin-top:10px">${head} (simulated)</h1>
+    <p class="muted">${line}</p>
+    <div class="facts" style="margin-top:14px">
+      <div><div class="k">${m.close ? 'Closed' : 'Opened'}</div><div class="v">${OC.qty(filled)} ${B}</div><div class="s">${Math.round(pct)}% of ${OC.qty(total)}</div></div>
+      <div><div class="k">Average price</div><div class="v">${filled ? P(s.avg) : '—'}</div><div class="s">${w.limitWord} was ${P(c.limit)}</div></div>
+      <div><div class="k">Trading fees</div><div class="v">${OC.usd(s.fee)} ${Q}</div><div class="s">${!filled ? 'no fills' : pctM === 100 ? 'all at 0.40% maker' : pctM === 0 ? 'all at 0.80% taker' : 'mixed 0.40% / 0.80%'}</div></div>
+      <div style="background:var(--fill-bg)"><div class="k">Saving vs a market order at the start</div><div class="v ${Number(s.saving) >= 0 ? 'tone-fill' : 'tone-bad'}">${OC.usd(Math.abs(Number(s.saving)))} ${Q}</div><div class="s">for the ${OC.qty(filled)} ${B} that filled</div></div>
+    </div>
+    <div style="margin-top:18px"><div class="row small"><b>Maker ${pctM}%</b>${pct < 100 ? `<span class="muted">· Not ${m.close ? 'closed' : 'opened'} ${Math.round(100 - pct)}%</span>` : ''}<span class="spacer"></span><span class="tiny muted">share of ${OC.qty(total)} ${B}</span></div>
+      <div class="bar" style="margin-top:6px;height:14px"><i class="m" style="width:${filled ? Number(s.maker_qty) / total * 100 : 0}%"></i><i class="tk" style="width:${filled ? Number(s.taker_qty) / total * 100 : 0}%"></i><i class="nf" style="width:${100 - pct}%"></i></div></div>
+    ${rest ? `<div class="note ${m.close || c.outcome === 'liquidated' ? 'bad' : 'warn'}" style="margin-top:16px"><b>${rest}</b></div>` : ''}
+    ${todo ? `<div class="note info small" style="margin-top:12px"><b>What to do now</b><ul style="margin:4px 0 0;padding-left:18px">${todo.map(x => `<li>${x}</li>`).join('')}</ul></div>` : ''}
+    ${c.legs.length > 1 ? `<p class="small" id="replacenote" style="margin:12px 0 0"><b>Cancel and replace: ${c.legs.length - 1} time${c.legs.length > 2 ? 's' : ''}.</b> The simulated exchange refused to amend this margin order, so the tool cancelled and placed a new order for each move. ${OC.REPLACE_COST}</p>` : ''}
+    <div class="row" style="margin-top:18px">${open ? `<a class="btn primary" href="${OC.closeLink(c)}">${OC.closeText(c)}</a>` : '<a class="btn primary" href="/new">New chase</a>'}<a class="btn" href="/history">History</a></div>
+  </div>
+  <div class="grid2" style="margin-top:16px">
+    <div class="card"><h2>Position (simulated)</h2>
+      <div class="pstat ${gone ? 'tone-bad' : open ? 'tone-fill' : ''}" style="font-size:17px"><i></i>${gone || (open ? `Open: ${OC.qty(posRest)} ${B} ${c.dir}, ${m.leverage}x` : 'Closed')}</div>
+      <table class="t small" style="margin-top:10px">
+        ${!m.close ? `<tr><td>Leverage</td><td class="r num">${m.leverage}x</td></tr><tr><td>Entry price, average</td><td class="r num">${filled ? P(s.avg) : '—'}</td></tr><tr><td>Collateral it uses <span class="badge plain">estimate</span></td><td class="r num">${OC.usd(e.collateral)} ${Q}</td></tr>`
+          : `<tr><td>Position at the start</td><td class="r num">${OC.qty(m.pos_qty)} ${B} ${c.dir}, ${m.leverage}x, entry ${P(m.entry)}</td></tr><tr><td>Closed by this chase</td><td class="r num">${OC.qty(filled)} ${B}${filled ? ' at ' + P(s.avg) : ''}</td></tr>`}
+        <tr><td>Account margin level now</td><td class="r num">${level}</td></tr>
+      </table>
+      ${open ? `<p class="small" style="margin:10px 0 0"><b>What stays open:</b> ${OC.qty(posRest)} ${B} ${c.dir}. It stays open when the tool stops. Only a close chase closes it. In a dry run it is a simulated position, not on Kraken.</p>` : ''}
+    </div>
+    <div class="card"><h2>Margin costs (simulated) <span class="badge plain">estimate</span></h2>
+      <table class="t small">
+        <tr><td>Trading fees</td><td class="r num">${OC.usd(s.fee)} ${Q}</td></tr>
+        ${!m.close ? `<tr><td>Opening fee, charged at the open</td><td class="r num">up to ${OC.usd(e.open_fee)} ${Q}</td></tr><tr><td>Rollover, each started 4 h while open</td><td class="r num">up to ${OC.usd(e.rollover_4h)} ${Q}</td></tr>`
+          : `<tr><td>Rollover so far, at the start of the close</td><td class="r num">${OC.usd(m.rollover)} ${Q}</td></tr>
+             <tr><td>Profit or loss of the part closed, after the close fee</td><td class="r num ${Number(e.pl) >= 0 ? 'tone-fill' : 'tone-bad'}" id="pl"><b>${Number(e.pl) >= 0 ? '+' : '−'}${OC.usd(Math.abs(Number(e.pl)))} ${Q}</b></td></tr>
+             <tr><td class="tiny muted" colspan="2">${c.dir === 'long' ? `(${filled ? P(s.avg) : '—'} − ${P(m.entry)})` : `(${P(m.entry)} − ${filled ? P(s.avg) : '—'})`} × ${OC.qty(filled)} − ${OC.usd(e.close_fee)} close fee. The opening fee and the rollover are not in it.</td></tr>`}
+      </table>
+      <p class="tiny muted" style="margin:10px 0 0">${OC.MARGIN_FEES}</p>
+    </div>
+  </div>
+  <div class="card" style="margin-top:16px"><h2>What the tool did</h2>${OC.eventLog(c)}</div>`;
+  document.title = head + ' · Order chaser';
+}
 
 function render(c) {
   const w = OC.words(c), P = w.p, B = c.pair.base, Q = c.pair.quote, s = c.summary;
@@ -115,7 +188,9 @@ function render(c) {
   if (!r || !r.ok) { $('out').innerHTML = '<div class="note bad">No result for this chase. <a href="/history">Open the history</a></div>'; return; }
   const c = await r.json();
   if (c.phase !== 'done') { location.href = '/chase'; return; }
-  render(c);
+  if (!c.margin) { render(c); return; }
+  const a = await fetch('/api/account');
+  mrender(c, a.ok ? await a.json() : null);
 })();
 </script>
 </body></html>

@@ -22,6 +22,36 @@ const clock = t => new Date(t * 1000).toLocaleTimeString('en-GB');
 // A rest below a Kraken minimum cannot be chased: the server sets c.rest_below_min with the rule of the core.
 const restBelowMin = c => `The rest, ${qty(Number(c.qty) - Number(c.filled))} ${c.pair.base}, is below the Kraken minimum (${qty(c.pair.ordermin)} ${c.pair.base} or ${c.pair.costmin} ${c.pair.quote}). You cannot chase it.`;
 
+// ---------- Margin ----------
+// "Open long 0.0500 BTC, 3x" or "Close short 0.0300 BTC"; spot: "Buy 0.0500 BTC".
+const orderName = c => !c.margin ? `${c.side === 'buy' ? 'Buy' : 'Sell'} ${qty(c.qty)} ${c.pair.base}`
+  : c.margin.close ? `Close ${c.dir} ${qty(c.qty)} ${c.pair.base}` : `Open ${c.dir} ${qty(c.qty)} ${c.pair.base}, ${c.margin.leverage}x`;
+const MARGIN_FEES = 'Kraken US margin fees are 0.01% to 0.05% of the position cost. Kraken can change them without notice, and no API gives them, so the tool counts the stated maximum, 0.05%.';
+// The account margin level on a scale of 0% to 300%, with the call and liquidation marks of the pair (AssetPairs).
+// now, after: percent or null (no position). after === undefined: only "now".
+function gauge(now, after, call, stop, afterWord) {
+  const x = v => Math.min(100, Math.max(0, v / 300 * 100)).toFixed(2) + '%';
+  const lab = v => v == null ? 'no position' : Math.round(v) + '%';
+  const pos = v => v == null ? '100%' : x(v);
+  const rt = v => (v == null || v > 255) ? ' rt' : '';
+  const one = after === undefined;
+  const shown = one ? now : after;
+  const aria = one ? `Margin level now ${lab(now)}.` : `Margin level now ${lab(now)}, ${afterWord || 'after'} ${lab(after)}.`;
+  return `<div class="gauge" role="img" aria-label="${aria} Margin call at ${call}%, liquidation at ${stop}%.">
+    <div class="track"></div>
+    <div class="mk l" style="left:${x(stop)}"><span>${stop}% liquidation</span></div>
+    <div class="mk r" style="left:${x(call)}"><span>${call}% call</span></div>
+    ${one ? '' : `<div class="pt now${rt(now)}" style="left:${pos(now)}"><i></i>now ${lab(now)}</div>`}
+    <div class="pt after${shown != null && shown <= stop ? ' bad' : ''}${rt(shown)}" style="left:${pos(shown)}">${one ? 'now' : (afterWord || 'after')} ${lab(shown)}<i></i></div>
+  </div>`;
+}
+
+// After a margin chase: is a position of this chase still open, and the link to close it.
+const positionOpen = c => !['liquidated', 'nopos'].includes(c.outcome) &&
+  (c.margin.close ? Number(c.margin.pos_qty) - Number(c.filled) > 0 : Number(c.filled) > 0);
+const closeLink = c => `/new?what=close&pair=${encodeURIComponent(c.pair.symbol)}&dir=${c.dir}`;
+const closeText = c => c.margin.close ? `Close the rest (${qty(Number(c.margin.pos_qty) - Number(c.filled))} ${c.pair.base}), new ${c.side === 'buy' ? 'cap' : 'floor'}` : 'Close this position';
+
 // ---------- Server calls ----------
 async function post(url, body) {
   const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Token': TOKEN }, body: JSON.stringify(body || {}) });
@@ -71,6 +101,8 @@ function conn(snap) {
 // ---------- The live chase: which design state, and its copy ----------
 function stateOf(c, now) {
   if (c.phase === 'done') return c.outcome;
+  // A cancel and replace in flight (or waiting for a price for the new leg).
+  if (c.replace && c.exit == null && (['cancelling', 'reread', 'placing'].includes(c.phase) || (c.phase === 'resting' && c.price == null))) return 'replacing';
   if (c.phase === 'placing') return 'placing';
   if (c.phase === 'amending') return 'amending';
   if (c.phase === 'feed_lost' || (c.phase === 'reconcile' && c.reconcile_for === 'feed')) return 'disconnected';
@@ -85,12 +117,14 @@ const LABEL = {
   notfilled: 'Rest not filled', belowmin: 'Rest below the minimum', rejected: 'Amend rejected', disconnected: 'Disconnected',
   ratenear: 'Rate limit near', ended: 'Ended: tool stopped or restarted', stopped: 'Stopped by you', stopping: 'Stopping', refused: 'Order rejected',
   pageoffline: 'Page lost the tool', cancelfail: 'Cancel failed',
+  replacing: 'Amend refused: cancel and replace', liquidated: 'Liquidated', nopos: 'Ended: position closed',
 };
 const TONE = {
   placing: 'you', resting: 'you', amending: 'you', partial: 'fill', filled: 'fill', fallback: 'warn', notfilled: 'bad', belowmin: 'bad',
   rejected: 'warn', disconnected: 'bad', ratenear: 'warn', ended: 'bad', stopped: 'muted', stopping: 'muted', refused: 'bad', pageoffline: 'bad', cancelfail: 'bad',
+  replacing: 'warn', liquidated: 'bad', nopos: 'warn',
 };
-const DONE = ['filled', 'notfilled', 'belowmin', 'stopped', 'ended', 'refused', 'cancelfail'];
+const DONE = ['filled', 'notfilled', 'belowmin', 'stopped', 'ended', 'refused', 'cancelfail', 'liquidated', 'nopos'];
 const SIM = ' (Simulated. No order goes to Kraken.)';
 const DRY_TODO = 'Nothing to check in Kraken Pro: a dry run sends no orders.';
 const LIVE_CANCEL_TODO = 'Check Kraken Pro for an open order and cancel it there.';
@@ -103,7 +137,19 @@ function words(c) {
     up: buy ? 'up' : 'down', rises: buy ? 'rises' : 'falls', above: buy ? 'above' : 'below',
     bought: buy ? 'bought' : 'sold', Bought: buy ? 'Bought' : 'Sold',
     limitName: c.limit === (buy ? c.start_ask : c.start_bid) ? (buy ? 'cap (start ask)' : 'floor (start bid)') : (buy ? 'cap (your limit)' : 'floor (your limit)'),
+    m: c.margin, close: !!(c.margin && c.margin.close), dir: c.dir, lev: c.margin ? c.margin.leverage : null,
+    // The words of the order in a sentence: "order to open a 3x long", "reduce-only buy", "order".
+    order: !c.margin ? 'order' : c.margin.close ? `reduce-only ${c.side}` : `order to open a ${c.margin.leverage}x ${c.dir}`,
   };
+}
+
+// Margin: what the position of this chase is now, in one sentence. Spot: ''.
+function positionLine(c) {
+  if (!c.margin) return '';
+  const B = c.pair.base, f = Number(c.filled);
+  if (!c.margin.close) return f > 0 ? ` That part is an open ${c.margin.leverage}x ${c.dir} position now${c.mode === 'live' ? '' : ' (simulated)'}.` : ' Nothing filled, so no position opened.';
+  const rest = Number(c.margin.pos_qty) - f;
+  return rest > 0 ? ` ${qty(rest)} ${B} of the ${c.dir} stays open.` : ` The ${c.dir} position is closed.`;
 }
 
 function copy(st, c, snap, ageOff) {
@@ -124,20 +170,53 @@ function copy(st, c, snap, ageOff) {
         break;
       }
       t.title = `Resting at the ${w.best}`;
-      t.sub = `Your order waits at ${p(c.price)}. When the ${w.best} ${w.rises}, the tool moves the order ${w.up}, at most once every 5 s. The order never goes ${w.above} the ${w.limitWord}, ${p(c.limit)}.` + SIM;
+      t.sub = (w.close
+        ? `Your reduce-only ${c.side} waits at ${p(c.price)}. Reduce-only means the order can only make the ${w.dir} smaller. It can never open a ${w.dir === 'long' ? 'short' : 'long'}. The order never goes ${w.above} the ${w.limitWord}, ${p(c.limit)}.`
+        : `Your ${w.order} waits at ${p(c.price)}. When the ${w.best} ${w.rises}, the tool moves the order ${w.up}, at most once every 5 s. The order never goes ${w.above} the ${w.limitWord}, ${p(c.limit)}.`) + replaceNote(c) + SIM;
       break;
     case 'amending':
       t.title = `Moving your order ${w.up}`;
       t.sub = `Another ${w.buy ? 'buyer raised the best bid' : 'seller lowered the best ask'} to ${p(c.pending)}. The tool amends your order to that price. The order keeps the same id and its fill history.` + SIM;
       break;
     case 'partial': {
-      t.title = `Partly filled: ${pct(filled, c.qty)}%`;
       const where = c.price === bestNow ? `the ${w.best}, ${p(c.price)}` : p(c.price);
-      t.sub = `${qty(filled)} ${B} filled at ${p(s.avg)} as maker. The rest, ${qty(rest)} ${B}, rests at ${where}.` + SIM;
+      if (w.close) {
+        t.title = `Partly closed: ${pct(filled, c.qty)}%`;
+        t.sub = `${qty(filled)} ${B} of the ${w.dir} closed at ${p(s.avg)} as maker. The rest, ${qty(rest)} ${B}, rests at ${where}, reduce-only.` + replaceNote(c) + SIM;
+        break;
+      }
+      t.title = `Partly filled: ${pct(filled, c.qty)}%`;
+      t.sub = `${qty(filled)} ${B} filled at ${p(s.avg)} as maker.${positionLine(c)} The rest, ${qty(rest)} ${B}, rests at ${where}.` + replaceNote(c) + SIM;
+      break;
+    }
+    case 'replacing': {
+      const read = c.phase === 'reread', waiting = c.phase === 'resting';
+      const mark = i => { const at = c.phase === 'cancelling' ? 1 : read ? 2 : 3; return i < at ? 'done' : i === at ? 'now' : 'todo'; };
+      t.title = 'Amend refused: the tool cancels and replaces';
+      t.sub = `The simulated exchange refused to amend this margin order (reason: "${esc(c.reject || '')}"). Kraken does not document amends for margin orders. So the tool moves the order in 4 steps:`;
+      t.steps = [['done', 'Cancel the order.'],
+        [mark(1), 'Wait for the simulated exchange to confirm the cancel.'],
+        [mark(2), 'Read the fills again' + (read ? '.' : `: ${qty(filled)} ${B} filled.`)],
+        [mark(3), waiting ? `Place a new post-only ${c.side} for the rest, ${qty(rest)} ${B}, when the price is valid.`
+          : `Place a new post-only ${c.side} for the rest, ${qty(rest)} ${B}${c.pending ? ' at ' + p(c.pending) : ''}${w.close ? ', reduce-only' : ', leverage ' + w.lev + 'x'}.`]];
+      t.note = REPLACE_COST;
       break;
     }
     case 'filled': {
       const taker = Number(s.taker_qty);
+      if (w.m) {
+        const how = taker > 0 ? `${qty(s.maker_qty)} as maker and ${qty(taker)} as taker (IOC)` : 'as maker';
+        if (w.close) {
+          const left = Number(w.m.pos_qty) - filled;
+          t.title = left > 0 ? `Closed ${qty(filled)} ${B} of the ${w.dir}` : 'Position closed';
+          t.sub = `All ${qty(c.qty)} ${B} of the close filled ${how}, at an average of ${p(s.avg)}.` + positionLine(c) + ' (Simulated.)';
+        } else {
+          t.title = 'Position opened';
+          t.sub = `All ${qty(c.qty)} ${B} filled ${how}, at an average of ${p(s.avg)}. Your ${w.lev}x ${w.dir} position is open (simulated). It stays open until you close it.`;
+          t.todo = [`Rollover: up to ${usd(c.margin_est.rollover_4h)} ${c.pair.quote} for each started 4 h while the position is open (estimate at the 0.05% maximum).`, 'To close it, use "Close this position".'];
+        }
+        break;
+      }
       t.title = 'Filled';
       t.sub = taker > 0
         ? `All ${qty(c.qty)} ${B} filled, at an average of ${p(s.avg)}: ${qty(s.maker_qty)} as maker and ${qty(taker)} as taker (IOC). (Simulated.)`
@@ -166,7 +245,7 @@ function copy(st, c, snap, ageOff) {
     }
     case 'stopping':
       t.title = 'Stopping: cancelling the order';
-      t.sub = `The tool cancels your order and waits for the simulated exchange to confirm. You keep what filled: ${qty(filled)} ${B}. The rest does not fill.`;
+      t.sub = `The tool cancels your order and waits for the simulated exchange to confirm. You keep what filled: ${qty(filled)} ${B}. The rest does not fill.` + positionLine(c);
       break;
     case 'notfilled': {
       const end = c.end_ask;
@@ -182,7 +261,7 @@ function copy(st, c, snap, ageOff) {
       t.sub = (beyond(c)
         ? `The price ${w.buy ? 'rose above your cap' : 'fell below your floor'}. The ${w.other} is now ${p(end)}, which is ${p(diff)} ${w.above} the ${w.limitWord} of ${p(c.limit)}. `
         : `The ${w.other} is now ${p(end)}, ${at}, but the book had too little at or ${w.buy ? 'below the cap' : 'above the floor'} for the rest. `) +
-        `The IOC filled ${iocGot ? qty(iocGot) + ' ' + B : 'nothing'}. ` + done;
+        `The ${w.close ? 'reduce-only ' : ''}IOC filled ${iocGot ? qty(iocGot) + ' ' + B : 'nothing'}. ` + done + positionLine(c);
       break;
     }
     case 'belowmin':
@@ -225,11 +304,24 @@ function copy(st, c, snap, ageOff) {
       t.sub = (off == null ? 'The tool stopped and started again.' : `The tool stopped at ${mmss(off)} and started again at ${mmss(on)}.`) + ' After a restart the tool does not continue a dry run. It did these steps:';
       t.steps = [['done', 'Ended the simulated order. No order was on Kraken.'], ['done', `Recorded the simulated fills: ${qty(filled)} of ${qty(c.qty)} ${B}.`], ['done', 'Did not continue the dry run.']];
       t.todo = [DRY_TODO, 'To test again, start a new dry run.'];
+      if (w.m) t.note = 'A restart does not close a position. The simulated position stays in the simulated account.' + positionLine(c);
       break;
     }
     case 'stopped':
       t.title = 'Stopped by you';
-      t.sub = `You stopped the chase. The tool cancelled the order and the simulated exchange confirmed the cancel. ${qty(filled)} ${B} filled before the stop. No order of yours rests on the simulated exchange.`;
+      t.sub = `You stopped the chase. The tool cancelled the order and the simulated exchange confirmed the cancel. ${qty(filled)} ${B} filled before the stop.` +
+        (w.m ? positionLine(c) : ' No order of yours rests on the simulated exchange.');
+      break;
+    case 'liquidated':
+      t.title = 'Ended: the simulated exchange liquidated the position';
+      t.sub = `The account margin level fell to ${c.pair.margin_stop}%, so the simulated exchange closed every position at the mark. ` +
+        (w.close ? `Your reduce-only order had nothing left to close. ${qty(filled)} ${B} closed before. ` : `${qty(filled)} ${B} of the open filled before. `) +
+        'The tool cancelled its order and ended the chase.';
+      t.todo = ['The margin level is for the whole account: the simulated account shows each position on the form, under "Close a position".', DRY_TODO];
+      break;
+    case 'nopos':
+      t.title = 'Ended: the position is closed';
+      t.sub = `The ${w.dir} position on ${c.pair.symbol} closed while the chase ran. The reduce-only order had nothing left to close. The tool cancelled it and ended the chase. This chase closed ${qty(filled)} ${B}.`;
       break;
     case 'refused': {
       const last = c.events.filter(e => e.kind === 'bad').pop();
@@ -249,6 +341,10 @@ function copy(st, c, snap, ageOff) {
   }
   return t;
 }
+
+// The cost of a cancel and replace, in plain words (shown while it runs and in the result).
+const REPLACE_COST = 'What a replace costs: each move is a cancel and a new order, not one amend. A cancel adds up to 8 to the rate counter and the new order adds 1, so moves can come less often. The new order also loses its place in the queue at its price, and for a moment no order rests.';
+const replaceNote = c => c.replace ? ` The venue refuses amends of this order, so each move is a cancel and a new order (${c.legs.length - 1} so far).` : '';
 
 // ---------- The price rail (from the approved prototype) ----------
 function rail(c, bid, ask, stale) {
@@ -295,13 +391,15 @@ function card(st, c, snap, ageOff) {
   const makerPct = filled ? Number(c.summary.maker_qty) / total * 100 : 0;
   const elapsed = (done ? c.ended_at : (snap ? snap.now : Date.now() / 1000)) - c.started;
   const steps = t.steps ? `<ol class="small" style="margin:10px 0 0;padding-left:20px">${t.steps.map(s => `<li style="padding:2px 0" class="${s[0] === 'now' ? 'tone-' + tone : s[0] === 'todo' ? 'muted' : ''}">${s[0] === 'done' ? '✓ ' : s[0] === 'now' ? '→ ' : ''}${s[1]}</li>`).join('')}</ol>` : '';
-  const nf = ['notfilled', 'belowmin', 'ended', 'stopped'].includes(st) ? `<i class="nf" style="width:${100 - pct}%"></i>` : '';
+  const nf = ['notfilled', 'belowmin', 'ended', 'stopped', 'liquidated', 'nopos'].includes(st) ? `<i class="nf" style="width:${100 - pct}%"></i>` : '';
   // The chase's own prices, never the feed of another pair. Their age shows when they are not current.
   const now = done ? c.ended_at : st === 'pageoffline' ? lastNow + ageOff : snap ? snap.now : c.book_at;
   const age = c.book_at == null ? null : Math.max(0, Math.round(now - c.book_at));
   const stale = st === 'pageoffline' || st === 'disconnected' || (done && c.end_ask == null);
   const ageText = age == null ? 'no valid values' : done ? `values from ${age} s before the end` : `values from ${age} s ago`;
   let label = LABEL[st];
+  if (c.margin && st === 'filled') label = !c.margin.close ? 'Position opened' : Number(c.margin_est.rest) > 0 ? 'Closed' : 'Position closed';
+  if (c.margin && c.margin.close && st === 'partial') label = 'Partly closed';
   if (st === 'notfilled') label = (filled > 0 ? 'Rest not filled' : 'Nothing filled') + (!beyond(c) ? '' : c.side === 'buy' ? ' (above cap)' : ' (below floor)');
   if (stale) label += ' · ' + ageText;   // the age in the badge, not faded text
   const railNote = !done ? '' : stale ? `Prices: ${ageText}. There was no valid price at the end.`
@@ -310,9 +408,10 @@ function card(st, c, snap, ageOff) {
     <div class="state tone-${tone} ${done ? '' : 'pulse'}"><i></i>${label}</div>
     <div class="head">${t.title}</div>
     <div class="sub">${t.sub}</div>${steps}
+    ${t.note ? `<p class="small" id="cardnote" style="margin:12px 0 0">${t.note}</p>` : ''}
     ${t.todo ? `<div class="note info small" style="margin-top:12px"><b>What to do now</b><ul style="margin:4px 0 0;padding-left:18px">${t.todo.map(x => `<li>${x}</li>`).join('')}</ul></div>` : ''}
     <div class="row" style="margin-top:18px;align-items:flex-end;flex-wrap:wrap">
-      <div><div class="small muted">Filled</div><div class="big" style="white-space:nowrap">${qty(filled)} <span class="muted" style="font-size:.55em">of ${qty(total)} ${c.pair.base}</span></div></div>
+      <div><div class="small muted">${!c.margin ? 'Filled' : c.margin.close ? 'Closed' : 'Opened'}</div><div class="big" style="white-space:nowrap">${qty(filled)} <span class="muted" style="font-size:.55em">of ${qty(total)} ${c.pair.base}</span></div></div>
       <span class="spacer"></span>
       ${done ? '' : `<div class="timer" style="white-space:nowrap"><span class="num">${mmss(elapsed)} / ${mmss(c.timeout)}</span><div class="bar"><i style="width:${Math.min(100, elapsed / c.timeout * 100)}%"></i></div></div>`}
     </div>
@@ -326,5 +425,5 @@ function eventLog(c) {
   return `<ul class="log">${c.events.slice().reverse().map(e => `<li><span class="ts">${mmss(e.t)}</span><span class="${kind[e.kind] || ''}">${esc(e.text)}</span></li>`).join('')}</ul>`;
 }
 
-return { TOKEN, $, esc, beyond, pct, fillWord, againText, restBelowMin, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
+return { positionOpen, closeLink, closeText, gauge, orderName, positionLine, MARGIN_FEES, REPLACE_COST, TOKEN, $, esc, beyond, pct, fillWord, againText, restBelowMin, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
 })();

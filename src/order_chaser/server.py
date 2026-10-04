@@ -432,7 +432,8 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
                          "price_decimals": c.pair.price_decimals, "exit": c.exit, "nofeed": c.end_ask is None,
                          "beyond": c.end_ask is not None and (c.end_ask > c.limit if c.buy else c.end_ask < c.limit),
                          "dir": c.dir, "close": bool(c.margin and c.margin.close),
-                         "leverage": c.margin.leverage if c.margin else None})
+                         "leverage": c.margin.leverage if c.margin else None,
+                         "pos_rest": str(c.margin.pos_qty - c.filled) if c.margin and c.margin.close else None})
         return JSONResponse(rows)
 
     @contextlib.asynccontextmanager

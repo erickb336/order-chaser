@@ -149,14 +149,31 @@ def card_shown(state):
     return {"waitFor": f"document.querySelector('#statuscard[data-state=\"{state}\"]')"}
 
 
-# The lowest WCAG contrast of the texts that match sel, on the white card, with the opacity of every ancestor.
+# The lowest WCAG contrast of the texts that match sel, against the background they sit on (the first ancestor
+# with a background colour; the page is dark), with the opacity of every ancestor. A disabled control is left out.
+CONTRAST_JS = """(sel) => {
+  const rgb = s => s.match(/[\\d.]+/g).map(Number);
+  const lum = c => c.slice(0, 3).map(v => v / 255).map(v => v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
+    .reduce((a, v, i) => a + v * [0.2126, 0.7152, 0.0722][i], 0);
+  const back = el => { for (let e = el; e; e = e.parentElement) { const c = rgb(getComputedStyle(e).backgroundColor); if ((c[3] ?? 1) > 0.5) return c; } return [255, 255, 255]; };
+  const one = el => {
+    let o = 1; for (let e = el; e; e = e.parentElement) o *= Number(getComputedStyle(e).opacity);
+    const f = rgb(getComputedStyle(el).color), b = back(el), a = (f[3] ?? 1) * o;
+    const mix = [0, 1, 2].map(i => f[i] * a + b[i] * (1 - a));
+    const [l1, l2] = [lum(mix), lum(b)].sort((x, y) => y - x);
+    return { c: Math.round((l1 + 0.05) / (l2 + 0.05) * 100) / 100, t: el.textContent.trim().slice(0, 40) };
+  };
+  const els = Array.from(document.querySelectorAll(sel)).filter(el => el.offsetParent && el.textContent.trim() && !el.closest('[disabled]'));
+  return els.map(one).sort((x, y) => x.c - y.c)[0] || { c: 99, t: '' };
+}"""
+
+
 def contrast(sel):
-    return {"eval": "Math.min(...Array.from(document.querySelectorAll(%s)).map(el => {"
-                    " let o = 1; for (let e = el; e; e = e.parentElement) o *= Number(getComputedStyle(e).opacity);"
-                    " const m = getComputedStyle(el).color.match(/[\\d.]+/g).map(Number), a = (m[3] ?? 1) * o;"
-                    " const L = m.slice(0, 3).map(v => (v * a + 255 * (1 - a)) / 255).map(v => v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);"
-                    " return Math.round(1.05 / (0.2126 * L[0] + 0.7152 * L[1] + 0.0722 * L[2] + 0.05) * 100) / 100; }))" % json.dumps(sel),
-            "as": "contrast"}
+    return {"eval": f"({CONTRAST_JS})({json.dumps(sel)}).c", "as": "contrast"}
+
+
+# Every visible text on the page: its lowest contrast and that text (to find it).
+ALL_TEXT = {"eval": f"({CONTRAST_JS})('body *:not(script):not(style)')", "as": "all"}
 
 
 # The space from the lowest rail label to the note under the rail, in px: below 0 they overlap.
