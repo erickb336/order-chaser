@@ -674,3 +674,10 @@ def test_start_takes_one_action_field_and_leverage_only_for_an_open(setup, body,
                     json={"pair": "BTC/USD", "qty": "0.05", "timeout": 60, **body})
     assert (r.status_code, r.json()) == (400, {"errors": [error]})
     assert eng.chase is None
+
+
+def test_the_dry_run_has_no_code_that_reads_a_key_or_calls_a_private_endpoint():
+    # DRY-RUN-READS-KEY (PE): no Kraken key and no private request in this version.
+    from pathlib import Path
+    src = " ".join(f.read_text() for f in (Path(__file__).parent.parent / "src" / "order_chaser").glob("*.py"))
+    assert [w for w in ("API-Key", "API-Sign", "/0/private", "KRAKEN_KEY", "KRAKEN_API") if w in src] == []

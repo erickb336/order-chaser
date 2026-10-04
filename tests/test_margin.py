@@ -478,6 +478,7 @@ def probe(seed: int) -> dict:
         else:
             feed([Tick(now)])
         assert not (acc.of("X/USD", "long") and acc.of("X/USD", "short")), seed       # never long and short at once
+        assert sum(o["open"] for o in gw.orders.values()) <= 1, seed                  # one open order per chase at most
         mine = acc.position("X/USD", d)
         assert (mine["qty"] if mine else D(0)) <= pos0 + (0 if close else c.filled), seed   # a close never grows
     assert c.phase == "done", seed

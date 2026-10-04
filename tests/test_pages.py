@@ -389,7 +389,8 @@ def test_page_the_form_offers_five_choices_and_an_open_shows_leverage_cost_colla
         TEXTS("#lev button:not([disabled])"), {"eval": "OC.$('lev').querySelector('[aria-pressed=true]').textContent", "as": "lev"},
         TEXTS("#mgbox table td:first-child"), {"eval": "OC.$('mgbox').querySelector('.gauge').getAttribute('aria-label')", "as": "gauge"},
         {"text": "#lvlline", "as": "line"}, {"text": "#worst", "as": "worst"}, {"text": "#start", "as": "start"},
-        {"text": "#amthelp", "as": "free"}, ALL_TEXT, {"shot": "m-new-open-long.png"},
+        {"text": "#amthelp", "as": "free"}, {"text": "#mgbox label", "as": "mglabel"}, {"text": "#mgbox p.tiny", "as": "fees"},
+        ALL_TEXT, {"shot": "m-new-open-long.png"},
         {"select": ["#pairsel", "ETH/USD"]}, {"waitFor": "OC.$('ask').textContent === '2,500.20'"},
         TEXTS("#lev button:not([disabled])"), {"click": "#what button[data-w=short]"},
         {"waitFor": "OC.$('levhelp').textContent.startsWith('Kraken allows no short')"}, {"text": "#mnote", "as": "noshort"},
@@ -406,6 +407,10 @@ def test_page_the_form_offers_five_choices_and_an_open_shows_leverage_cost_colla
     assert got["worst"].startswith("The open never costs more than 3,147.45 USD in price and fees: 0.0500 × 62,418.50 (cap) + 24.97 taker fee (0.80%) + 1.56 opening fee")
     assert got["start"] == "Start dry run: open long"
     assert got["free"].startswith("Free margin: 5,000.00 USD (simulated account, read at ")
+    # MARGIN-NUMBER-LABELS, MARGIN-RATES-NO-API (PE): the numbers are estimates, and the page says why.
+    assert got["mglabel"] == "Margin: what this open uses and costs estimate"
+    assert got["fees"] == ("Kraken US margin fees are 0.01% to 0.05% of the position cost. Kraken can change them without notice, "
+                           "and no API gives them, so the tool counts the stated maximum, 0.05%.")
     assert got["noshort"].startswith("Kraken allows no short on ETH/USD.") and got["blocked"] is True
 
 
@@ -584,7 +589,11 @@ def test_page_no_order_price_after_a_maker_fill_ended_the_order(tool):
     look = [{"goto": "/chase"}, card_shown("filled"), {"text": "#yp", "as": "yp"},
             {"eval": "document.querySelectorAll('#statuscard .rail .mk.you').length", "as": "mark"},
             {"eval": "OC.$('statuscard').querySelector('.rail .mk.cap .lab').textContent", "as": "cap"}]
-    margin = tool.look(look + [{"shot": "r1-maker-fill-no-order.png"}])
+    margin = tool.look(look + [{"shot": "r1-maker-fill-no-order.png"}, {"text": "#mgstrip", "as": "strip"}, {"text": "#pstays", "as": "stays"}])
+    # POSITION-SURVIVES-CRASH (PE): the page says that the position stays open when the tool stops.
+    assert margin.pop("strip") == "MARGIN: this chase opens a 2x long position. A position stays open when the tool stops."
+    assert margin.pop("stays") == ("If the tool stops: the simulated position stays in the simulated account. "
+                                   "No order and no position is on Kraken.")
     tool.start("buy", "0.01")
     tool.trade("sell", "62417.0", "0.01")
     spot = tool.look(look + [{"shot": "r1-spot-maker-fill-no-order.png"}])
