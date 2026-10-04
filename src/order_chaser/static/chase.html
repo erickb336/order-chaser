@@ -110,7 +110,7 @@ function margin(c, w, snap) {
   $('ro').textContent = m.close ? `Yes: can only reduce the ${c.dir}` : 'No: this order opens';
   let ps;
   if (c.outcome === 'liquidated') ps = ['bad', 'Liquidated', 'The simulated exchange closed the position at the mark.'];
-  else if (!m.close) ps = f <= 0 ? ['muted', 'Not opened yet', 'Nothing filled, so no position is open.']
+  else if (!m.close) ps = f <= 0 ? ['muted', done ? 'Nothing opened' : 'Not opened yet', 'Nothing filled, so no position is open.']
     : !done ? ['fill', `Opened: ${OC.qty(f)} of ${OC.qty(c.qty)} ${B}`, `${c.dir === 'long' ? 'Long' : 'Short'}, ${m.leverage}x. This part is a position now.`]
     : ['fill', `Opened: ${OC.qty(f)} ${B} ${c.dir}, ${m.leverage}x`, 'Open until you close it, also when the tool stops.'];
   else {

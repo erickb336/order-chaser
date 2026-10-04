@@ -2,7 +2,11 @@
 
 The order chaser is a local tool for Kraken Pro. It places a post-only limit order at the best bid, moves it up as the bid rises, and never goes above a cap. The cap is the ask at the start. After a timeout it cancels, reads the filled quantity again, and sends one IOC (immediate-or-cancel) order at the cap for the rest.
 
-**This version runs dry runs only.** It reads live public Kraken prices and simulates the fills. It takes no API key and sends no order to Kraken. Live trading comes in a later version.
+It also chases margin orders: open a long, open a short (2x to 5x), and close a position with a reduce-only order.
+
+**This version runs dry runs only.** It reads live public Kraken prices and simulates the fills. It takes no API key and sends no order to Kraken. A margin dry run uses a simulated account of 5,000 USD. Live trading comes in a later version.
+
+The pages are dark. Every text keeps a contrast of 4.5:1 or more; the page tests check it.
 
 ## Run it
 
@@ -21,6 +25,7 @@ Options:
 | `--data-dir PATH` | Folder for the SQLite file. Default: `~/Library/Application Support/order-chaser`. The variable `ORDER_CHASER_DATA` does the same. The tool makes a missing folder with mode 0700. It never changes an existing folder, and warns if others can read it. |
 | `--port N` | The port on 127.0.0.1. Default: 5180. |
 | `--rate-start N` | Demo only: the estimated rate counter at start, to show the "rate limit near" state (for example 60). |
+| `--refuse-margin-amends` | Demo only: the simulated exchange refuses each amend of a margin order, so that the tool cancels and replaces it. |
 
 ## Run the tests
 
@@ -32,6 +37,8 @@ To see the rare chase states (amend rejected, disconnected, fallback, rest below
 
 The page tests (`tests/test_pages.py`) drive the real pages in Google Chrome with a fake feed. Each test starts the app on a free port, so the tests also run while the tool runs on 5180. They need node and a one-time `npm install` in `tests/pages` (playwright-core, pinned; it downloads no browser). Without them, they skip. Set `OC_SHOTS=/some/folder` to keep their screenshots.
 
+`tests/test_margin.py` has a random-run probe: many seeded margin chases on random markets, which check every rule after each run. The test runs 400 seeds. For the counts of a larger probe, run `uv run python tests/test_margin.py 5000`.
+
 The tests need no network. A recorded sample of the public Kraken feed (`tests/fixtures/kraken-btcusd.jsonl`) checks the book checksum. A fake feed drives one dry run end to end.
 
 ## How it works
@@ -39,9 +46,9 @@ The tests need no network. A recorded sample of the public Kraken feed (`tests/f
 | Part | File | Job |
 | --- | --- | --- |
 | Core | `src/order_chaser/core.py` | `step(chase, event) -> (chase, commands)`. No I/O, no clock. All chase rules are here. |
-| Simulator | `src/order_chaser/sim.py` | The dry-run gateway. It answers the core's commands like an exchange. A later version puts the Kraken gateway in its place. |
+| Simulator | `src/order_chaser/sim.py` | The dry-run gateway and the simulated margin account. It answers the core's commands like an exchange. A later version puts the Kraken gateway in its place. |
 | Feed | `src/order_chaser/feed.py`, `book.py` | Public WebSocket v2 book (depth 10, CRC32 checksum) and trades; REST AssetPairs for minimums, tick size and pair status. |
-| Store | `src/order_chaser/db.py` | SQLite: one row for each chase and an append-only event log, keyed by the client order id. |
+| Store | `src/order_chaser/db.py` | SQLite: one row for each chase, an append-only event log, a table that maps each order id (leg) to its chase, and the simulated account. |
 | Server | `src/order_chaser/server.py` | Runs the chase, serves the pages, pushes updates by server-sent events. |
 
 Dry-run rules:
@@ -55,6 +62,19 @@ Dry-run rules:
 - The IOC fills against the public book up to the cap.
 - Fees: 0.40% maker and 0.80% taker, the highest Kraken rates.
 - The rate counter copies Kraken's Starter tier (maximum 60, falls 1 each second). Above 40 the tool amends every 15 s, not 5 s.
+
+Margin (dry run):
+
+- "What to do" on the form: Buy or Sell (spot), Open long, Open short or Close a position (margin).
+- Leverage: 2x to 5x, and only the levels that the pair allows (AssetPairs `leverage_buy`, `leverage_sell`). The form starts at 2x.
+- The simulated account starts with 5,000 USD. It keeps one position for each pair and direction, in the SQLite file, so a position stays open after a restart. Mark = the mid of the public book. Margin level = equity ÷ used margin × 100. At the pair's `margin_stop` (AssetPairs, 40% today) the simulated exchange liquidates every position, and a running chase ends.
+- Fees: opening fee and rollover at 0.05% of the cost, the stated maximum of Kraken US (0.01% to 0.05%). The pages label these numbers as estimates. Rollover counts each started 4 h.
+- Start needs enough free margin for orders: cost ÷ leverage. An open against an open position of the other direction is blocked: "Close the long first" (or the short).
+- A close is reduce-only: the order can only make the position smaller. It starts at the whole position; you can make it smaller. A rest below the Kraken minimum gets a warning, not a block.
+- The simulated exchange refuses with Kraken's texts: "Insufficient margin", "Margin allowance exceeded", "Margin position size exceeded" (AssetPairs position limits), "Cannot open opposing position", and "Reduce only:No position exists".
+- If the exchange refuses an amend of a margin order, the tool cancels and replaces for the rest of the chase: cancel, wait for the confirmation, read the filled quantity of that order, place a new order for the rest at the bid. At most every 5 s (15 s above 40 on the rate counter), and only with room on the rate counter.
+- Each order of a chase has its own client order id of at most 18 characters (Kraken's limit): `oc` + 12 hex for the first order, `-1`, `-2`, … for the new orders of a cancel and replace, and `-i` for the IOC. The filled quantity is the sum of what the exchange reports for each order, so a fill never counts twice.
+- The tool reads the account and the positions at the start of a chase, after fills (at most every 3 s), at the end, and when the form opens. It never reads them every second.
 
 Safety:
 

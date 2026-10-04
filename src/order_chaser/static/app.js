@@ -135,7 +135,7 @@ function words(c) {
     buy, B, pd, p: v => px(v, pd),
     best: buy ? 'best bid' : 'best ask', other: buy ? 'ask' : 'bid', limitWord: buy ? 'cap' : 'floor',
     up: buy ? 'up' : 'down', rises: buy ? 'rises' : 'falls', above: buy ? 'above' : 'below',
-    bought: buy ? 'bought' : 'sold', Bought: buy ? 'Bought' : 'Sold',
+    bought: c.margin ? (c.margin.close ? 'closed' : 'opened') : buy ? 'bought' : 'sold', Bought: buy ? 'Bought' : 'Sold',
     limitName: c.limit === (buy ? c.start_ask : c.start_bid) ? (buy ? 'cap (start ask)' : 'floor (start bid)') : (buy ? 'cap (your limit)' : 'floor (your limit)'),
     m: c.margin, close: !!(c.margin && c.margin.close), dir: c.dir, lev: c.margin ? c.margin.leverage : null,
     // The words of the order in a sentence: "order to open a 3x long", "reduce-only buy", "order".
