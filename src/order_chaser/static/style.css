@@ -134,26 +134,29 @@ p { margin: 0 0 .7em; }
 .poslist label.on .muted { color: #c9c0ad; }
 .poslist .r { text-align: right; }
 
-/* Margin level gauge: 0% to 300%, with the call and liquidation marks */
-.gauge { position: relative; height: 80px; margin: 8px 6px 4px; }
-.gauge .track { position: absolute; left: 0; right: 0; top: 28px; height: 8px; border-radius: 99px;
+/* Margin level gauge: 0% to 300%, with the call and liquidation marks. Each label has its own row, so that no
+   two labels overlap, whatever the values: "after" (or the one "now") on row 1 and "now" on row 2 above the track;
+   the call label on row 3 and the liquidation label on row 4 below it. */
+.gauge { position: relative; height: 96px; margin: 8px 6px 4px; }
+.gauge .track { position: absolute; left: 0; right: 0; top: 40px; height: 8px; border-radius: 99px;
   background: linear-gradient(90deg, var(--bad) 0 13.33%, var(--warn) 13.33% 26.67%, var(--fill) 26.67% 100%); opacity: .55; }
-.gauge .mk { position: absolute; top: 22px; width: 2px; height: 20px; }
+.gauge .mk { position: absolute; top: 34px; width: 2px; height: 20px; }
 .gauge .mk::before { content: ""; position: absolute; inset: 0; background: var(--ink); }
-/* The mark labels start at their mark, on two rows, so that they stay inside a narrow card. */
-.gauge .mk span { position: absolute; left: -3px; top: 22px; font-size: 11.5px; white-space: nowrap; color: var(--muted); }
-.gauge .mk.l span { top: 38px; }
-.gauge .pt { position: absolute; top: 0; transform: translateX(-50%); font-size: 12px; font-weight: 700; white-space: nowrap; font-family: var(--mono); }
-.gauge .pt i { display: block; width: 12px; height: 12px; border-radius: 50%; margin: 2px auto 0; border: 2px solid var(--surface); }
-.gauge .pt.now { color: var(--muted); top: 38px; }
-.gauge .pt.now i { background: var(--muted); margin: 0 auto 2px; }
+/* The mark labels start at their mark, so that they stay inside a narrow card. */
+.gauge .mk span { position: absolute; left: -3px; top: 22px; font-size: 11.5px; line-height: 15px; white-space: nowrap; color: var(--muted); }
+.gauge .mk.l span { top: 40px; }
+.gauge .pt { position: absolute; top: 0; transform: translateX(-50%); font-size: 12px; line-height: 16px; font-weight: 700; white-space: nowrap; font-family: var(--mono); }
+/* The dot of a point sits on the track (centre at 44px), below its label. */
+.gauge .pt i { position: absolute; left: 50%; top: 36px; width: 12px; height: 12px; margin-left: -8px; border-radius: 50%; border: 2px solid var(--surface); }
+.gauge .pt.now { color: var(--muted); top: 17px; }
+.gauge .pt.now i { background: var(--muted); top: 19px; }
 .gauge .pt.after { color: var(--ink); }
 .gauge .pt.after i { background: var(--ink); }
 .gauge .pt.bad, .gauge .pt.bad i { color: var(--bad); }
 .gauge .pt.bad i { background: var(--bad); }
 /* Near the right end: the text ends at the dot. */
 .gauge .pt.rt { transform: translateX(calc(-100% + 6px)); text-align: right; }
-.gauge .pt.rt i { margin-left: auto; margin-right: 0; }
+.gauge .pt.rt i { left: auto; right: -2px; margin-left: 0; }
 .pstat { display: flex; align-items: center; gap: 8px; font-weight: 650; }
 .pstat i { width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
 

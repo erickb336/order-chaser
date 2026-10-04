@@ -38,6 +38,7 @@
         <div class="tiny muted" id="pdet" style="margin:2px 0 8px"></div>
         <div class="small" id="plevel">Account margin level</div>
         <div id="pgauge"></div>
+        <p class="tiny muted" id="pmarks" style="margin:0"></p>
         <p class="tiny" style="margin:14px 0 0" id="pstays"></p>
       </div>
       <div class="card">
@@ -106,7 +107,7 @@ function margin(c, w, snap) {
   $('poscard').classList.remove('hidden');
   $('mgstrip').classList.remove('hidden');
   $('mgstrip').textContent = `MARGIN: this chase ${m.close ? `closes a ${c.dir} position, reduce-only` : `opens a ${m.leverage}x ${c.dir} position`}. A position stays open when the tool stops.`;
-  $('lev').textContent = m.leverage + 'x';
+  $('lev').textContent = m.close ? `average ${m.leverage}x` : m.leverage + 'x';
   $('ro').textContent = m.close ? `Yes: can only reduce the ${c.dir}` : 'No: this order opens';
   let ps;
   if (c.outcome === 'liquidated') ps = ['bad', 'Liquidated', 'The simulated exchange closed the position at the mark.'];
@@ -125,6 +126,7 @@ function margin(c, w, snap) {
   const a = snap && snap.account;
   $('plevel').textContent = a ? `Account margin level (simulated account, read at ${new Date(a.at * 1000).toLocaleTimeString('en-GB')})` : 'Account margin level';
   $('pgauge').innerHTML = a ? OC.gauge(a.level == null ? null : Number(a.level), undefined, c.pair.margin_call, c.pair.margin_stop) : '<p class="tiny muted">Read at the start, after fills and at the end.</p>';
+  $('pmarks').innerHTML = a ? OC.markNote(a, snap.watched) : '';
   $('pstays').innerHTML = ps[1] === 'Closed' || c.outcome === 'liquidated' ? '<span class="muted">No position of this chase is open now.</span>'
     : '<b>If the tool stops:</b> the simulated position stays in the simulated account. No order and no position is on Kraken.';
   const Q = c.pair.quote;

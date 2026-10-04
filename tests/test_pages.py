@@ -112,13 +112,13 @@ class Tool:
         self.clock.t += seconds
         self.call(self.feed._handle, {"channel": "heartbeat"})
 
-    def trade(self, side, price, qty):
+    def trade(self, side, price, qty, symbol="BTC/USD"):
         self.call(self.feed._handle, {"channel": "trade", "type": "update",
-                                      "data": [{"symbol": "BTC/USD", "side": side, "price": D(price), "qty": D(qty)}]})
+                                      "data": [{"symbol": symbol, "side": side, "price": D(price), "qty": D(qty)}]})
 
-    def start(self, side="buy", qty="0.05", timeout=120, leverage=None):
+    def start(self, side="buy", qty="0.05", timeout=120, leverage=None, symbol="BTC/USD"):
         """side: buy or sell; or a margin choice: long, short, close-long, close-short."""
-        assert self.call(self.eng.start, "BTC/USD", side, D(qty), None, timeout, leverage) == []
+        assert self.call(self.eng.start, symbol, side, D(qty), None, timeout, leverage) == []
         return self.eng.chase.id
 
     def timeout(self, seconds):
@@ -420,8 +420,8 @@ def test_page_close_lists_the_simulated_positions_with_the_whole_size_reduce_onl
         {"text": "#start", "as": "start"}, {"text": "#worst", "as": "worst"}, ALL_TEXT, {"shot": "m-new-close.png"},
         {"fill": ["#amt", "0.04999"]}, {"waitFor": "!OC.$('mnote').classList.contains('hidden')"},
         {"text": "#mnote", "as": "rest"}, {"eval": "OC.$('start').disabled", "as": "rest_blocked"}, {"shot": "m-new-close-remainder.png"},
-        {"fill": ["#amt", "0.06"]}, {"waitFor": "OC.$('amthelp').classList.contains('err')"},
-        {"text": "#amthelp", "as": "over"}, {"eval": "OC.$('start').disabled", "as": "over_blocked"},
+        {"fill": ["#amt", "0.06"]}, {"waitFor": "OC.$('amterr').textContent"},
+        {"text": "#amterr", "as": "over"}, {"eval": "OC.$('start').disabled", "as": "over_blocked"},
         {"click": "#whole"}, {"waitFor": whole}, {"text": "#est", "as": "after_all"}])
     assert got.pop("all")["c"] >= 4.5
     assert got["#poslist label b"] == ["BTC/USD Long 0.0500 BTC"]
@@ -484,3 +484,122 @@ def test_page_a_liquidation_ends_the_chase_on_the_chase_result_and_history_pages
     assert got["tr.click td:nth-child(3)"] == ["Margin Close long", "Margin Open long · 5x"]
     assert got["tr.click td:last-child .badge"] == ["Liquidated", "Position opened"]
     assert got["setup"].startswith("margin Margin uses the same key and needs no new permission.")
+
+
+# ---------- repair round 1 of the margin build ----------
+
+def watch(tool, symbol):
+    async def run():
+        tool.eng.watched = symbol
+        await tool.feed.watch(PAIRS[symbol])
+    tool.call(run)
+
+
+def test_page_the_close_list_shows_one_row_for_each_pair_and_direction_with_the_count_the_average_leverage_and_each_mark(tool):
+    # Mixed leverage (owner's decision) and UNWATCHED-PAIR-MARK-STALE
+    opened_long(tool, "0.02", 3)
+    tool.beat(1)
+    opened_long(tool, "0.02", 5)                     # the same cost at 5x: 3.75 on average, "average 4x"
+    tool.beat(1)
+    watch(tool, "ETH/USD")
+    tool.start("long", "1", leverage=3, symbol="ETH/USD")
+    tool.trade("sell", "2500.00", "1", "ETH/USD")
+    assert tool.eng.chase.outcome == "filled"
+    tool.beat(61)                                    # a heartbeat renews the ETH book: the last ETH price seen
+    eth_at = tool.clock.t
+    watch(tool, "BTC/USD")
+    tool.beat(1)
+    tool.eng.account = None                          # the form reads the account when it opens
+    rows = "Array.from(document.querySelectorAll('#poslist label')).map(l => [l.querySelector('b').textContent, l.querySelector('.muted.small').textContent, l.querySelector('.r').textContent])"
+    got = tool.look([{"goto": "/new"}, {"waitFor": "OC.$('ask').textContent === '62,418.50'"},
+                     {"click": "#what button[data-w=close]"}, {"waitFor": "document.querySelectorAll('#poslist label').length === 2"},
+                     {"click": "#poslist label[data-k='BTC/USD|long']"}, {"waitFor": "OC.$('marknote')"},
+                     {"eval": rows, "as": "rows"}, {"text": "#marknote", "as": "marks"}, {"text": "#poslist > div:last-child", "as": "foot"},
+                     ALL_TEXT, {"shot": "r1-close-list-two-positions.png"}])
+    assert got.pop("all")["c"] >= 4.5
+    btc, eth = got["rows"]
+    assert btc[0] == "BTC/USD Long 0.0400 BTC" and btc[1].startswith("· 2 positions · average 4x · average entry 62,417.90 · oldest opened ")
+    assert btc[2].endswith("profit or loss now, at the mark (estimate)")
+    assert eth[0] == "ETH/USD Long 1.0000 ETH" and eth[1].startswith("· 3x · opened ")
+    assert eth[2].endswith(f"at the last price seen, {clock_text(eth_at)} (estimate)")
+    assert got["marks"] == f"The level uses ETH/USD at the last price seen, {clock_text(eth_at)}."
+    assert got["foot"].endswith("One row for each pair and direction. A close takes the oldest position first.")
+    # After a restart the account has no price for a pair until its book arrives: "no price yet", not 0.
+    from order_chaser.sim import SimAccount
+    tool.eng.gw.account = SimAccount.from_json(tool.eng.gw.account.to_json())
+    tool.eng.account = None
+    got = tool.look([{"goto": "/new?what=close&pair=BTC/USD&dir=long"}, {"waitFor": "document.querySelectorAll('#poslist label').length === 2"},
+                     {"waitFor": "OC.$('marknote')"}, {"eval": rows, "as": "rows"}, {"text": "#marknote", "as": "marks"},
+                     {"shot": "r1-close-list-after-restart.png"}])
+    assert [r[2] for r in got["rows"]] == ["no price yetprofit or loss shows when BTC/USD prices arrive",
+                                           "no price yetprofit or loss shows when ETH/USD prices arrive"]
+    assert got["marks"] == "The level uses no price yet for ETH/USD (its profit or loss counts as 0)."
+
+
+def test_page_close_with_no_position_shows_nothing_to_close_and_no_figures(tool):
+    # UX-CLOSE-NO-POSITION-FIGURES
+    got = tool.look([{"goto": "/new"}, {"waitFor": "OC.$('ask').textContent === '62,418.50'"},
+                     {"click": "#what button[data-w=close]"}, {"waitFor": "OC.$('poslist').textContent.startsWith('You have no open')"},
+                     {"text": "#whatdoes", "as": "does"}, {"text": "#worst", "as": "worst"}, {"text": "#tohelp", "as": "to"},
+                     {"eval": "OC.$('start').disabled", "as": "blocked"}, ALL_TEXT, {"shot": "r1-close-no-position.png"}])
+    assert got.pop("all")["c"] >= 4.5
+    assert (got["does"], got["worst"], got["blocked"]) == ("Nothing to close.", "Nothing to close.", True)
+
+
+GAUGE_OVERLAP = """(() => {
+  const host = document.createElement('div'); host.className = 'card'; host.style.width = '360px'; document.body.append(host);
+  const cases = [[42, 39], [41, undefined], [39, 42], [79, 82], [40, 80], [null, 41], [81, 79], [299, 290], [5, 2]];
+  const worst = [];
+  for (const [now, after] of cases) {
+    host.innerHTML = OC.gauge(now, after, 80, 40);
+    const boxes = Array.from(host.querySelectorAll('.mk span, .pt')).map(e => [e.textContent.trim(), e.getBoundingClientRect()]);
+    for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+      const [a, ra] = boxes[i], [b, rb] = boxes[j];
+      const w = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left), h = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top);
+      if (w > 0 && h > 0) worst.push([now, after, a, b]);
+    }
+  }
+  host.remove();
+  return worst;
+})()"""
+
+
+def test_page_gauge_labels_never_overlap(tool):
+    # UX-GAUGE-LABEL-OVERLAP: the case of the review (now 42%, after 39%, liquidation 40%) and others near the marks.
+    opened_long(tool, "0.05", 5)
+    tool.eng.gw.account.cash = D("262")              # a small account: the level is near 42%
+    tool.eng.account = None
+    got = tool.look([{"goto": "/new"}, {"waitFor": "OC.$('ask').textContent === '62,418.50'"},
+                     {"click": "#what button[data-w=long]"}, {"fill": ["#amt", "0.002"]},
+                     {"waitFor": "OC.$('mgbox').querySelector('.gauge')"},
+                     {"eval": "OC.$('mgbox').querySelector('.gauge').getAttribute('aria-label')", "as": "aria"},
+                     {"eval": GAUGE_OVERLAP, "as": "overlaps"}, {"shot": "r1-gauge-near-40.png"}])
+    assert got["aria"].startswith("Margin level now 42%, after 38%.")
+    assert got["overlaps"] == []
+
+
+def test_page_no_order_price_after_a_maker_fill_ended_the_order(tool):
+    # UX-PRICE-AFTER-ORDER-GONE, margin and spot
+    opened_long(tool, "0.05", 2)
+    look = [{"goto": "/chase"}, card_shown("filled"), {"text": "#yp", "as": "yp"},
+            {"eval": "document.querySelectorAll('#statuscard .rail .mk.you').length", "as": "mark"},
+            {"eval": "OC.$('statuscard').querySelector('.rail .mk.cap .lab').textContent", "as": "cap"}]
+    margin = tool.look(look + [{"shot": "r1-maker-fill-no-order.png"}])
+    tool.start("buy", "0.01")
+    tool.trade("sell", "62417.0", "0.01")
+    spot = tool.look(look + [{"shot": "r1-spot-maker-fill-no-order.png"}])
+    assert margin == spot == {"yp": "no order", "mark": 0, "cap": "cap (start ask)"}
+
+
+def test_page_an_amount_error_is_linked_to_the_field_and_said_in_a_live_region(tool):
+    # UX-AMOUNT-ERROR-NOT-LINKED, spot and margin
+    field = ("[OC.$('amt').getAttribute('aria-invalid'), OC.$('amt').getAttribute('aria-describedby'), "
+             "OC.$('amterr').getAttribute('aria-live'), OC.$('amterr').textContent]")
+    got = tool.look([{"goto": "/new"}, {"waitFor": "OC.$('ask').textContent === '62,418.50'"},
+                     {"eval": field, "as": "ok"}, {"fill": ["#amt", "abc"]}, {"waitFor": "OC.$('amterr').textContent"},
+                     {"eval": field, "as": "spot"}, {"shot": "r1-amount-error.png"},
+                     {"click": "#what button[data-w=long]"}, {"fill": ["#amt", "1"]},
+                     {"waitFor": "OC.$('amterr').textContent.startsWith('This open needs')"}, {"eval": field, "as": "margin"}])
+    assert got["ok"] == ["false", "amterr amthelp", "polite", ""]
+    assert got["spot"] == ["true", "amterr amthelp", "polite", "Enter an amount in BTC, above 0, with at most 8 decimals."]
+    assert got["margin"][:3] == ["true", "amterr amthelp", "polite"] and "free margin for new orders" in got["margin"][3]

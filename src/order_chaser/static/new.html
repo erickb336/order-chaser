@@ -38,7 +38,8 @@
       </div>
 
       <div class="field" id="amtfield"><label class="f" for="amt" id="amtlabel">Amount</label>
-        <div class="row"><input class="input num" id="amt" value="0.0500" style="max-width:220px" inputmode="decimal" autocomplete="off"><span class="muted" id="unit">BTC</span><span class="spacer"></span><span class="small muted num" id="est"></span></div>
+        <div class="row"><input class="input num" id="amt" value="0.0500" style="max-width:220px" inputmode="decimal" autocomplete="off" aria-describedby="amterr amthelp" aria-invalid="false"><span class="muted" id="unit">BTC</span><span class="spacer"></span><span class="small muted num" id="est"></span></div>
+        <div class="help err" id="amterr" aria-live="polite"></div>
         <div class="help" id="amthelp"></div>
         <div class="mins small" id="mins"></div>
       </div>
@@ -186,7 +187,7 @@ function draw() {
   $('tohelp').textContent = `After this time, the tool sends one ${close ? 'reduce-only ' : ''}IOC limit at the ${buy ? 'cap' : 'floor'} for the rest. If the price is ${buy ? 'above the cap' : 'below the floor'}, the rest does not fill.`;
   const ioc = '<li>After the timeout: cancels, confirms, re-reads the fill, then sends one IOC at the ' + (buy ? 'cap' : 'floor') + ' for the rest.</li><li>Before the IOC: checks the rest against both Kraken minimums. A rest below a minimum stops as "not filled".</li>';
   const replaceLine = `If Kraken refuses an amend, it cancels and places a new order instead.`;
-  $('whatdoes').innerHTML = !margin ? (buy
+  $('whatdoes').innerHTML = close && !pos ? '<li>Nothing to close.</li>' : !margin ? (buy
     ? '<li>Records the ask now as the cap.</li><li>Places a post-only buy at the best bid.</li><li>Moves it up with the best bid, at most every 5 s, never above the cap.</li>' + ioc
     : '<li>Records the bid now as the floor.</li><li>Places a post-only sell at the best ask.</li><li>Moves it down with the best ask, at most every 5 s, never below the floor.</li>' + ioc)
     : open ? `<li>Records the ${buy ? 'ask' : 'bid'} now as the ${buy ? 'cap' : 'floor'}.</li><li>Places a post-only ${buy ? 'buy' : 'sell'} at the best ${buy ? 'bid' : 'ask'}, with leverage ${lev}x.</li><li>Moves it ${buy ? 'up' : 'down'} with the best ${buy ? 'bid' : 'ask'}, at most every 5 s. ${replaceLine}</li><li>After the timeout: one IOC at the ${buy ? 'cap' : 'floor'} for the rest, with the same leverage.</li><li>When the chase ends, the position stays open until you close it.</li>`
@@ -255,8 +256,13 @@ function draw() {
       : !all.length ? '<div class="note info small">You have no open margin positions in the simulated account. To open one, pick Open long or Open short.</div>'
       : all.map(x => {
           const k = x.pair + '|' + x.dir, on = k === posKey, xb = x.pair.split('/')[0], pd = (s && s.pairs[x.pair] || {}).price_decimals || 2, upl = Number(x.upl);
-          return `<label class="${on ? 'on' : ''}" data-k="${OC.esc(k)}"><input type="radio" name="pos" ${on ? 'checked' : ''} aria-label="${OC.esc(x.pair)} ${x.dir}"><div><b>${OC.esc(x.pair)} <span class="badge ${x.dir}">${x.dir === 'long' ? 'Long' : 'Short'}</span> ${OC.qty(x.qty)} ${xb}</b> <span class="muted small">· ${x.leverage}x · opened ${when(x.opened)} at ${OC.px(x.entry, pd)}</span><div class="tiny muted">Rollover so far: ${OC.usd(x.rollover)} USD (estimate)</div></div><div class="r small num ${upl >= 0 ? 'tone-fill' : 'tone-bad'}">${upl >= 0 ? '+' : '−'}${OC.usd(Math.abs(upl))} USD<div class="tiny muted" style="font-family:var(--sans)">profit or loss now, at the mark (estimate)</div></div></label>`;
-        }).join('') + `<div class="tiny muted">Read from the simulated account at ${readAt(account)}. One row for each pair and direction.</div>`;
+          // One row for each pair and direction; each open of it is its own position with its own leverage (as Kraken).
+          const how = x.count > 1 ? `· ${x.count} positions · average ${x.leverage}x · average entry ${OC.px(x.entry, pd)} · oldest opened ${when(x.opened)}`
+            : `· ${x.leverage}x · opened ${when(x.opened)} at ${OC.px(x.entry, pd)}`;
+          const pl = x.upl == null ? `<div class="r small muted">no price yet<div class="tiny" style="font-family:var(--sans)">profit or loss shows when ${OC.esc(x.pair)} prices arrive</div></div>`
+            : `<div class="r small num ${upl >= 0 ? 'tone-fill' : 'tone-bad'}">${upl >= 0 ? '+' : '−'}${OC.usd(Math.abs(upl))} USD<div class="tiny muted" style="font-family:var(--sans)">${s && x.pair === s.watched ? 'profit or loss now, at the mark' : `at the last price seen, ${OC.clock(x.mark_at)}`} (estimate)</div></div>`;
+          return `<label class="${on ? 'on' : ''}" data-k="${OC.esc(k)}"><input type="radio" name="pos" ${on ? 'checked' : ''} aria-label="${OC.esc(x.pair)} ${x.dir}"><div><b>${OC.esc(x.pair)} <span class="badge ${x.dir}">${x.dir === 'long' ? 'Long' : 'Short'}</span> ${OC.qty(x.qty)} ${xb}</b> <span class="muted small">${how}</span><div class="tiny muted">Rollover so far: ${OC.usd(x.rollover)} USD (estimate)</div></div>${pl}</label>`;
+        }).join('') + `<div class="tiny muted">Read from the simulated account at ${readAt(account)}. One row for each pair and direction. A close takes the oldest position first.</div>`;
     if (!pos) block(account ? 'Nothing to close.' : 'Start is possible when the positions arrive.');
   }
   $('amtfield').classList.toggle('hidden', close && !pos);
@@ -268,7 +274,7 @@ function draw() {
   const ref = buy ? ask : bid;
   $('est').textContent = ref && q > 0 ? (open ? `≈ ${OC.usd(q * ref)} ${Q} position cost` : `≈ ${OC.usd(q * ref)} ${Q} at the ${buy ? 'ask' : 'bid'} now`) : `≈ … ${Q}`;
   if (close && pos) $('est').innerHTML = q === Number(pos.qty) ? '<span class="badge ok">Whole position</span>' : `<button class="btn sm" id="whole" type="button">Close all: ${OC.qty(pos.qty)} ${B}</button>`;
-  $('amt').classList.remove('err'); $('amthelp').className = 'help';
+  let amtErr = '';
   $('amthelp').innerHTML = !margin ? 'Dry run: no balance check. A live chase reads your balance from Kraken.'
     : open ? (account ? `Free margin: ${OC.usd(account.free)} ${Q} (simulated account, read at ${readAt(account)}).` : 'Reading the simulated account…')
     : pos ? `<b>Reduce-only.</b> The order can only make this ${pos.dir} smaller. It can never ${buy ? 'open a long' : 'open a short'} or make the position larger. The size starts at the whole position. You can make it smaller.` : '';
@@ -277,7 +283,7 @@ function draw() {
     const aOk = q >= Number(p.ordermin), cOk = ref ? q * ref >= Number(p.costmin) : true;
     $('mins').innerHTML = `<span class="tone-${aOk ? 'fill' : 'bad'}">${aOk ? '✓' : '✗'} ${word} at least ${OC.qty(p.ordermin)} ${B}</span> <span class="tone-${cOk ? 'fill' : 'bad'}">${cOk ? '✓' : '✗'} Value at least ${OC.usd(p.costmin)} ${Q}</span> <span class="tiny muted">Kraken minimums for ${pair} (ordermin, costmin)</span>`;
     const decOk = !raw.includes('.') || raw.split('.')[1].length <= p.qty_decimals;
-    const errAmt = t => { $('amt').classList.add('err'); $('amthelp').className = 'help err'; $('amthelp').textContent = t; block(close ? 'Fix the size to start.' : 'Fix the amount to start.'); };
+    const errAmt = t => { amtErr = t; block(close ? 'Fix the size to start.' : 'Fix the amount to start.'); };
     if (!(q > 0) || !/^\d*\.?\d+$|^\d+\.$/.test(raw) || !decOk) errAmt(`Enter ${close ? 'a size' : 'an amount'} in ${B}, above 0, with at most ${p.qty_decimals} decimals.`);
     else if (!aOk || !cOk) errAmt(`The ${close ? 'size' : 'amount'} is below ${!aOk && !cOk ? 'both Kraken minimums' : 'a Kraken minimum'} for ${pair}. Enter ${OC.qty(Math.max(Number(p.ordermin), ref ? Number(p.costmin) / ref : 0))} ${B} or more.`);
     else if (close && pos && q > Number(pos.qty)) {
@@ -333,7 +339,9 @@ function draw() {
   if (margin && p && account && (open || pos)) {
     const lvlNow = account.level == null ? null : Number(account.level), eq = Number(account.equity), used = Number(account.used);
     const head = `<div class="small" style="margin-bottom:6px"><span class="badge plain">simulated account</span> Equity ${OC.usd(eq)} ${Q} · free margin ${OC.usd(account.free)} ${Q} · read at ${readAt(account)}</div>`;
-    const gaugeHead = `<div class="small" style="margin-top:12px"><b>Account margin level</b> <span class="muted">(equity ÷ used margin). Kraken calls margin at ${p.margin_call}% and liquidates at ${p.margin_stop}% (AssetPairs).</span></div>`;
+    const marks = OC.markNote(account, s && s.watched);
+    const gaugeHead = `<div class="small" style="margin-top:12px"><b>Account margin level</b> <span class="muted">(equity ÷ used margin). Kraken calls margin at ${p.margin_call}% and liquidates at ${p.margin_stop}% (AssetPairs).</span></div>` +
+      (marks ? `<p class="tiny muted" id="marknote" style="margin:2px 0 0">${marks}</p>` : '');
     if (open && amtOk && L) {
       const cost = q * L, collat = cost / lev, freeOrders = Number(account.free_orders), lack = collat > freeOrders;
       const after = (eq - cost * FEE_HI) / (used + collat) * 100;
@@ -348,8 +356,7 @@ function draw() {
         ${gaugeHead}${OC.gauge(lvlNow, after, p.margin_call, p.margin_stop)}
         <p class="small" style="margin:14px 0 0" id="lvlline">${after <= p.margin_stop ? `<b class="tone-bad">After this open: ${level(after)}, at or below the ${p.margin_stop}% liquidation mark.</b>` : `Now ${level(lvlNow)}. After this open: <b>${level(after)}</b>.`} The tool does not stop an open for its margin level. It shows the level so that you decide.</p>`;
       if (lack) {
-        $('amt').classList.add('err'); $('amthelp').className = 'help err';
-        $('amthelp').textContent = `This open needs ${OC.usd(collat)} ${Q} of collateral. Your free margin for new orders is ${OC.usd(freeOrders)} ${Q}. Kraken refuses an open without enough margin. Make the amount smaller.`;
+        amtErr = `This open needs ${OC.usd(collat)} ${Q} of collateral. Your free margin for new orders is ${OC.usd(freeOrders)} ${Q}. Kraken refuses an open without enough margin. Make the amount smaller.`;
         block('Fix the amount to start.');
       }
     } else if (open) {
@@ -361,8 +368,13 @@ function draw() {
         `<p class="small" style="margin:14px 0 0" id="lvlline">Now ${level(lvlNow)}. After the close: <b>${after == null ? 'no open position' : level(after)}</b>. A close has no opening fee. Rollover stops for the part that closes.</p>`;
     }
   }
+  // The amount error: on the field (aria-invalid, aria-describedby) and in a live region, written only when it changes.
+  $('amt').classList.toggle('err', !!amtErr);
+  $('amt').setAttribute('aria-invalid', String(!!amtErr));
+  if ($('amterr').textContent !== amtErr) $('amterr').textContent = amtErr;
   // worst case
-  if (ref && amtOk && ok) {
+  if (close && !pos) $('worst').textContent = 'Nothing to close.';
+  else if (ref && amtOk && ok) {
     if (open) {
       const cost = q * L, tf = cost * 0.008, of = cost * FEE_HI;
       $('worst').innerHTML = (buy

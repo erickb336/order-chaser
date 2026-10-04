@@ -46,6 +46,14 @@ function gauge(now, after, call, stop, afterWord) {
   </div>`;
 }
 
+// The prices behind the account margin level. The tool watches one pair: another pair uses the last price seen
+// of it, and after a restart a pair has no price until the tool watches it again. '' when every price is live.
+function markNote(a, watched) {
+  const rows = a ? a.positions.filter(p => p.pair !== watched) : [];
+  return rows.length ? 'The level uses ' + rows.map(p => p.mark == null ? `no price yet for ${esc(p.pair)} (its profit or loss counts as 0)`
+    : `${esc(p.pair)} at the last price seen, ${clock(p.mark_at)}`).join('; ') + '.' : '';
+}
+
 // After a margin chase: is a position of this chase still open, and the link to close it.
 const positionOpen = c => !['liquidated', 'nopos'].includes(c.outcome) &&
   (c.margin.close ? Number(c.margin.pos_qty) - Number(c.filled) > 0 : Number(c.filled) > 0);
@@ -425,5 +433,5 @@ function eventLog(c) {
   return `<ul class="log">${c.events.slice().reverse().map(e => `<li><span class="ts">${mmss(e.t)}</span><span class="${kind[e.kind] || ''}">${esc(e.text)}</span></li>`).join('')}</ul>`;
 }
 
-return { positionOpen, closeLink, closeText, gauge, orderName, positionLine, MARGIN_FEES, REPLACE_COST, TOKEN, $, esc, beyond, pct, fillWord, againText, restBelowMin, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
+return { markNote, clock, positionOpen, closeLink, closeText, gauge, orderName, positionLine, MARGIN_FEES, REPLACE_COST, TOKEN, $, esc, beyond, pct, fillWord, againText, restBelowMin, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
 })();
