@@ -5,7 +5,7 @@
 <link rel="stylesheet" href="/static/style.css"></head>
 <body>
 <main class="app">
-  <div class="note info small" style="margin-bottom:16px">DRY RUN RESULT: simulated. No order went to Kraken. A real chase can fill less: a simulated order fills only when a public trade prints through your price.</div>
+  <div class="note info small" style="margin-bottom:16px">DRY RUN RESULT: simulated. No order went to Kraken. A real chase can fill less: a simulated order fills only when a public trade prints through your price, or when the other side of the public book comes to your price.</div>
   <div id="out"><div class="card"><span class="skel">Loading the result…</span></div></div>
 </main>
 <script src="/static/app.js"></script>
@@ -31,9 +31,11 @@ function render(c) {
       break;
     case 'notfilled':
       badge = ['bad', filled ? 'Part filled' : 'Not filled'];
-      line = (OC.beyond(c) ? `The price ${w.buy ? 'rose above your cap' : 'fell below your floor'} before the rest could fill.` : `The book had too little at the ${w.limitWord} for the rest.`) +
-        ` The IOC at the ${w.limitWord} filled ${c.fills.some(f => f.order === 'ioc') ? 'only part of the rest' : 'nothing'}.`;
-      restText = `Not filled (simulated): ${OC.qty(rest)} ${B}.` + (end ? ` The ${w.other} at the end was ${P(end)}, which is ${P(Math.abs(Number(end) - Number(c.limit)))} ${Number(end) > Number(c.limit) ? 'above' : 'below'} your ${w.limitWord}.` : '') + ' A dry run sends no orders to Kraken.';
+      line = end == null ? `The ${OC.mmss(c.timeout)} timeout passed while the public Kraken price feed was lost. With no valid price, the tool sent no IOC.`
+        : (OC.beyond(c) ? `The price ${w.buy ? 'rose above your cap' : 'fell below your floor'} before the rest could fill.` : `The book had too little at the ${w.limitWord} for the rest.`) +
+          ` The IOC at the ${w.limitWord} filled ${c.fills.some(f => f.order === 'ioc') ? 'only part of the rest' : 'nothing'}.`;
+      restText = `Not filled (simulated): ${OC.qty(rest)} ${B}.` + (end == null ? '' : Number(end) === Number(c.limit) ? ` The ${w.other} at the end was ${P(end)}, at your ${w.limitWord}.`
+        : ` The ${w.other} at the end was ${P(end)}, which is ${P(Math.abs(Number(end) - Number(c.limit)))} ${Number(end) > Number(c.limit) ? 'above' : 'below'} your ${w.limitWord}.`) + ' A dry run sends no orders to Kraken.';
       break;
     case 'belowmin':
       badge = ['bad', 'Part filled'];
@@ -53,6 +55,12 @@ function render(c) {
       todo = ['To test again, start a new dry run.'];
       break;
     }
+    case 'cancelfail':
+      badge = ['bad', 'Cancel failed'];
+      line = 'The simulated exchange rejected the cancel 3 times and still showed the order as open. The tool stopped the chase and sent no IOC.';
+      restText = `Not filled (simulated): ${OC.qty(rest)} ${B}, because the cancel did not go through. A dry run sends no orders to Kraken.`;
+      todo = ['Check Kraken Pro for an open order and cancel it there.', 'This was a dry run: the order was simulated, so Kraken Pro shows no order of this chase.'];
+      break;
     case 'refused':
       badge = ['bad', 'Not filled'];
       line = 'The simulated exchange rejected the order. Nothing filled.';
@@ -77,9 +85,9 @@ function render(c) {
       <div class="row small"><b>Maker ${pctM}%</b><span class="muted">Taker ${filled ? 100 - pctM : 0}%</span>${filled < total ? '<span class="muted">· Not filled ' + Math.round(100 - filledPct) + '%</span>' : ''}<span class="spacer"></span><span class="tiny muted">share of ${OC.qty(c.qty)} ${B}</span></div>
       <div class="bar" style="margin-top:6px;height:14px"><i class="m" style="width:${makerShare * filledPct}%"></i><i class="tk" style="width:${(1 - makerShare) * filledPct}%"></i><i class="nf" style="width:${100 - filledPct}%"></i></div>
     </div>
-    ${restText ? `<div class="note ${['notfilled', 'ended', 'belowmin'].includes(c.outcome) ? 'bad' : 'warn'}" style="margin-top:16px"><b>${restText}</b>${c.outcome === 'notfilled' ? ` To ${w.buy ? 'buy' : 'sell'} the rest, start a new chase. It records a new ${w.limitWord}.` : ''}</div>` : ''}
+    ${restText ? `<div class="note ${['notfilled', 'ended', 'belowmin', 'cancelfail'].includes(c.outcome) ? 'bad' : 'warn'}" style="margin-top:16px"><b>${restText}</b>${c.outcome === 'notfilled' ? ` To ${w.buy ? 'buy' : 'sell'} the rest, start a new chase. It records a new ${w.limitWord}.` : ''}</div>` : ''}
     ${todo ? `<div class="note info small" style="margin-top:12px"><b>What to do now</b><ul style="margin:4px 0 0;padding-left:18px">${todo.map(x => `<li>${x}</li>`).join('')}</ul></div>` : ''}
-    <div class="row" style="margin-top:18px">${rest > 0 && !['refused', 'belowmin'].includes(c.outcome) ? `<a class="btn primary" href="/new?rest=${encodeURIComponent(c.id)}">Chase the rest (${OC.qty(rest)} ${B})</a>` : '<a class="btn primary" href="/new">New chase</a>'}<a class="btn" href="/history">History</a></div>
+    <div class="row" style="margin-top:18px">${rest > 0 && !['refused', 'belowmin', 'cancelfail'].includes(c.outcome) ? `<a class="btn primary" href="/new?rest=${encodeURIComponent(c.id)}">Chase the rest (${OC.qty(rest)} ${B})</a>` : '<a class="btn primary" href="/new">New chase</a>'}<a class="btn" href="/history">History</a></div>
   </div>
   <div class="grid2" style="margin-top:16px">
     <div class="card"><h2>Fills (simulated)</h2>

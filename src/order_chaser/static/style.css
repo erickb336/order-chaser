@@ -4,12 +4,12 @@
   --surface: #ffffff;
   --ink: #1a1c20;
   --muted: #62666e;
-  --faint: #8d9098;
+  --faint: #686b73;
   --line: #e2e0da;
   --line-strong: #cfccc4;
   --you: #2350c8;
   --you-bg: #e8eefc;
-  --fill: #17804f;
+  --fill: #147346;
   --fill-bg: #e3f3ea;
   --warn: #9a5b00;
   --warn-bg: #fdf1dc;
@@ -41,6 +41,7 @@ p { margin: 0 0 .7em; }
 .row { display: flex; gap: 12px; align-items: center; }
 .spacer { flex: 1; }
 .hidden { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 /* Prototype strip: belongs to the prototype, not to the product. */
 .proto { background: #22252b; color: #d9dbe0; font-size: 13px; }
@@ -92,7 +93,7 @@ p { margin: 0 0 .7em; }
 .note b { font-weight: 650; }
 
 /* Forms */
-label.f { display: block; font-size: 13px; font-weight: 600; margin: 0 0 6px; }
+.f { display: block; font-size: 13px; font-weight: 600; margin: 0 0 6px; }
 .input { font: inherit; width: 100%; padding: 9px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; }
 .input.num { font-family: var(--mono); }
 .input.err { border-color: var(--bad); box-shadow: 0 0 0 3px var(--bad-bg); }
@@ -101,12 +102,12 @@ label.f { display: block; font-size: 13px; font-weight: 600; margin: 0 0 6px; }
 .help.err { color: var(--bad); font-weight: 600; }
 .seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 9px; padding: 3px; background: #f7f6f2; gap: 3px; }
 .seg button { font: inherit; font-size: 14px; border: 0; background: transparent; padding: 7px 16px; border-radius: 6px; cursor: pointer; color: var(--muted); }
-.seg button.on { background: #fff; color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+.seg button[aria-pressed="true"] { background: #fff; color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
 .seg.lg button { padding: 10px 22px; font-size: 15px; }
-.seg button.on.buy { color: var(--bid); }
-.seg button.on.sell { color: var(--ask); }
-.seg button.on.dry { background: var(--dry); color: #fff; }
-.seg button.on.live { background: var(--live); color: #fff; }
+.seg button[aria-pressed="true"].buy { color: var(--bid); }
+.seg button[aria-pressed="true"].sell { color: var(--ask); }
+.seg button[aria-pressed="true"].dry { background: var(--dry); color: #fff; }
+.seg button[aria-pressed="true"].live { background: var(--live); color: #fff; }
 .btn { font: inherit; font-weight: 600; border-radius: 8px; padding: 10px 18px; border: 1px solid var(--line-strong); background: #fff; color: var(--ink); cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 8px; }
 .btn.primary { background: var(--ink); border-color: var(--ink); color: #fff; }
 .btn.drybtn { background: var(--dry); border-color: var(--dry); color: #fff; }

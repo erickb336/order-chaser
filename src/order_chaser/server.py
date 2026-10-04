@@ -362,7 +362,7 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
             rows.append({"id": c.id, "started": c.started, "pair": c.pair.symbol, "side": c.side, "qty": str(c.qty),
                          "filled": str(c.filled), "avg": str(s["avg"]), "saving": str(s["saving"]), "mode": mode,
                          "outcome": c.outcome, "maker_qty": str(s["maker_qty"]), "base": c.pair.base,
-                         "price_decimals": c.pair.price_decimals,
+                         "price_decimals": c.pair.price_decimals, "exit": c.exit, "nofeed": c.end_ask is None,
                          "beyond": c.end_ask is not None and (c.end_ask > c.limit if c.buy else c.end_ask < c.limit)})
         return JSONResponse(rows)
 

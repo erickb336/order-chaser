@@ -12,6 +12,8 @@ const usd = v => Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, m
 const qty = v => { const s = Number(v).toFixed(8).replace(/0+$/, ''); const [w, f] = s.split('.'); return w + '.' + (f || '').padEnd(4, '0'); };
 const mmss = s => { s = Math.max(0, Math.floor(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
 const timeoutWords = s => s % 60 === 0 ? (s / 60) + ' min' : s + ' s';
+// Whole percent, rounded down, without the float error of 0.018 / 0.05 * 100 = 35.999…
+const pct = (a, b) => Math.floor(Number(a) / Number(b) * 100 + 1e-9);
 
 // ---------- Server calls ----------
 async function post(url, body) {
@@ -36,8 +38,8 @@ function chrome(page) {
   top.className = 'top';
   const on = p => p.includes(page) ? 'on' : '';
   top.innerHTML = '<div class="brand"><span class="dot"></span>Order chaser</div>' +
-    `<nav class="nav"><a href="/chase" class="${on(['new', 'chase'])}">Chase</a><a href="/history" class="${on(['history', 'result'])}">History</a><a href="/setup" class="${on(['setup'])}">Setup</a></nav>` +
-    '<span class="spacer"></span><span class="badge dry">DRY RUN: no real orders</span><span class="conn" id="conn"><i></i><span>Kraken feed: connecting…</span></span><span class="badge plain mono">localhost:5180</span>';
+    `<nav class="nav"><a href="/" class="${on(['new', 'chase'])}">Chase</a><a href="/history" class="${on(['history', 'result'])}">History</a><a href="/setup" class="${on(['setup'])}">Setup</a></nav>` +
+    '<span class="spacer"></span><span class="badge dry">DRY RUN: no real orders</span><span class="conn" id="conn" role="status"><i></i><span>Kraken feed: connecting…</span></span><span class="badge plain mono">localhost:5180</span>';
   app.prepend(top);
   const strip = document.createElement('div');
   strip.className = 'drystrip';
@@ -55,7 +57,7 @@ function conn(snap) {
   else if (!snap.feed.up) { cls += ' bad'; text = 'Kraken feed: lost, reconnecting'; }
   else if (!snap.feed.ok) { cls += ' warn'; text = 'Kraken feed: reading the book'; }
   el.className = cls;
-  el.lastChild.textContent = text;
+  if (el.lastChild.textContent !== text) el.lastChild.textContent = text;
 }
 
 // ---------- The live chase: which design state, and its copy ----------
@@ -74,13 +76,13 @@ const LABEL = {
   placing: 'Placing', resting: 'Resting', amending: 'Amending', partial: 'Partial fill', filled: 'Filled', fallback: 'Timeout fallback',
   notfilled: 'Rest not filled (above cap)', belowmin: 'Rest below the minimum', rejected: 'Amend rejected', disconnected: 'Disconnected',
   ratenear: 'Rate limit near', ended: 'Ended: tool stopped or restarted', stopped: 'Stopped by you', stopping: 'Stopping', refused: 'Order rejected',
-  pageoffline: 'Page lost the tool',
+  pageoffline: 'Page lost the tool', cancelfail: 'Cancel failed',
 };
 const TONE = {
   placing: 'you', resting: 'you', amending: 'you', partial: 'fill', filled: 'fill', fallback: 'warn', notfilled: 'bad', belowmin: 'bad',
-  rejected: 'warn', disconnected: 'bad', ratenear: 'warn', ended: 'bad', stopped: 'muted', stopping: 'muted', refused: 'bad', pageoffline: 'bad',
+  rejected: 'warn', disconnected: 'bad', ratenear: 'warn', ended: 'bad', stopped: 'muted', stopping: 'muted', refused: 'bad', pageoffline: 'bad', cancelfail: 'bad',
 };
-const DONE = ['filled', 'notfilled', 'belowmin', 'stopped', 'ended', 'refused'];
+const DONE = ['filled', 'notfilled', 'belowmin', 'stopped', 'ended', 'refused', 'cancelfail'];
 const SIM = ' (Simulated. No order goes to Kraken.)';
 
 function words(c) {
@@ -114,8 +116,7 @@ function copy(st, c, snap, ageOff) {
       t.sub = `Another ${w.buy ? 'buyer raised the best bid' : 'seller lowered the best ask'} to ${p(c.pending)}. The tool amends your order to that price. The order keeps the same id and its fill history.` + SIM;
       break;
     case 'partial': {
-      const pct = Math.floor(filled / Number(c.qty) * 100);
-      t.title = `Partly filled: ${pct}%`;
+      t.title = `Partly filled: ${pct(filled, c.qty)}%`;
       const where = c.price === bestNow ? `the ${w.best}, ${p(c.price)}` : p(c.price);
       t.sub = `${qty(filled)} ${B} filled at ${p(s.avg)} as maker. The rest, ${qty(rest)} ${B}, rests at ${where}.` + SIM;
       break;
@@ -130,8 +131,15 @@ function copy(st, c, snap, ageOff) {
     }
     case 'fallback': {
       const now = c.phase;
-      const chaseFilled = Math.max(Number(c.order_cum), c.fills.filter(f => f.order === 'chase').reduce((x, f) => x + Number(f.qty), 0));
+      const chaseFilled = c.fills.filter(f => f.order === 'chase').reduce((x, f) => x + Number(f.qty), 0);
       const mark = (i) => { const order = ['cancelling', 'reread', 'ioc']; const at = order.indexOf(now) + 1; return i < at ? 'done' : i === at ? 'now' : 'todo'; };
+      if (!c.feed_ok) {
+        t.title = 'Time is up: the price feed is lost';
+        t.sub = `The ${timeout} timeout passed while the public Kraken price feed was lost. With no valid price, the tool sends no IOC. It cancels the order, and the rest counts as not filled.`;
+        t.steps = [['done', 'Cancel the resting order.'], [mark(1), 'Wait for the simulated exchange to confirm the cancel.'],
+          [mark(2), 'Read the filled quantity again.'], ['todo', 'No IOC: there is no valid price.']];
+        break;
+      }
       t.title = c.exit === 'fillnow' ? 'Filling the rest now' : 'Time is up: filling the rest';
       t.sub = (c.exit === 'fillnow' ? 'You pressed "Fill the rest now".' : `The ${timeout} timeout passed.`) +
         ` The tool now fills the rest with one IOC limit at the ${w.limitWord}. IOC means "fill now what you can, cancel the rest". It does these steps in this order:`;
@@ -150,10 +158,16 @@ function copy(st, c, snap, ageOff) {
       const iocGot = c.fills.filter(f => f.order === 'ioc').reduce((a, f) => a + Number(f.qty), 0);
       const diff = end == null ? null : Math.abs(Number(end) - Number(c.limit));
       t.title = 'Stopped: the rest did not fill';
-      t.sub = (end != null && (w.buy ? Number(end) > Number(c.limit) : Number(end) < Number(c.limit))
+      const done = `You ${w.bought} ${qty(filled)} of ${qty(c.qty)} ${B}. No order of yours rests in the simulation.`;
+      if (end == null) {   // the chase ended with no valid price: the feed was lost
+        t.sub = `The ${timeout} timeout passed while the public Kraken price feed was lost. With no valid price, the tool sent no IOC. It cancelled the order. ` + done;
+        break;
+      }
+      const at = diff === 0 ? `at the ${w.limitWord}` : `${p(diff)} ${w.buy ? 'below' : 'above'} the ${w.limitWord} of ${p(c.limit)}`;
+      t.sub = (beyond(c)
         ? `The price ${w.buy ? 'rose above your cap' : 'fell below your floor'}. The ${w.other} is now ${p(end)}, which is ${p(diff)} ${w.above} the ${w.limitWord} of ${p(c.limit)}. `
-        : `The ${w.other} is now ${p(end)}, at the ${w.limitWord}, but the book had too little at or ${w.buy ? 'below the cap' : 'above the floor'}. `) +
-        `The IOC filled ${iocGot ? qty(iocGot) + ' ' + B : 'nothing'}. You ${w.bought} ${qty(filled)} of ${qty(c.qty)} ${B}. No order of yours rests in the simulation.`;
+        : `The ${w.other} is now ${p(end)}, ${at}, but the book had too little at or ${w.buy ? 'below the cap' : 'above the floor'} for the rest. `) +
+        `The IOC filled ${iocGot ? qty(iocGot) + ' ' + B : 'nothing'}. ` + done;
       break;
     }
     case 'belowmin':
@@ -208,6 +222,11 @@ function copy(st, c, snap, ageOff) {
       t.sub = (last ? last.text + ' ' : '') + 'Nothing filled. No order of yours rests in the simulation.';
       break;
     }
+    case 'cancelfail':
+      t.title = 'Stopped: the cancel did not go through';
+      t.sub = `The simulated exchange rejected the cancel 3 times and still showed the order as open. The tool stopped the chase and sent no IOC. You ${w.bought} ${qty(filled)} of ${qty(c.qty)} ${B}.`;
+      t.todo = ['Check Kraken Pro for an open order and cancel it there.', 'This was a dry run: the order was simulated, so Kraken Pro shows no order of this chase.'];
+      break;
     case 'pageoffline':
       t.title = 'This page lost the tool';
       t.sub = `This page cannot reach the tool at localhost:5180. The values below are from ${Math.round(ageOff)} s ago. If the tool still runs, the chase continues without this page. Restart the tool with "uv run order-chaser" if it stopped.`;
@@ -266,7 +285,7 @@ function card(st, c, snap, ageOff) {
   const bid = st === 'pageoffline' ? c.bid : (snap && snap.feed.ok ? snap.feed.bid : c.bid);
   const ask = st === 'pageoffline' ? c.ask : (snap && snap.feed.ok ? snap.feed.ask : c.ask);
   return `<div class="status" id="statuscard" data-state="${st}" style="${stale ? 'opacity:.92' : ''}">
-    <div class="state tone-${tone} ${done ? '' : 'pulse'}"><i></i>${st === 'notfilled' && !beyond(c) ? 'Rest not filled' : LABEL[st]}</div>
+    <div class="state tone-${tone} ${done ? '' : 'pulse'}"><i></i>${st === 'notfilled' ? (!beyond(c) ? 'Rest not filled' : c.side === 'buy' ? 'Rest not filled (above cap)' : 'Rest not filled (below floor)') : LABEL[st]}</div>
     <div class="head">${t.title}</div>
     <div class="sub">${t.sub}</div>${steps}
     ${t.todo ? `<div class="note info small" style="margin-top:12px"><b>What to do now</b><ul style="margin:4px 0 0;padding-left:18px">${t.todo.map(x => `<li>${x}</li>`).join('')}</ul></div>` : ''}
@@ -285,5 +304,5 @@ function eventLog(c) {
   return `<ul class="log">${c.events.slice().reverse().map(e => `<li><span class="ts">${mmss(e.t)}</span><span class="${kind[e.kind] || ''}">${esc(e.text)}</span></li>`).join('')}</ul>`;
 }
 
-return { TOKEN, $, esc, beyond, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
+return { TOKEN, $, esc, beyond, pct, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
 })();

@@ -90,7 +90,7 @@ class Chase:
     cancel_wait: bool = False         # a cancel was rejected and the order is open: retry when the rate allows
     outcome: str | None = None        # filled, notfilled, belowmin, stopped, ended, refused, cancelfail
     ended_at: float | None = None
-    end_ask: Decimal | None = None    # the ask (buy) or bid (sell) when the chase ended
+    end_ask: Decimal | None = None    # the ask (buy) or bid (sell) when the chase ended; None without a valid price
     off_from: float | None = None     # last event before the tool stopped (outcome "ended")
 
     @property
@@ -589,7 +589,7 @@ def _restarted(c: Chase, ev: Restarted, t: float) -> tuple[Chase, list]:
 
 
 def _end(c: Chase, now: float, outcome: str) -> tuple[Chase, list]:
-    end_px = c.ask if c.buy else c.bid
+    end_px = (c.ask if c.buy else c.bid) if c.feed_ok else None   # no valid price while the feed is lost
     return replace(c, phase="done", outcome=outcome, ended_at=now, pending=None, end_ask=end_px), []
 
 

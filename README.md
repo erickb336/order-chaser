@@ -18,7 +18,7 @@ Options:
 
 | Option | What it does |
 | --- | --- |
-| `--data-dir PATH` | Folder for the SQLite file. Default: `~/Library/Application Support/order-chaser`. The variable `ORDER_CHASER_DATA` does the same. |
+| `--data-dir PATH` | Folder for the SQLite file. Default: `~/Library/Application Support/order-chaser`. The variable `ORDER_CHASER_DATA` does the same. The tool makes a missing folder with mode 0700. It never changes an existing folder, and warns if others can read it. |
 | `--rate-start N` | Demo only: the estimated rate counter at start, to show the "rate limit near" state (for example 60). |
 
 ## Run the tests
@@ -44,6 +44,9 @@ The tests need no network. A recorded sample of the public Kraken feed (`tests/f
 Dry-run rules:
 
 - A simulated buy at price P fills only when a public sell trade prints below P. The fill is the smaller of the rest and the trade quantity. A sell is the mirror.
+- A resting simulated buy at P also fills, as maker at P, when the public ask comes to or below P, up to the size at those levels. A price level fills the order at most up to the largest size seen there. A sell is the mirror.
+- If a cancel is rejected and the order is still open, the tool tries again (3 tries in total, within the rate counter). Then it ends the chase and tells you to check Kraken Pro.
+- If the timeout comes while the price feed is lost, the tool cancels and sends no IOC: there is no valid price.
 - A post-only place or amend at or above the best ask is rejected (sell: at or below the best bid).
 - The IOC fills against the public book up to the cap.
 - Fees: 0.40% maker and 0.80% taker, the highest Kraken rates.
@@ -52,5 +55,6 @@ Dry-run rules:
 Safety:
 
 - The server refuses a request whose Host is not `127.0.0.1:5180` or `localhost:5180`.
+- No page shows inside a frame of another site (`X-Frame-Options: DENY`, CSP `frame-ancestors 'none'`).
 - A request that changes state needs the tool's own Origin and a session token. Only the pages that the server sends get the token.
 - If the tool stops during a chase, the chase ends at the next start. The tool does not continue it.

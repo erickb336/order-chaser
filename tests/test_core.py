@@ -425,6 +425,19 @@ def test_sim_fills_a_resting_order_as_maker_when_the_book_crosses_it():
     assert gw.send(Query("oc-1"), T0 + 3) == [OrderState(T0 + 3, False, D("0.05"), D("100.1"))]
 
 
+def test_sim_does_not_refill_from_a_level_that_flickers_out_and_back():
+    # Seen in a live dry run: an ask that leaves and comes back at our price filled the same size again and again.
+    gw = SimGateway()
+    gw.on_book([(D("100.0"), D("1"))], [(D("100.2"), D("1"))], T0)
+    gw.send(Place("oc-1", "buy", D("100.1"), D("1")), T0)
+    at_our_price = [(D("100.1"), D("0.3")), (D("100.2"), D("5"))]
+    away = [(D("100.2"), D("5"))]
+    assert gw.on_book([(D("100.0"), D("1"))], at_our_price, T0 + 1) == [
+        Filled(T0 + 1, D("0.3"), D("100.1"), True, "chase", D("0.3"))]
+    assert gw.on_book([(D("100.0"), D("1"))], away, T0 + 2) == []
+    assert gw.on_book([(D("100.0"), D("1"))], at_our_price, T0 + 3) == []
+
+
 def test_sim_fills_a_resting_sell_when_the_bid_rises_through_it():
     gw = SimGateway()
     gw.on_book([(D("99.8"), D("1"))], [(D("100.0"), D("1"))], T0)
@@ -492,7 +505,7 @@ def test_the_timeout_runs_while_the_feed_is_lost_and_ends_with_no_ioc():
     c, cmds = run(c, Canceled(T0 + 30))
     c, texts = logs(c, OrderState(T0 + 30, False, D(0), D("62417.9")))
     assert [x for x in cmds if isinstance(x, Ioc)] == []
-    assert (c.phase, c.outcome) == ("done", "notfilled")
+    assert (c.phase, c.outcome, c.end_ask) == ("done", "notfilled", None)
     assert texts[-1] == "No IOC: the price feed is lost, so there is no valid price. The rest counts as not filled."
 
 

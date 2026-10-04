@@ -8,8 +8,9 @@ Rules:
   (sell: a buy trade above P). Fill qty = min(remainder, trade qty), as maker, at P.
 - A resting buy at P also fills when the public ask comes to or below P (sell: the
   bid to or above P), as maker, at P, up to the size at those levels. Kraken fills a
-  resting order in the same way. Each public level fills the order once: only new
-  size at a level fills again.
+  resting order in the same way. A price level fills the order at most up to the
+  largest size seen there: a quote that leaves and comes back does not fill again
+  (on Kraken most such quotes are post-only and would be rejected, not filled).
 - A post-only place or amend is rejected when the price is at or above the
   best ask (sell: at or below the best bid).
 - The IOC fills against the book, level by level, up to its limit, as taker.
@@ -26,7 +27,7 @@ class SimGateway:
         self.order: dict | None = None    # {id, side, price, qty, cum, open}
         self.bids: list[tuple[Decimal, Decimal]] = []   # best first
         self.asks: list[tuple[Decimal, Decimal]] = []
-        self.taken: dict[Decimal, Decimal] = {}         # crossing level -> qty our order took from it
+        self.taken: dict[Decimal, Decimal] = {}         # price level -> qty our order took from it
 
     def on_book(self, bids, asks, now: float) -> list:
         self.bids, self.asks = list(bids), list(asks)
@@ -35,8 +36,6 @@ class SimGateway:
             return []
         buy = o["side"] == "buy"
         crossing = [(p, q) for p, q in (self.asks if buy else self.bids) if (p <= o["price"] if buy else p >= o["price"])]
-        # A level that left the book comes back as new size.
-        self.taken = {p: t for p, t in self.taken.items() if any(p == lp for lp, _ in crossing)}
         left = o["qty"] - o["cum"]
         take_total = Decimal(0)
         for p, q in crossing:
