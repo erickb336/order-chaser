@@ -41,6 +41,7 @@
   </div>
 </main>
 <script src="assets/proto.js"></script>
+<script src="assets/margin.js"></script>
 <script>
 OC.chrome('setup', { top: true });
 const $ = id => document.getElementById(id);
@@ -85,7 +86,8 @@ function perms(mode) {
     : '<span class="badge ok">No end date</span><div class="tiny muted" style="margin-top:4px">From validUntil.</div>';
   const facts = ck ? '<div><span class="badge plain skel">IP lock: reading</span></div><div><span class="badge plain skel">Valid until: reading</span></div><div><span class="badge plain skel">reading</span></div>'
     : `<div>${ip}</div><div>${vu}</div><div><span class="badge plain">Read at 09:41</span><div class="tiny muted" style="margin-top:4px">Today (sample).</div></div>`;
-  return `<p class="tiny muted" style="margin:10px 0 0">${ck ? 'Reading' : 'Read'} from Kraken with <span class="mono">GetApiKeyInfo</span>. This call needs no permission, so the tool sees each setting of the key.</p>
+  return `<p class="small" style="margin:10px 0 0" id="mgline"><span class="badge mg">margin</span> Margin uses the same key and needs no new permission. Create & Modify Orders opens and closes positions, and Query Open Orders & Trades reads them.</p>
+  <p class="tiny muted" style="margin:10px 0 0">${ck ? 'Reading' : 'Read'} from Kraken with <span class="mono">GetApiKeyInfo</span>. This call needs no permission, so the tool sees each setting of the key.</p>
     <div class="keyfacts">${facts}</div>` + grp('need', 'Required (5)') + grp('opt', 'Optional (1)') + grp('off', 'Must be off (3)');
 }
 function draw() {

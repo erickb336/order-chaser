@@ -19,6 +19,24 @@
       <button data-id="busy">Another chase runs</button>
       <button data-id="rest">Chase the rest</button>
     </div>
+    <div class="opts" id="mopts" style="margin-top:8px"><span class="lbl" style="align-self:center">Margin <span class="newbadge">NEW</span></span>
+      <button data-id="m-long">Open long</button>
+      <button data-id="m-short">Open short</button>
+      <button data-id="m-levlimit">Pair allows 3x at most</button>
+      <button data-id="m-noshort">Pair allows no short</button>
+      <button data-id="m-nomargin">Not enough margin</button>
+      <button data-id="m-pairro">Pair is reduce-only</button>
+      <button data-id="m-confirm">Live: confirm open</button>
+      <button data-id="m-close">Close a position</button>
+      <button data-id="m-close-loading">Positions loading</button>
+      <button data-id="m-close-empty">No positions</button>
+      <button data-id="m-close-fail">Positions failed</button>
+      <button data-id="m-close-correction">Size above position</button>
+      <button data-id="m-close-remainder">Rest below minimum</button>
+    </div>
+    <div class="opts" id="lopts" style="margin-top:8px"><span class="lbl" style="align-self:center">Chooser layout (compare)</span>
+      <button data-l="A">A: one row, grouped</button><button data-l="B">B: spot or margin, then side</button><button data-l="C">C: five tiles</button>
+    </div>
   </div>
 
   <div class="split">
@@ -28,6 +46,11 @@
       <div id="busy" class="note warn hidden" style="margin-bottom:16px"><b>A chase runs now:</b> buy 0.0500 BTC/USD, 36% filled. You can start a new chase when it ends. <a href="chase.html#partial">Open it</a></div>
       <div id="restnote" class="note info hidden" style="margin-bottom:16px">You chase the rest of your last order: 0.0320 BTC. The cap is the ask at the new start, not the old cap.</div>
 
+      <div class="field"><label class="f">What to do</label>
+        <div id="whatpick"></div>
+        <div class="help" id="whathelp"></div>
+      </div>
+
       <div class="field"><label class="f">Mode</label>
         <div class="seg lg" id="mode"><button data-m="dry" class="dry">Dry run</button><button data-m="live" class="live">Live</button></div>
         <div class="help" id="modehelp"></div>
@@ -35,19 +58,26 @@
 
       <div class="grid2">
         <div class="field"><label class="f" for="pair">Pair</label>
-          <select class="input" id="pair"><option>BTC/USD</option><option>ETH/USD</option><option>SOL/USD</option></select></div>
-        <div class="field"><label class="f">Side</label>
-          <div class="seg" id="side"><button data-s="buy" class="buy">Buy</button><button data-s="sell" class="sell">Sell</button></div>
-          <div class="help" id="sidehelp"></div></div>
+          <select class="input" id="pair"><option>BTC/USD</option><option>ETH/USD</option><option>SOL/USD</option><option>XRP/USD</option></select></div>
+        <div class="field" id="levfield"><label class="f">Leverage</label>
+          <div class="seg lev" id="lev"><button data-v="2">2x</button><button data-v="3">3x</button><button data-v="4">4x</button><button data-v="5">5x</button></div>
+          <div class="help" id="levhelp"></div></div>
+        <div id="side" class="hidden"></div><div id="sidehelp" class="hidden"></div>
       </div>
 
-      <div class="field"><label class="f" for="amt">Amount</label>
+      <div class="field hidden" id="posfield"><label class="f">Position to close</label>
+        <div class="poslist" id="poslist"></div>
+      </div>
+
+      <div class="field" id="amtfield"><label class="f" for="amt" id="amtlabel">Amount</label>
         <div class="row"><input class="input num" id="amt" value="0.0500" style="max-width:220px"><span class="muted">BTC</span><span class="spacer"></span><span class="small muted num" id="est">≈ 3,120.93 USD at the ask now</span></div>
         <div class="help" id="amthelp"></div>
         <div class="mins small" id="mins"></div>
       </div>
 
-      <div class="field"><label class="f"><span id="capword">Cap</span></label>
+      <div class="field hidden" id="mgbox"></div>
+
+      <div class="field" id="capfield"><label class="f"><span id="capword">Cap</span></label>
         <div class="note" style="border-color:var(--line);background:#faf9f6" id="capbox">
           <div class="row"><div><b id="capline">The ask at the start</b><div class="small muted" id="capsub">Now 62,418.50. The tool records it when you press Start.</div></div><span class="spacer"></span><button class="btn" id="ovbtn" style="padding:6px 12px;font-size:13px">Set a higher limit</button></div>
           <div id="ov" class="hidden" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
@@ -66,6 +96,7 @@
 
       <div id="nokey" class="note bad hidden" style="margin-bottom:14px"><b>Live needs an API key.</b> Add a Kraken key in setup and accept the safety timer. A dry run needs no key. <a href="setup.html">Go to setup</a></div>
       <div id="firstdry" class="note info small hidden" style="margin-bottom:14px">Run one dry run before your first live chase.</div>
+      <div id="mnote" class="hidden" style="margin-bottom:14px"></div>
       <div id="pairoff" class="note bad hidden" style="margin-bottom:14px"><b>Kraken accepts no new chase for BTC/USD now.</b> Pair status: <span class="mono">cancel_only</span>. A chase needs the status <span class="mono">online</span>. The tool reads the status again every 30 s, and Start comes back when it is online.
         <table class="t small" style="margin-top:8px;background:#fff"><tr><th>Status</th><th>What Kraken allows</th><th>Chase</th></tr>
         <tr><td class="mono">online</td><td>All orders</td><td class="tone-fill">possible</td></tr>
@@ -89,6 +120,7 @@
           <div class="small" style="margin-top:8px" id="pstat">Pair status: <span class="badge ok mono">online</span></div>
         </div>
       </div>
+      <div class="card hidden" id="poscard"></div>
       <div class="card">
         <h3>What the tool does</h3>
         <ol class="small" style="padding-left:18px;margin:0" id="what">
@@ -110,17 +142,20 @@
 <div class="scrim hidden" id="confirm"><div class="modal">
   <div class="livestrip" style="margin-bottom:14px">LIVE: real orders on your Kraken account</div>
   <h2>Start a live chase?</h2>
-  <table class="t small">
+  <div class="mgstrip hidden" id="cmg" style="margin-bottom:12px">MARGIN: this chase opens a position with borrowed funds.</div>
+  <table class="t small" id="ctab">
     <tr><td class="muted">Order</td><td class="r"><b>Buy 0.0500 BTC/USD</b></td></tr>
     <tr><td class="muted">Cap</td><td class="r num">the ask at the start (now 62,418.50)</td></tr>
     <tr><td class="muted">Timeout</td><td class="r">2 min, then IOC at the cap</td></tr>
     <tr><td class="muted">Worst case</td><td class="r num">3,145.89 USD</td></tr>
   </table>
+  <p class="small hidden" id="cstays" style="margin-top:12px"></p>
   <p class="small" style="margin-top:12px"><b>Reminder:</b> while the chase runs, the safety timer is on. If the tool stops, Kraken cancels all your orders on all pairs.</p>
   <div class="row"><span class="spacer"></span><button class="btn" id="cno">Back</button><a class="btn livebtn" href="chase.html#placing">Start live chase</a></div>
 </div></div>
 
 <script src="assets/proto.js"></script>
+<script src="assets/margin.js"></script>
 <script>
 OC.chrome('new', { top: true });
 const $ = id => document.getElementById(id);
@@ -195,6 +230,168 @@ $('start').onclick = () => {
   if (['live', 'override'].includes(st)) { st = 'confirm'; draw(); }
   else location.href = 'chase.html#placing-dry';
 };
+// ---------- Margin (task T5). SAMPLE DATA. ----------
+const PX = { 'BTC/USD': { bid: 62417.9, ask: 62418.5, base: 'BTC', amt: 0.05, d: 4, min: 0.00005 },
+  'SOL/USD': { bid: 142.30, ask: 142.31, base: 'SOL', amt: 10, d: 3, min: 0.02 },
+  'XRP/USD': { bid: 0.5231, ask: 0.5232, base: 'XRP', amt: 2000, d: 1, min: 2 } };
+const MS = {
+  'm-long': { what: 'long' }, 'm-short': { what: 'short' }, 'm-levlimit': { what: 'long', pair: 'SOL/USD' },
+  'm-noshort': { what: 'short', pair: 'XRP/USD' }, 'm-nomargin': { what: 'long', amt: 0.5 }, 'm-pairro': { what: 'long', ro: true },
+  'm-confirm': { what: 'long', live: true, lev: 3 }, 'm-close': { what: 'close' }, 'm-close-loading': { what: 'close', load: 'loading' },
+  'm-close-empty': { what: 'close', load: 'empty' }, 'm-close-fail': { what: 'close', load: 'fail' },
+  'm-close-correction': { what: 'close', size: 0.04 }, 'm-close-remainder': { what: 'close', size: 0.02998 },
+};
+const WHAT = [['buy', 'Buy', 'Spot', 'You pay USD and own the coin.'], ['sell', 'Sell', 'Spot', 'You sell a coin you own.'],
+  ['long', 'Open long', 'Margin', 'Borrow to buy. Gains when the price rises.'], ['short', 'Open short', 'Margin', 'Borrow to sell. Gains when the price falls.'],
+  ['close', 'Close a position', 'Margin', 'Reduce-only. Closes all or part of an open position.']];
+let layout = 'A', lev = 2, posSel = 'btc-short', mfresh = true;
+const nf = (n, d) => n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+function whatOf() { return MS[st] ? MS[st].what : st === 'sell' ? 'sell' : 'buy'; }
+function chooser(w, disabled) {
+  const btn = x => `<button data-w="${x[0]}" class="${x[0] === 'buy' ? 'buy' : x[0] === 'sell' ? 'sell' : x[0] === 'long' ? 'long' : x[0] === 'short' ? 'short' : 'close'} ${x[0] === w ? 'on' : ''}" ${disabled.includes(x[0]) ? 'disabled title="Not possible on this pair now"' : ''}>${x[1]}</button>`;
+  if (layout === 'A') return `<div class="what"><div class="grp"><span class="gl">Spot</span><div class="seg">${WHAT.slice(0, 2).map(btn).join('')}</div></div><div class="grp"><span class="gl">Margin</span><div class="seg">${WHAT.slice(2).map(btn).join('')}</div></div></div>`;
+  if (layout === 'B') { const m = ['long', 'short', 'close'].includes(w);
+    return `<div class="seg lg"><button data-w="${m ? 'buy' : w}" class="${m ? '' : 'on'}">Spot</button><button data-w="${m ? w : 'long'}" class="${m ? 'on' : ''}">Margin</button></div><div style="margin-top:8px"><div class="seg">${(m ? WHAT.slice(2) : WHAT.slice(0, 2)).map(btn).join('')}</div></div>`; }
+  return `<div class="wtiles" style="grid-template-columns:repeat(5,1fr)">${WHAT.map(x => `<button class="wtile ${x[0] === w ? 'on' : ''}" data-w="${x[0]}" ${disabled.includes(x[0]) ? 'disabled' : ''}><span>${x[2]}</span><b class="tone-${x[0] === 'buy' || x[0] === 'long' ? 'fill' : x[0] === 'close' ? '' : 'bad'}">${x[1]}</b><span>${x[3]}</span></button>`).join('')}</div>`;
+}
+const spotDraw = draw;
+draw = function () {
+  const m = MS[st], w = whatOf();
+  if (!m) mfresh = true;
+  spotDraw();
+  const disabled = m && m.pair === 'XRP/USD' ? ['short'] : m && m.ro ? ['long', 'short'] : [];
+  $('whatpick').innerHTML = chooser(w, disabled);
+  $('whathelp').innerHTML = w === 'sell' ? 'Sell: rests at the best ask and moves down. Floor = the bid at the start.' : '';
+  document.querySelectorAll('#mopts button').forEach(x => x.classList.toggle('on', x.dataset.id === st));
+  document.querySelectorAll('#lopts button').forEach(x => x.classList.toggle('on', x.dataset.l === layout));
+  ['levfield', 'posfield', 'mgbox', 'mnote', 'poscard', 'cmg', 'cstays'].forEach(i => $(i).classList.add('hidden'));
+  $('amtfield').classList.remove('hidden'); $('amtlabel').textContent = 'Amount'; $('capfield').classList.remove('hidden');
+  if (!m) { $('pair').value = 'BTC/USD'; return; }
+  // ----- margin from here -----
+  if (mfresh) { lev = m.lev || 2; mfresh = false; }
+  const live = !!m.live, open = w !== 'close', pair = m.pair || 'BTC/USD', P = PX[pair];
+  $('pair').value = pair;
+  document.querySelectorAll('#mode button').forEach(b => b.classList.toggle('on', b.dataset.m === (live ? 'live' : 'dry')));
+  $('modehelp').innerHTML = live ? '<b style="color:var(--live)">Live sends real orders to Kraken.</b> Margin live comes only after your go-ahead (M6).' : '<b style="color:var(--dry)">Dry run sends no orders.</b> It simulates the fills and the position on live public prices.';
+  $('bid').textContent = nf(P.bid, pair === 'XRP/USD' ? 4 : 2); $('ask').textContent = nf(P.ask, pair === 'XRP/USD' ? 4 : 2);
+  $('pnote').textContent = 'Updated 1 s ago from the public Kraken feed.';
+  $('firstdry').classList.toggle('hidden', live);
+  $('firstdry').textContent = 'Run one margin dry run before your first live margin chase.';
+  let ok = true, note = '';
+  const mnote = (cls, h) => { $('mnote').className = 'note ' + cls + ' small'; $('mnote').innerHTML = h; };
+  if (open) {
+    const L = OC.LEV[pair], allowed = w === 'long' ? L.buy : L.sell, buy = w === 'long';
+    if (!allowed.includes(lev) && allowed.length) lev = allowed[allowed.length - 1];
+    $('levfield').classList.remove('hidden');
+    document.querySelectorAll('#lev button').forEach(b => { const v = +b.dataset.v; b.classList.toggle('on', v === lev && allowed.length > 0); b.disabled = !allowed.includes(v); b.title = allowed.includes(v) ? '' : pair + ' allows ' + allowed.map(x => x + 'x').join(', ') + ' at most'; });
+    $('levhelp').innerHTML = allowed.length === 0 ? `<span class="tone-bad">Kraken allows no short on ${pair}.</span>` : allowed.length < 4 ? `${pair} allows ${allowed.map(x => x + 'x').join(' and ')}. Kraken sets this for each pair.` : 'The form starts at 2x (open question MQ1).';
+    const qty = m.amt || P.amt, ref = buy ? P.ask : P.bid, c = OC.openCalc(qty, ref, lev);
+    $('amt').value = nf(qty, P.d); $('amt').nextElementSibling.textContent = P.base;
+    $('est').textContent = '≈ ' + nf(c.cost, 2) + ' USD position cost';
+    $('mins').innerHTML = `<span class="tone-fill">✓ Amount at least ${P.min} ${P.base}</span> <span class="tone-fill">✓ Value at least 0.50 USD</span> <span class="tiny muted">Kraken minimums for ${pair}</span>`;
+    $('amthelp').className = 'help'; $('amthelp').innerHTML = `Free margin: ${nf(c.free, 2)} USD, read from Kraken (sample).`;
+    $('mgbox').classList.remove('hidden');
+    const lack = !c.enough;
+    $('mgbox').innerHTML = `<label class="f">Margin: what this open uses and costs <span class="badge plain">estimate</span></label>
+      <table class="t small" style="background:#fff;border:1px solid var(--line);border-radius:8px">
+        <tr><td>Position cost</td><td class="r num">${nf(c.cost, 2)} USD</td><td class="tiny muted">${nf(qty, P.d)} × ${nf(ref, pair === 'XRP/USD' ? 4 : 2)} (the ${buy ? 'cap' : 'floor'})</td></tr>
+        <tr><td>Collateral it uses</td><td class="r num ${lack ? 'tone-bad' : ''}"><b>${nf(c.collat, 2)} USD</b></td><td class="tiny muted">position cost ÷ ${lev}. Free margin now: ${nf(c.free, 2)} USD</td></tr>
+        <tr><td>Opening fee</td><td class="r num">${nf(c.feeLo, 2)} to ${nf(c.feeHi, 2)} USD</td><td class="tiny muted">0.01% to 0.05% of the cost, charged at the open</td></tr>
+        <tr><td>Rollover, each started 4 h</td><td class="r num">${nf(c.rollLo, 2)} to ${nf(c.rollHi, 2)} USD</td><td class="tiny muted">for 1 day (6 × 4 h): up to ${nf(c.rollHi * 6, 2)} USD</td></tr>
+      </table>
+      <p class="tiny muted" style="margin:6px 0 10px">Kraken can change US margin rates without notice, and no API gives them. The tool counts the stated maximum, 0.05%.</p>
+      <div class="small"><b>Account margin level</b> <span class="muted">(equity ÷ used margin). Kraken calls margin at 80% and liquidates at 40%.</span></div>
+      ${OC.gauge(c.now, c.after)}
+      <p class="small" style="margin:14px 0 0">${lack ? `<b class="tone-bad">After this open: ${Math.round(c.after)}%, below the 40% liquidation mark.</b>` : `Now ${Math.round(c.now)}%. After this open: <b>${Math.round(c.after)}%</b>.`} The tool does not stop an open for its margin level. It shows the level so that you decide.</p>`;
+    $('capword').textContent = buy ? 'Cap' : 'Floor';
+    $('capline').textContent = buy ? 'The ask at the start' : 'The bid at the start';
+    $('capsub').textContent = (buy ? 'Now ' : 'Now ') + nf(ref, pair === 'XRP/USD' ? 4 : 2) + (buy ? '. The tool never buys above it.' : '. The tool never sells below it.');
+    $('ovbtn').textContent = buy ? 'Set a higher limit' : 'Set a lower limit';
+    const tf = c.taker, worst = buy ? c.cost + tf + c.feeHi : null;
+    $('worst').innerHTML = buy
+      ? `The open never costs more than <b class="num">${nf(worst, 2)} USD</b> in price and fees: ${nf(qty, P.d)} × ${nf(ref, 2)} (cap) + ${nf(tf, 2)} taker fee (0.80%) + ${nf(c.feeHi, 2)} opening fee (0.05%, the maximum).<br><span class="tiny muted">Not included: rollover, up to ${nf(c.rollHi, 2)} USD per started 4 h (open question MQ2). A position can also lose value as the price moves. That loss has no limit before liquidation.</span>`
+      : `The short sells at no less than the floor, ${nf(ref, pair === 'XRP/USD' ? 4 : 2)}, and pays at most <b class="num">${nf(tf + c.feeHi, 2)} USD</b> in fees at the open: ${nf(tf, 2)} taker (0.80%) + ${nf(c.feeHi, 2)} opening fee (0.05%).<br><span class="tiny muted">Not included: rollover, up to ${nf(c.rollHi, 2)} USD per started 4 h. A short loses value when the price rises. That loss has no limit before liquidation.</span>`;
+    $('pstat').innerHTML = 'Pair status: <span class="badge ok mono">online</span>';
+    const verb = buy ? 'buy' : 'sell';
+    $('whathelp').innerHTML = (buy ? 'Open long: a post-only buy with leverage. It rests at the best bid and moves up.' : 'Open short: a post-only sell with leverage. It rests at the best ask and moves down.') + ' Each fill opens part of the position at once.';
+    $('what').innerHTML = (`<li>Records the ${buy ? 'ask' : 'bid'} now as the ${buy ? 'cap' : 'floor'}.</li><li>Places a post-only ${verb} at the best ${buy ? 'bid' : 'ask'}, with leverage ${lev}x.</li><li>Moves it ${buy ? 'up' : 'down'} with the best ${buy ? 'bid' : 'ask'}, at most every 5 s. If Kraken refuses an amend, it cancels and places a new order instead.</li><li>After the timeout: one IOC at the ${buy ? 'cap' : 'floor'} for the rest, with the same leverage.</li><li>When the chase ends, the position stays open until you close it.</li>`);
+    if (allowed.length === 0) { ok = false; note = 'Pick another pair, or Open long.'; mnote('bad', `<b>Kraken allows no short on ${pair}.</b> The pair has no sell leverage (AssetPairs <span class="mono">leverage_sell</span> is empty). Open long and Close work.`); }
+    if (lack) { ok = false; $('amt').classList.add('err'); $('amthelp').className = 'help err'; $('amthelp').textContent = `This open needs ${nf(c.collat, 2)} USD of collateral. Your free margin is ${nf(c.free, 2)} USD. Kraken refuses an open without enough margin. Make the amount smaller.`; note = 'Fix the amount to start.'; }
+    if (m.ro) { ok = false; note = 'Open comes back when the pair is online.'; $('pstat').innerHTML = 'Pair status: <span class="badge bad mono">reduce_only</span>';
+      mnote('bad', '<b>Kraken accepts only reduce-only orders on BTC/USD now.</b> Pair status: <span class="mono">reduce_only</span>. You cannot open a position. You can close one: pick Close a position.'); }
+  } else {
+    // ----- close -----
+    $('posfield').classList.remove('hidden'); $('capfield').classList.remove('hidden');
+    const load = m.load;
+    if (load === 'loading') { $('poslist').innerHTML = [1, 2].map(() => '<label><span></span><span class="skel">x</span><span></span></label>').join('') + '<div class="tiny muted">Reading your positions from Kraken (OpenPositions)…</div>'; ok = false; note = 'Start is possible when the positions arrive.'; }
+    else if (load === 'empty') { $('poslist').innerHTML = '<div class="note info small">You have no open margin positions. To open one, pick Open long or Open short.</div>'; ok = false; note = 'Nothing to close.'; }
+    else if (load === 'fail') { $('poslist').innerHTML = '<div class="note bad small"><b>The tool cannot read your positions.</b> Kraken did not answer OpenPositions for 10 s. The tool tries again every 5 s. Your positions do not change. <button class="btn" style="margin-left:8px;padding:4px 10px;font-size:13px">Try again</button></div>'; ok = false; note = 'Start needs your positions.'; }
+    else {
+      $('poslist').innerHTML = OC.POS.map(p => `<label class="${p.id === posSel ? 'on' : ''}" data-p="${p.id}"><input type="radio" name="pos" ${p.id === posSel ? 'checked' : ''}><div><b>${p.pair} <span class="badge ${p.dir}">${p.dir === 'long' ? 'Long' : 'Short'}</span> ${nf(p.qty, 4)} ${p.base}</b> <span class="muted small">· ${p.lev}x · opened ${p.opened} at ${nf(p.entry, 2)}</span><div class="tiny muted">Rollover paid so far: ${nf(p.roll, 2)} USD</div></div><div class="r small num ${p.pl >= 0 ? 'tone-fill' : 'tone-bad'}">${p.pl >= 0 ? '+' : ''}${nf(p.pl, 2)} USD<div class="tiny muted" style="font-family:var(--sans)">profit or loss now</div></div></label>`).join('') +
+        '<div class="tiny muted">Read from Kraken (OpenPositions), sample data. One row for each pair and direction (open question MQ4).</div>';
+    }
+    const p = OC.POS.find(x => x.id === posSel), buy = p.dir === 'short';
+    if (load) { $('amtfield').classList.add('hidden'); $('capfield').classList.add('hidden'); $('mgbox').classList.add('hidden'); }
+    else {
+      const size = m.size != null ? m.size : p.qty, rest = p.qty - size;
+      $('amtlabel').textContent = 'Size to close';
+      $('amt').value = nf(size, 5).replace(/0$/, ''); $('amt').nextElementSibling.textContent = p.base;
+      $('est').innerHTML = size === p.qty ? '<span class="badge ok">Whole position</span>' : `<button class="btn" id="whole" style="padding:4px 10px;font-size:13px">Close all: ${nf(p.qty, 4)} ${p.base}</button>`;
+      $('amthelp').className = 'help'; $('amthelp').innerHTML = `<b>Reduce-only.</b> The order can only make this ${p.dir} smaller. It can never ${buy ? 'open a long' : 'open a short'} or make the position larger. The size starts at the whole position. You can make it smaller.`;
+      $('mins').innerHTML = `<span class="tone-fill">✓ Size at least ${p.minQty} ${p.base}</span> <span class="tiny muted">Kraken minimum for ${p.pair}</span>`;
+      if (size > p.qty) { ok = false; $('amt').classList.add('err'); $('amthelp').className = 'help err'; $('amthelp').textContent = `A close cannot be larger than the position, ${nf(p.qty, 4)} ${p.base}. Reduce-only orders never grow or flip a position. Enter ${nf(p.qty, 4)} or less.`; note = 'Fix the size to start.'; $('est').innerHTML = `<button class="btn" id="whole" style="padding:4px 10px;font-size:13px">Close all: ${nf(p.qty, 4)} ${p.base}</button>`; }
+      else if (rest > 0 && rest < p.minQty) { $('mins').innerHTML = `<span class="tone-fill">✓ Size at least ${p.minQty} ${p.base}</span> <span class="tone-bad">✗ The rest, ${nf(rest, 5)} ${p.base}, is below the minimum</span>`;
+        mnote('warn', `<b>This close leaves ${nf(rest, 5)} ${p.base} open.</b> That is below the Kraken minimum of ${p.minQty} ${p.base}, so a later order cannot close it. Kraken can still liquidate it, and it pays rollover. To avoid this, press "Close all". You can also start as it is (open question MQ3).`); }
+      const u = OC.used(), frac = Math.min(1, size / p.qty), after = OC.level(u - p.margin * frac), fee = size * (buy ? P.ask : P.bid) * OC.S.taker;
+      $('mgbox').classList.remove('hidden');
+      $('mgbox').innerHTML = `<div class="small"><b>Account margin level</b> <span class="muted">(equity ÷ used margin). Kraken calls margin at 80% and liquidates at 40%.</span></div>${OC.gauge(OC.level(u), after, { afterWord: 'after the close' })}
+        <p class="small" style="margin:14px 0 0">Now ${Math.round(OC.level(u))}%. After the close: <b>${after === Infinity ? 'no open position' : Math.round(after) + '%'}</b>. A close has no opening fee. Rollover stops for the part that closes.</p>`;
+      $('capword').textContent = buy ? 'Cap' : 'Floor';
+      $('capline').textContent = buy ? 'The ask at the start' : 'The bid at the start';
+      $('capsub').textContent = 'Now ' + nf(buy ? P.ask : P.bid, 2) + (buy ? '. The close never buys above it.' : '. The close never sells below it.');
+      $('ovbtn').textContent = buy ? 'Set a higher limit' : 'Set a lower limit';
+      $('worst').innerHTML = `The close never pays more than <b class="num">${nf(size * P.ask + fee, 2)} USD</b>: ${nf(size, 4)} × ${nf(P.ask, 2)} (cap) + ${nf(fee, 2)} taker fee (0.80%). If the price passes the cap, the rest of the position stays open.`;
+      $('what').innerHTML = (`<li>Records the ${buy ? 'ask' : 'bid'} now as the ${buy ? 'cap' : 'floor'}.</li><li>Places a post-only ${buy ? 'buy' : 'sell'}, reduce-only, at the best ${buy ? 'bid' : 'ask'}.</li><li>Moves it with the price, at most every 5 s. If Kraken refuses an amend, it cancels and places a new order instead.</li><li>After the timeout: one reduce-only IOC at the ${buy ? 'cap' : 'floor'} for the rest.</li><li>What does not close stays open as a position.</li>`);
+      $('whathelp').innerHTML = `Close ${p.dir}: a reduce-only ${buy ? 'buy' : 'sell'} on ${p.pair}.`;
+    }
+  }
+  const b = $('start');
+  b.className = 'btn ' + (live ? 'livebtn' : 'drybtn');
+  b.textContent = live ? 'Start live chase' : w === 'close' ? 'Start dry run: close' : 'Start dry run: open ' + w;
+  b.disabled = !ok; $('startnote').textContent = note;
+  if (!['m-noshort', 'm-pairro', 'm-close-remainder'].includes(st)) $('mnote').classList.add('hidden'); else $('mnote').classList.remove('hidden');
+  // live confirm for a margin open
+  $('cmg').classList.toggle('hidden', st !== 'm-confirm'); $('cstays').classList.toggle('hidden', st !== 'm-confirm');
+  if (st === 'm-confirm') {
+    const c = OC.openCalc(0.05, 62418.5, lev);
+    $('confirm').classList.remove('hidden');
+    $('ctab').innerHTML = `<tr><td class="muted">Order</td><td class="r"><b>Open long 0.0500 BTC/USD</b></td></tr>
+      <tr><td class="muted">Leverage</td><td class="r num">${lev}x</td></tr>
+      <tr><td class="muted">Collateral it uses</td><td class="r num">${nf(c.collat, 2)} USD</td></tr>
+      <tr><td class="muted">Margin level</td><td class="r num">${Math.round(c.now)}% now, ${Math.round(c.after)}% after</td></tr>
+      <tr><td class="muted">Cap</td><td class="r num">the ask at the start (now 62,418.50)</td></tr>
+      <tr><td class="muted">Timeout</td><td class="r">2 min, then IOC at the cap</td></tr>
+      <tr><td class="muted">Worst case at the open</td><td class="r num">${nf(c.cost + c.taker + c.feeHi, 2)} USD</td></tr>
+      <tr><td class="muted">Rollover while open</td><td class="r num">up to ${nf(c.rollHi, 2)} USD per started 4 h</td></tr>`;
+    $('cstays').innerHTML = '<b>Warning:</b> ' + OC.STAYS_OPEN + ' Only a close chase, or Kraken Pro, closes it.';
+    $('cstays').className = 'note bad small'; $('cstays').style.marginTop = '12px';
+  } else if (!['live', 'confirm', 'override', 'nokey'].includes(st)) $('confirm').classList.add('hidden');
+};
+$('mopts').onclick = e => { const b = e.target.closest('button'); if (b) { st = b.dataset.id; mfresh = true; history.replaceState(null, '', '#' + st); draw(); } };
+$('lopts').onclick = e => { const b = e.target.closest('button'); if (b) { layout = b.dataset.l; draw(); } };
+$('whatpick').onclick = e => { const b = e.target.closest('[data-w]'); if (!b || b.disabled) return; const w = b.dataset.w;
+  st = w === 'buy' ? 'ready' : w === 'sell' ? 'sell' : w === 'long' ? 'm-long' : w === 'short' ? 'm-short' : 'm-close'; mfresh = true; draw(); };
+$('lev').onclick = e => { const b = e.target.closest('button'); if (b && !b.disabled) { lev = +b.dataset.v; draw(); } };
+$('poslist').onclick = e => { const l = e.target.closest('[data-p]'); if (l) { posSel = l.dataset.p; draw(); } };
+$('est').addEventListener('click', e => { if (e.target.id === 'whole') { st = 'm-close'; draw(); } });
+const modeSpot = $('mode').onclick;
+$('mode').onclick = e => { const b = e.target.closest('button'); if (!b) return; if (MS[st]) { st = b.dataset.m === 'live' ? (whatOf() === 'close' ? 'm-close' : 'm-confirm') : (whatOf() === 'close' ? 'm-close' : 'm-long'); mfresh = true; draw(); } else modeSpot(e); };
+const startSpot = $('start').onclick;
+$('start').onclick = e => { if (MS[st]) { location.href = 'chase.html#' + (whatOf() === 'close' ? 'm-close-resting' : 'm-open-resting') + (st === 'm-confirm' ? '' : '-dry'); } else startSpot(e); };
+const cnoSpot = $('cno').onclick;
+$('cno').onclick = e => { if (st === 'm-confirm') { st = 'm-long'; draw(); } else cnoSpot(e); };
+document.querySelector('#confirm a.livebtn').addEventListener('click', e => { if (st === 'm-confirm') { e.preventDefault(); location.href = 'chase.html#m-open-resting'; } });
+window.addEventListener('hashchange', () => { st = location.hash.slice(1) || 'ready'; mfresh = true; draw(); });
 draw();
 </script>
 </body></html>

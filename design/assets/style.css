@@ -292,3 +292,49 @@ table.t tr.click:hover td { background: #faf9f6; }
 .keyfacts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
 .keyfacts > div { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: #faf9f6; }
 .permgrp { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 12px 0 2px; }
+
+/* ---------- Margin (task T5) ---------- */
+:root { --long: #17804f; --short: #b8322a; --mg: #8a4a00; --mg-bg: #fbf0df; }
+.badge.mg { background: var(--mg-bg); color: var(--mg); }
+.badge.long { background: var(--fill-bg); color: var(--long); }
+.badge.short { background: var(--bad-bg); color: var(--short); }
+.mgstrip { background: var(--mg-bg); color: var(--mg); border: 1px solid #ecd2a6; border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 600; letter-spacing: .02em; }
+.newbadge { font-size: 10.5px; font-weight: 700; background: var(--mg); color: #fff; border-radius: 4px; padding: 1px 5px; margin-left: 4px; vertical-align: 1px; }
+/* the "what to do" chooser: option A, a grouped segmented row */
+.what { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
+.what .grp { display: flex; flex-direction: column; gap: 4px; }
+.what .gl { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.seg button.on.long { color: var(--long); }
+.seg button.on.short { color: var(--short); }
+.seg button.on.close { color: var(--mg); }
+.seg button:disabled { opacity: .45; cursor: not-allowed; text-decoration: line-through; }
+/* option C, task tiles */
+.wtiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.wtile { border: 1px solid var(--line-strong); border-radius: 9px; padding: 10px 12px; background: #fff; cursor: pointer; text-align: left; font: inherit; }
+.wtile.on { border-color: var(--you); box-shadow: 0 0 0 2px var(--you-bg); }
+.wtile b { display: block; font-size: 14px; }
+.wtile span { font-size: 12px; color: var(--muted); }
+/* leverage */
+.lev button { min-width: 54px; font-family: var(--mono); }
+/* margin level gauge: a scale from 0 to 300%+, with the call (80%) and liquidation (40%) marks */
+.gauge { position: relative; height: 62px; margin: 6px 0 4px; }
+.gauge .track { position: absolute; left: 0; right: 0; top: 22px; height: 8px; border-radius: 99px; background: linear-gradient(90deg, #f0c0ba 0 13.33%, #f6dfb5 13.33% 26.67%, #e3f3ea 26.67%); }
+.gauge .mk { position: absolute; top: 14px; width: 2px; height: 24px; background: var(--ink); }
+.gauge .mk span { position: absolute; top: 26px; left: 50%; transform: translateX(-50%); font-size: 11px; white-space: nowrap; color: var(--muted); }
+.gauge .pt { position: absolute; top: 0; transform: translateX(-50%); font-size: 11.5px; white-space: nowrap; text-align: center; }
+.gauge .pt i { display: block; width: 12px; height: 12px; border-radius: 99px; margin: 3px auto 0; border: 2px solid #fff; box-shadow: 0 0 0 1px currentColor; background: currentColor; }
+.gauge .pt.now { color: var(--muted); }
+.gauge .pt.after { color: var(--you); font-weight: 700; }
+.gauge .pt.bad { color: var(--bad); }
+.poslist label { display: grid; grid-template-columns: 22px 1fr auto; gap: 6px 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; cursor: pointer; background: #fff; align-items: start; }
+.poslist label.on { border-color: var(--you); box-shadow: 0 0 0 2px var(--you-bg); }
+.pstat { display: inline-flex; gap: 6px; align-items: center; font-weight: 650; }
+.pstat i { width: 9px; height: 9px; border-radius: 99px; background: currentColor; }
+.cost { border-left: 3px solid var(--mg); padding: 6px 12px; background: #fffaf2; border-radius: 0 6px 6px 0; }
+.gauge .mk.l span { left: auto; right: 4px; transform: none; }
+.gauge .mk.r span { left: 4px; transform: none; }
+.gauge .pt.rt { transform: translateX(calc(-100% + 8px)); text-align: right; }
+.gauge .pt.rt i { margin-right: 0; }
+.gauge .pt.now.low { top: 17px; }
+.gauge .pt.now.low i { margin: 0 auto 3px; }
+.gauge .pt.now.low.rt i { margin-right: 0; }

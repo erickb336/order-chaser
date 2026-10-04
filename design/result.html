@@ -13,11 +13,22 @@
       <button data-id="ended">Ended: tool stopped or restarted</button>
       <button data-id="filled-dry">Dry run result</button>
     </div>
+    <div class="opts" id="mopts" style="margin-top:8px"><span class="lbl" style="align-self:center">Margin <span class="newbadge">NEW</span></span>
+      <button data-id="m-open-filled">Position opened</button>
+      <button data-id="m-open-stopped">Opened in part: stopped by you</button>
+      <button data-id="m-open-ended">Opened in part: tool restarted</button>
+      <button data-id="m-close-closed">Position closed</button>
+      <button data-id="m-close-notfilled">Closed in part: above cap</button>
+      <button data-id="m-close-stopped">Closed in part: stopped by you</button>
+      <button data-id="m-liquidated">Liquidated</button>
+      <button data-id="m-open-filled-dry">Dry run: position opened</button>
+    </div>
   </div>
   <div id="modestrip" style="margin-bottom:16px"></div>
   <div id="out"></div>
 </main>
 <script src="assets/proto.js"></script>
+<script src="assets/margin.js"></script>
 <script>
 OC.chrome('result', { top: true });
 const $ = id => document.getElementById(id);
@@ -37,7 +48,80 @@ const R = {
     dry: { line: 'The tool stopped at 1:02 and started again at 1:10 (sample cause: a crash). It recorded the simulated fills and did not continue the dry run.', rest: 'Not filled (simulated): 0.0320 BTC, because the tool restarted. A dry run sends no orders to Kraken.', todo: ['To test again, start a new dry run.'] } },
 };
 let cur = location.hash.slice(1) || 'filled';
+// ---------- Margin outcomes (task T5). SAMPLE DATA. ----------
+const O1 = { q: 0.018, p: 62418.1, liq: 'm', t: '0:31' }, O2 = { q: 0.032, p: 62418.3, liq: 'm', t: '1:18' };
+const K1 = { q: 0.012, p: 62418.1, liq: 'm', t: '0:24' }, K2 = { q: 0.018, p: 62418.3, liq: 'm', t: '1:06' };
+const OPENP = { kind: 'open', qty: 0.05, word: 'Opened', verb: 'open' }, CLOSEP = { kind: 'close', qty: 0.03, word: 'Closed', verb: 'close' };
+const MR = {
+  'm-open-filled': Object.assign({}, OPENP, { fills: [O1, O2], badge: ['ok', 'Position open'], head: 'Opened a 3x long: 0.0500 BTC', dur: '1:18',
+    line: 'All of it filled as maker in 1:18. The tool never moved above the cap.', pos: ['fill', 'Open: 0.0500 BTC long, 3x'],
+    todo: ['The position stays open until you close it, also when the tool is off.', 'To close it, use Close this position.'] }),
+  'm-open-stopped': Object.assign({}, OPENP, { fills: [O1], badge: ['plain', 'Stopped · position open'], head: 'Opened a 3x long: 0.0180 of 0.0500 BTC', dur: '0:55',
+    line: 'You stopped the chase at 0:55. Kraken confirmed the cancel.', pos: ['fill', 'Open: 0.0180 BTC long, 3x'],
+    rest: 'Not opened: 0.0320 BTC, because you stopped the chase. The 0.0180 BTC that filled stays open as a position.' }),
+  'm-open-ended': Object.assign({}, OPENP, { fills: [O1], badge: ['bad', 'Ended: tool restarted · position open'], head: 'Opened a 3x long: 0.0180 of 0.0500 BTC', dur: '1:10',
+    line: 'The tool stopped at 1:02 and started again at 1:10 (sample cause: a crash). It read the order, cancelled it, read the positions and did not continue the chase.', pos: ['fill', 'Open: 0.0180 BTC long, 3x'],
+    rest: 'Not opened: 0.0320 BTC, because the tool restarted. The 0.0180 BTC that filled stays open as a position.',
+    todo: ['The safety timer cancels orders only. It never closes a position. Your position was open while the tool was off, and it is still open.', 'To close it, use Close this position. To open the rest, start a new open chase.'] }),
+  'm-close-closed': Object.assign({}, CLOSEP, { fills: [K1, K2], badge: ['ok', 'Position closed'], head: 'Closed the short: 0.0300 BTC', dur: '1:06',
+    line: 'All of it closed as maker in 1:06, reduce-only. The tool never moved above the cap.', pos: ['fill', 'Closed'], pl: true }),
+  'm-close-notfilled': Object.assign({}, CLOSEP, { fills: [K1], badge: ['bad', 'Part closed · position open'], head: 'Closed 0.0120 of 0.0300 BTC of the short', dur: '2:01',
+    line: 'The price rose above your cap before the rest could close. The reduce-only IOC at the cap filled nothing.', pos: ['warn', 'Open: 0.0180 BTC short, 3x'], pl: true,
+    rest: 'Not closed: 0.0180 BTC. The ask at the end was 62,431.00, which is 12.50 above your cap. This part of the short stays open, with rollover fees and liquidation risk.' }),
+  'm-close-stopped': Object.assign({}, CLOSEP, { fills: [K1], badge: ['plain', 'Stopped · position open'], head: 'Closed 0.0120 of 0.0300 BTC of the short', dur: '0:30',
+    line: 'You stopped the chase at 0:30. Kraken confirmed the cancel.', pos: ['warn', 'Open: 0.0180 BTC short, 3x'], pl: true,
+    rest: 'Not closed: 0.0180 BTC, because you stopped the chase. This part of the short stays open.' }),
+  'm-liquidated': Object.assign({}, CLOSEP, { fills: [K1], badge: ['bad', 'Liquidated'], head: 'Liquidated: Kraken closed the rest of the short', dur: '0:44',
+    line: 'The chase closed 0.0120 BTC. Then the account margin level fell to 40%, and Kraken closed the rest, 0.0180 BTC, at the market (sample event). The tool cancelled its order.', pos: ['bad', 'Closed by Kraken (liquidated)'], pl: true,
+    rest: 'Liquidated by Kraken: 0.0180 BTC. The tool does not know the liquidation price or fee. Check them in Kraken Pro.',
+    todo: ['The margin level is for the whole account. Check your other positions in Kraken Pro.'] }),
+};
+function mdraw(key, dry) {
+  const r = MR[key], sm = OC.summarize(r.fills), sim = dry ? ' (simulated)' : '';
+  const pct = sm.q / r.qty * 100, pctM = Math.round(sm.makerShare * 100);
+  const nf = (n, d) => n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const openFee = r.kind === 'open' ? sm.gross * OC.MF.hi : 0, roll = r.kind === 'open' ? sm.gross * OC.MF.hi : 0;
+  const pl = r.pl ? (62950 - sm.avg) * sm.q - sm.fee : 0;
+  $('modestrip').innerHTML = (dry ? '<div class="drystrip">DRY RUN RESULT: simulated. No order went to Kraken, and no position is open on Kraken.</div>' : '') + '<div class="mgstrip" style="margin-top:6px">MARGIN · ' + (r.kind === 'open' ? 'open long, 3x' : 'close short, reduce-only') + '</div>';
+  $('out').innerHTML = `
+  <div class="card">
+    <div class="row"><span class="badge ${r.badge[0]}">${r.badge[1]}</span><span class="badge mg">margin</span><span class="small muted">BTC/USD · ${r.kind === 'open' ? 'open long · 3x' : 'close short · reduce-only'} · ${dry ? 'dry run' : 'live'} · today 10:14 · 0:00 to ${r.dur}</span></div>
+    <h1 style="margin-top:10px">${r.head}${sim}</h1>
+    <p class="muted">${r.line}</p>
+    <div class="facts" style="margin-top:14px">
+      <div><div class="k">${r.word}</div><div class="v">${OC.fq(sm.q)} BTC</div><div class="s">${Math.round(pct)}% of ${OC.fq(r.qty)}</div></div>
+      <div><div class="k">Average price</div><div class="v">${OC.f2(sm.avg)}</div><div class="s">cap was 62,418.50</div></div>
+      <div><div class="k">Trading fees</div><div class="v">${OC.f2(sm.fee)} USD</div><div class="s">${pctM === 100 ? 'all at 0.40% maker' : 'mixed'}</div></div>
+      <div style="background:var(--fill-bg)"><div class="k">Saving vs a market order at the start</div><div class="v tone-fill">${OC.f2(sm.saving)} USD</div><div class="s">for the ${OC.fq(sm.q)} BTC that filled</div></div>
+    </div>
+    <div style="margin-top:18px"><div class="row small"><b>Maker ${pctM}%</b>${pct < 100 ? '<span class="muted">· Not ' + (r.kind === 'open' ? 'opened' : 'closed') + ' ' + Math.round(100 - pct) + '%</span>' : ''}<span class="spacer"></span><span class="tiny muted">share of ${OC.fq(r.qty)} BTC</span></div>
+      <div class="bar" style="margin-top:6px;height:14px"><i class="m" style="width:${pct}%"></i><i class="nf" style="width:${100 - pct}%"></i></div></div>
+    ${r.rest ? `<div class="note ${key === 'm-liquidated' || key === 'm-open-ended' || key === 'm-close-notfilled' ? 'bad' : 'warn'}" style="margin-top:16px"><b>${r.rest}</b></div>` : ''}
+    ${r.todo ? `<div class="note info small" style="margin-top:12px"><b>What to do now</b><ul style="margin:4px 0 0;padding-left:18px">${r.todo.map(x => `<li>${x}</li>`).join('')}</ul></div>` : ''}
+    <div class="row" style="margin-top:18px">${r.pos[1].startsWith('Open') ? `<a class="btn primary" href="new.html#m-close">Close this position</a>` : '<a class="btn primary" href="new.html">New chase</a>'}<a class="btn" href="history.html">History</a><a class="btn" href="chase.html#${key}${dry ? '-dry' : ''}">Back to the chase</a></div>
+  </div>
+  <div class="grid2" style="margin-top:16px">
+    <div class="card"><h2>Position${sim}</h2>
+      <div class="pstat tone-${r.pos[0]}" style="font-size:17px"><i></i>${r.pos[1]}</div>
+      <table class="t small" style="margin-top:10px">
+        ${r.kind === 'open' ? `<tr><td>Leverage</td><td class="r num">3x</td></tr><tr><td>Entry price, average</td><td class="r num">${OC.f2(sm.avg)}</td></tr><tr><td>Collateral it uses</td><td class="r num">${nf(sm.gross / 3, 2)} USD</td></tr>` : `<tr><td>Opened</td><td class="r">2 Oct 14:05, at 62,950.00, 3x</td></tr><tr><td>Closed by this chase</td><td class="r num">${OC.fq(sm.q)} BTC at ${OC.f2(sm.avg)}</td></tr>`}
+        <tr><td>Account margin level now</td><td class="r num">${r.kind === 'open' ? Math.round(OC.level(OC.used() + sm.gross / 3)) : key === 'm-close-closed' || key === 'm-liquidated' ? Math.round(OC.level(OC.used() - OC.POS[0].margin)) : Math.round(OC.level(OC.used() - OC.POS[0].margin * sm.q / 0.03))}%</td></tr>
+      </table>
+      ${r.pos[1].startsWith('Open') ? `<p class="small" style="margin:10px 0 0"><b>What stays open:</b> ${r.pos[1].replace('Open: ', '')}. It stays open when the tool stops. Only a close, or Kraken Pro, closes it.</p>` : ''}
+    </div>
+    <div class="card"><h2>Margin costs${sim} <span class="badge plain">estimate</span></h2>
+      <table class="t small">
+        <tr><td>Trading fees</td><td class="r num">${OC.f2(sm.fee)} USD</td></tr>
+        ${r.kind === 'open' ? `<tr><td>Opening fee, charged at the open</td><td class="r num">up to ${nf(openFee, 2)} USD</td></tr><tr><td>Rollover, each started 4 h while open</td><td class="r num">up to ${nf(roll, 2)} USD</td></tr>` :
+          `<tr><td>Opening fee and rollover paid before (from Kraken)</td><td class="r num">1.13 USD rollover</td></tr><tr><td>Profit or loss of the part closed, after the close fee</td><td class="r num ${pl >= 0 ? 'tone-fill' : 'tone-bad'}"><b>${pl >= 0 ? '+' : ''}${nf(pl, 2)} USD</b></td></tr><tr><td class="tiny muted" colspan="2">(62,950.00 − ${OC.f2(sm.avg)}) × ${OC.fq(sm.q)} − ${OC.f2(sm.fee)} fee. Kraken's ledger has the final number.</td></tr>`}
+      </table>
+      <p class="tiny muted" style="margin:10px 0 0">Margin fees are 0.01% to 0.05% of the position cost. Kraken can change US rates without notice, and no API gives them, so the tool shows the stated maximum. Kraken's ledger has the real fee.</p>
+    </div>
+  </div>`;
+  document.querySelectorAll('#opts button, #mopts button').forEach(x => x.classList.toggle('on', x.dataset.id === cur));
+}
 function draw() {
+  { const mk = cur.replace(/-dry$/, ''); if (MR[mk]) return mdraw(mk, cur.endsWith('-dry')); }
   const dry = cur.endsWith('-dry');
   const key = cur.replace(/-dry$/, '');
   const r0 = R[key] || R.filled;
@@ -81,9 +165,11 @@ function draw() {
       <p class="tiny muted" style="margin:10px 0 0">The saving is never below 0: the chase never pays more than the start ask plus the taker fee. A real market order can cost more than this estimate on a thin book, so the true saving can be larger. Fees: your fee tier, read from Kraken, because the key has Query Funds (sample: 0.40% maker, 0.80% taker). Without Query Funds the tool uses the highest rates, 0.40% and 0.80%.</p>
     </div>
   </div>`;
-  document.querySelectorAll('#opts button').forEach(x => x.classList.toggle('on', x.dataset.id === cur));
+  document.querySelectorAll('#opts button, #mopts button').forEach(x => x.classList.toggle('on', x.dataset.id === cur));
 }
+$('mopts').onclick = e => { const b = e.target.closest('button'); if (b) { cur = b.dataset.id; history.replaceState(null, '', '#' + cur); draw(); } };
 $('opts').onclick = e => { const b = e.target.closest('button'); if (b) { cur = b.dataset.id; history.replaceState(null, '', '#' + cur); draw(); } };
+window.addEventListener('hashchange', () => { cur = location.hash.slice(1) || 'filled'; draw(); });
 draw();
 </script>
 </body></html>

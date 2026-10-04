@@ -127,12 +127,13 @@ const PAGES = [
 ];
 function chrome(page, opts) {
   opts = opts || {};
-  const n = DECISIONS.filter(q => q.on.includes(page)).length;
+  const oq = (window.OC && OC.MQUESTIONS || []).filter(q => q.on.includes(page));
+  const n = DECISIONS.filter(q => q.on.includes(page)).length + oq.length;
   const strip = document.createElement('div');
   strip.className = 'proto';
   strip.innerHTML = '<div class="in"><span class="tag">Prototype</span>' +
     PAGES.map(p => `<a href="${p[1]}" class="${p[0] === page ? 'on' : ''}">${p[2]}</a>`).join('') +
-    '<span class="spacer"></span>' + (n ? `<button id="qbtn">Decisions for this screen (${n})</button>` : '') + '</div>';
+    '<span class="spacer"></span>' + (n ? `<button id="qbtn">${oq.length ? 'Open questions (' + oq.length + ') and decisions' : 'Decisions for this screen (' + n + ')'}</button>` : '') + '</div>';
   const ribbon = document.createElement('div');
   ribbon.className = 'sample';
   ribbon.innerHTML = '<b>SAMPLE DATA</b>: all prices, fills and fees on this page are invented for the prototype. No page calls Kraken.';
@@ -151,9 +152,9 @@ function chrome(page, opts) {
     const d = document.createElement('aside');
     d.className = 'qdrawer'; d.id = 'qdrawer';
     d.innerHTML = '<div class="row"><h2>Decisions for this screen</h2><span class="spacer"></span><button class="btn" id="qclose">Close</button></div>' +
-      '<p class="muted small">All product questions are decided. This screen shows these decisions.</p>' +
-      DECISIONS.filter(q => q.on.includes(page)).map(qHTML).join('') +
-      '<p class="small"><a href="questions.html">See all 14 decisions</a></p>';
+      (oq.length ? `<p class="small"><b>Open questions on this screen: ${oq.length}.</b> Each has a recommendation, and the screen shows that default.</p>` + oq.map(OC.mqHTML).join('') : '<p class="muted small">No open questions on this screen.</p>') +
+      '<h3 style="margin-top:14px">Decided</h3>' + DECISIONS.filter(q => q.on.includes(page)).map(qHTML).join('') +
+      '<p class="small"><a href="questions.html">See all questions and decisions</a></p>';
     document.body.appendChild(d);
     document.getElementById('qbtn').onclick = () => d.classList.add('open');
     document.getElementById('qclose').onclick = () => d.classList.remove('open');
@@ -199,7 +200,8 @@ function rail(st) {
 
 function card(st, compact) {
   const sm = summarize(st.fills);
-  const pct = Math.round(sm.q / S.qty * 100);
+  const QTY = st.qty || S.qty;
+  const pct = Math.round(sm.q / QTY * 100);
   const tone = st.tone;
   const steps = st.steps ? `<ol class="small" style="margin:10px 0 0;padding-left:20px">${st.steps.map(s => `<li style="padding:2px 0" class="${s[0] === 'now' ? 'tone-' + tone : s[0] === 'todo' ? 'muted' : ''}">${s[0] === 'done' ? '✓ ' : s[0] === 'now' ? '→ ' : ''}${s[1]}</li>`).join('')}</ol>` : '';
   const notfilled = st.id === 'notfilled' || st.id === 'ended' ? `<i class="nf" style="width:${100 - pct}%"></i>` : '';
@@ -209,14 +211,15 @@ function card(st, compact) {
     <div class="sub ${compact ? 'small' : ''}">${st.sub}</div>${steps}
     ${st.todo ? `<div class="note info small" style="margin-top:12px"><b>What to do now</b><ul style="margin:4px 0 0;padding-left:18px">${st.todo.map(x => `<li>${x}</li>`).join('')}</ul></div>` : ''}
     ${st.note2 ? `<div class="note warn small" style="margin-top:12px">${st.note2}</div>` : ''}
+    ${st.replace ? `<div class="cost small" style="margin-top:12px"><b>What cancel and replace costs, compared with an amend</b><ul style="margin:4px 0 0;padding-left:18px"><li><b>It is slower.</b> The tool sends two requests, not one, and waits for the cancel confirmation and a fill read between them.</li><li><b>It uses more of the rate counter.</b> A cancel within 5 s of the order adds 8. An amend adds 4. So the tool reaches the 15 s slow-down sooner.</li><li><b>For a short time, no order rests.</b> A price move in that gap can pass without your order.</li><li><b>The queue place is the same.</b> An amend to a new price also puts the order at the back of the queue.</li></ul><div class="tiny muted" style="margin-top:4px">For the rest of this chase, each move uses cancel and replace, at most every 5 s.</div></div>` : ''}
     ${st.note ? `<div class="note bad small" style="margin-top:12px"><b>Warning:</b> ${st.note}</div>` : ''}
     <div class="row" style="margin-top:18px;align-items:flex-end;flex-wrap:wrap">
-      <div><div class="small muted">Filled</div><div class="big" style="white-space:nowrap;${compact ? 'font-size:24px' : ''}">${fq(sm.q)} <span class="muted" style="font-size:.55em">of ${fq(S.qty)} BTC</span></div></div>
+      <div><div class="small muted">Filled</div><div class="big" style="white-space:nowrap;${compact ? 'font-size:24px' : ''}">${fq(sm.q)} <span class="muted" style="font-size:.55em">of ${fq(QTY)} BTC</span></div></div>
       <span class="spacer"></span>
       ${st.done ? '' : `<div class="timer" style="white-space:nowrap"><span class="num">${mmss(st.t)} / 2:00</span><div class="bar"><i style="width:${Math.min(100, st.t / S.timeout * 100)}%"></i></div></div>`}
     </div>
     <div class="bar" style="margin-top:8px"><i class="m" style="width:${pct}%"></i>${notfilled}</div>
-    ${rail(st)}
+    ${st.norail ? '' : rail(st)}
   </div>`;
 }
 

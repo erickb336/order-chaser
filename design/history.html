@@ -5,7 +5,7 @@
 <body>
 <main class="app">
   <div class="switcher"><span class="lbl">Prototype: history state</span>
-    <div class="opts" id="opts"><button data-id="list">With chases</button><button data-id="empty">Empty</button><button data-id="loading">Loading</button><button data-id="fail">Failure</button></div>
+    <div class="opts" id="opts"><button data-id="list">With chases</button><button data-id="margin">Margin only</button><button data-id="empty">Empty</button><button data-id="loading">Loading</button><button data-id="fail">Failure</button></div>
   </div>
   <div class="row" style="margin-bottom:12px"><h1 style="margin:0">History</h1><span class="spacer"></span><span class="small muted" id="tot"></span></div>
   <div class="card" style="padding:6px 10px" id="out"></div>
@@ -16,6 +16,11 @@ OC.chrome('history', { top: true });
 const $ = id => document.getElementById(id);
 // SAMPLE rows: [date, pair, side, asked, filled, avg, saving, mode, outcome, link]
 const ROWS = [
+  ['Today 10:14', 'BTC/USD', 'Close short', '0.0300', '0.0300', '62,418.22', '7.50', 'dry', ['ok', 'Position closed'], 'm-close-closed-dry', 'm'],
+  ['Today 10:02', 'BTC/USD', 'Open long · 3x', '0.0500', '0.0500', '62,418.23', '12.49', 'dry', ['ok', 'Position opened'], 'm-open-filled-dry', 'm'],
+  ['Today 09:58', 'BTC/USD', 'Close short', '0.0300', '0.0120', '62,418.10', '3.00', 'dry', ['bad', 'Part closed: rest open'], 'm-close-notfilled-dry', 'm'],
+  ['Today 09:57', 'ETH/USD', 'Open short · 2x', '1.0000', '1.0000', '2,402.95', '19.22', 'dry', ['ok', 'Position opened'], null, 'm'],
+  ['Today 09:55', 'BTC/USD', 'Close short', '0.0300', '0.0120', '62,418.10', '3.00', 'dry', ['bad', 'Liquidated'], 'm-liquidated-dry', 'm'],
   ['Today 09:52', 'BTC/USD', 'Buy', '0.0500', '0.0500', '62,418.23', '12.49', 'live', ['ok', 'Filled'], 'filled'],
   ['Today 09:31', 'BTC/USD', 'Buy', '0.0500', '0.0500', '62,401.75', '12.50', 'dry', ['ok', 'Filled (simulated)'], 'filled-dry'],
   ['Yesterday 18:04', 'ETH/USD', 'Sell', '1.2000', '1.2000', '2,431.18', '11.72', 'live', ['ok', 'Filled, 40% after timeout'], 'mixed'],
@@ -26,22 +31,26 @@ let st = location.hash.slice(1) || 'list';
 function draw() {
   let h = '';
   $('tot').textContent = '';
-  if (st === 'list') {
-    h = '<table class="t"><tr><th>When</th><th>Pair</th><th>Side</th><th class="r">Filled / asked</th><th class="r">Average price</th><th class="r">Saving USD</th><th>Mode</th><th>Outcome</th></tr>' +
-      ROWS.map(r => `<tr class="click" onclick="location.href='result.html#${r[9]}'"><td>${r[0]}</td><td>${r[1]}</td><td class="${r[2] === 'Buy' ? 'tone-fill' : 'tone-bad'}">${r[2]}</td><td class="r num">${r[4]} / ${r[3]}</td><td class="r num">${r[5]}</td><td class="r num tone-fill">${r[6]}</td><td><span class="badge ${r[7]}">${r[7] === 'dry' ? 'Dry run' : 'Live'}</span></td><td><span class="badge ${r[8][0]}">${r[8][1]}</span></td></tr>`).join('') + '</table>';
+  if (st === 'list' || st === 'margin') {
+    const rows = ROWS.filter(r => st === 'list' || r[10] === 'm');
+    h = '<div class="row small" style="padding:8px 4px"><span class="muted">Show</span><div class="seg" id="filt"><button data-f="list" class="' + (st === 'list' ? 'on' : '') + '">All</button><button data-f="spot">Spot</button><button data-f="margin" class="' + (st === 'margin' ? 'on' : '') + '">Margin</button></div><span class="spacer"></span><span class="tiny muted">Margin rows are dry runs: margin live comes only after your go-ahead.</span></div><table class="t"><tr><th>When</th><th>Pair</th><th>Type</th><th class="r">Filled / asked</th><th class="r">Average price</th><th class="r">Saving USD</th><th>Mode</th><th>Outcome</th></tr>' +
+      rows.map(r => `<tr ${r[9] ? `class="click" onclick="location.href='result.html#${r[9]}'"` : 'class="click" title="Prototype: this sample row has no result page"'}><td>${r[0]}</td><td>${r[1]}</td><td>${r[10] === 'm' ? `<span class="badge mg">Margin</span> <span class="${/long/.test(r[2]) ? 'tone-fill' : /short/.test(r[2]) && /Open/.test(r[2]) ? 'tone-bad' : ''}" style="white-space:nowrap">${r[2]}</span>` : `<span class="badge plain">Spot</span> <span class="${r[2] === 'Buy' ? 'tone-fill' : 'tone-bad'}">${r[2]}</span>`}</td><td class="r num">${r[4]} / ${r[3]}</td><td class="r num">${r[5]}</td><td class="r num tone-fill">${r[6]}</td><td><span class="badge ${r[7]}">${r[7] === 'dry' ? 'Dry run' : 'Live'}</span></td><td><span class="badge ${r[8][0]}">${r[8][1]}</span></td></tr>`).join('') + '</table>';
     $('tot').innerHTML = 'Live chases: 4 · Total saving: <b class="num tone-fill">34.65 USD</b> (dry runs not counted)';
   } else if (st === 'empty') {
     h = '<div style="text-align:center;padding:48px 20px"><h2>No chases yet</h2><p class="muted">Each chase you run, dry or live, shows here with its fill and its saving.</p><a class="btn drybtn" href="new.html#ready">Start a dry run</a></div>';
   } else if (st === 'loading') {
-    h = '<table class="t"><tr><th>When</th><th>Pair</th><th>Side</th><th class="r">Filled / asked</th><th class="r">Average price</th><th class="r">Saving USD</th><th>Mode</th><th>Outcome</th></tr>' +
+    h = '<table class="t"><tr><th>When</th><th>Pair</th><th>Type</th><th class="r">Filled / asked</th><th class="r">Average price</th><th class="r">Saving USD</th><th>Mode</th><th>Outcome</th></tr>' +
       [1, 2, 3].map(() => '<tr>' + Array(8).fill('<td><span class="skel" style="display:inline-block;width:80%">x</span></td>').join('') + '</tr>').join('') + '</table>';
   } else {
     h = '<div class="note bad" style="margin:12px"><b>The tool cannot read the history file.</b> The file is ~/Library/Application Support/order-chaser/history.json. Your Kraken orders are not affected. <button class="btn" style="margin-left:8px;padding:4px 10px;font-size:13px">Try again</button></div>';
   }
   $('out').innerHTML = h;
+  const fl = document.getElementById('filt');
+  if (fl) fl.onclick = e => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.f === 'spot') { $('out').querySelectorAll('tr.click').forEach(tr => tr.style.display = /Margin/.test(tr.textContent) ? 'none' : ''); fl.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); } else { st = b.dataset.f; draw(); } };
   document.querySelectorAll('#opts button').forEach(x => x.classList.toggle('on', x.dataset.id === st));
 }
 $('opts').onclick = e => { const b = e.target.closest('button'); if (b) { st = b.dataset.id; history.replaceState(null, '', '#' + st); draw(); } };
+window.addEventListener('hashchange', () => { st = location.hash.slice(1) || 'list'; draw(); });
 draw();
 </script>
 </body></html>

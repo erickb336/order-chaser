@@ -11,6 +11,21 @@
     <li>All 14 product questions are decided. <a href="questions.html">See the 14 decisions</a>.</li>
     <li>This version adds the 9 changes from the principal engineer review: key check, rate counter, tool restart, pair status and minimums.</li></ul></div>
 
+  <div class="card" style="max-width:82ch;margin-bottom:24px;border-color:#ecd2a6">
+    <div class="row"><span class="badge mg">NEW · task T5</span><h2 style="margin:0">Margin: open and close positions</h2></div>
+    <p style="margin-top:8px">This version adds margin to the approved screens. You can open a long or a short with 2x to 5x leverage, and close a position reduce-only. Spot stays as it was. Margin comes after the spot dry run, and runs as a dry run first.</p>
+    <p class="small"><b>What I need from you:</b> approve the margin screens, and answer the 6 open questions, or keep their defaults. <a href="questions.html#open">See the 6 questions</a>.</p>
+    <table class="t small" style="background:#fff">
+      <tr><th>Screen</th><th>What changes for margin</th><th>Open it</th></tr>
+      <tr><td>New chase</td><td>A "What to do" choice: Buy, Sell, Open long, Open short, Close a position. Open shows leverage, cost, collateral, margin level now and after, fees and the worst case. Close shows your positions and the size, reduce-only. 13 margin states. 3 layouts of the choice to compare.</td><td><a href="new.html#m-long">open long</a> · <a href="new.html#m-close">close</a></td></tr>
+      <tr><td>Live chase</td><td>Leverage, position status, what stays open if the tool stops, cancel and replace when Kraken refuses an amend, and "liquidated". 12 margin states.</td><td><a href="chase.html#m-replace">cancel and replace</a> · <a href="chase.html#m-liquidated">liquidated</a></td></tr>
+      <tr><td>Result</td><td>Position, collateral, margin level, opening fee and rollover estimate, profit or loss of a close. 8 outcomes.</td><td><a href="result.html#m-open-filled">opened</a> · <a href="result.html#m-close-notfilled">part closed</a></td></tr>
+      <tr><td>History</td><td>A Type column: Spot or Margin, and a filter.</td><td><a href="history.html#margin">margin rows</a></td></tr>
+      <tr><td>Setup</td><td>One line: margin uses the same key, no new permission.</td><td><a href="setup.html#keyok">setup</a></td></tr>
+    </table>
+    <p class="tiny muted" style="margin:8px 0 0">Screenshots: design/screenshots/m-*.png. The margin states have a "Margin NEW" row in the state switcher at the top of each page.</p>
+  </div>
+
   <h2>1. The core screen: 3 directions</h2>
   <div class="tiles" style="grid-template-columns:1fr;margin-bottom:24px">
     <a class="tile" href="compare.html"><span class="n">compare.html</span><h3>Live chase: price ladder vs status card vs timeline</h3><p>Same chase, same state, three shapes, side by side. Switch the state to compare. Strength, weakness and the recommendation are on the page.</p></a>
@@ -43,6 +58,7 @@
   <p class="tiny muted" style="margin-top:16px">Screenshots of each screen: design/screenshots/. The dark bar at the top of each page belongs to the prototype, not to the product. Words: "cap" = the highest price of a buy chase; "safety timer" = Kraken's CancelAllOrdersAfter; "IOC" = immediate-or-cancel limit order.</p>
 </main>
 <script src="assets/proto.js"></script>
+<script src="assets/margin.js"></script>
 <script>
 OC.chrome('index');
 document.getElementById('states').innerHTML = OC.STATES.map(s => `<a class="btn" style="padding:6px 12px;font-size:13.5px" href="chase.html#${s.id}">${s.label}</a>`).join('');

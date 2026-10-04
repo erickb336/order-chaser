@@ -5,19 +5,24 @@
 <body>
 <main class="app" style="padding-top:22px">
   <h1>Questions and decisions</h1>
-  <div class="note ok" style="max-width:80ch;margin-bottom:18px"><b>Open questions: 0.</b> All 14 product cases are decided. The screens show each decision.</div>
+  <div class="note warn" style="max-width:80ch;margin-bottom:18px"><b>Open questions: 6, all about margin (task T5).</b> Each has options, a recommendation and a default. The screens show the default now. To decide, tell the chief the number and the option, for example "MQ1: 2". If you say nothing, the default stays.</div>
+  <h2 id="open">Open: margin</h2>
+  <div class="card" style="max-width:90ch;margin-bottom:22px" id="oq"></div>
   <h2 id="decided">Decided</h2>
-  <p class="muted" style="max-width:80ch">The owner chose 6 cases: the recommended answer of each, relayed by the chief. The principal engineer review set the other 8 as engineering defaults. To change one, tell the chief its number.</p>
+  <p class="muted" style="max-width:80ch">For spot, the owner chose 6 cases and the principal engineer review set 8 engineering defaults. For margin, the owner decided 6 cases (M1 to M6). To change one, tell the chief its number.</p>
   <table class="t card" style="padding:0;margin-bottom:20px" id="sum"></table>
 </main>
 <script src="assets/proto.js"></script>
+<script src="assets/margin.js"></script>
 <script>
 OC.chrome('questions');
 const SCREEN = { setup: 'Setup', new: 'New chase', chase: 'Live chase', result: 'Result' };
+document.getElementById('oq').innerHTML = OC.MQUESTIONS.map(q => OC.mqHTML(q) + `<div class="tiny muted" style="margin:-4px 0 12px">Screens: ${q.on.map(s => SCREEN[s]).join(', ')}</div>`).join('');
 const row = q => `<tr id="d-${q.id}"><td class="mono">${q.id}</td><td><b>${q.t}</b><div class="small">${q.a}</div></td><td class="small muted">${q.on.map(s => SCREEN[s]).join(', ')}</td></tr>`;
 document.getElementById('sum').innerHTML =
   '<tr><th>No.</th><th>Decision</th><th>Screens</th></tr>' +
-  '<tr><td colspan="3" style="background:var(--fill-bg)"><b>Owner chose (6)</b></td></tr>' + OC.DECISIONS.filter(q => q.by === 'owner').map(row).join('') +
-  '<tr><td colspan="3" style="background:#f3f1ec"><b>Engineering defaults (8)</b></td></tr>' + OC.DECISIONS.filter(q => q.by === 'eng').map(row).join('');
+  '<tr><td colspan="3" style="background:var(--mg-bg)"><b>Margin: owner decided (6)</b></td></tr>' + OC.MDECISIONS.map(row).join('') +
+  '<tr><td colspan="3" style="background:var(--fill-bg)"><b>Spot: owner chose (6)</b></td></tr>' + OC.DECISIONS.filter(q => q.by === 'owner' && !/^M/.test(q.id)).map(row).join('') +
+  '<tr><td colspan="3" style="background:#f3f1ec"><b>Spot: engineering defaults (8)</b></td></tr>' + OC.DECISIONS.filter(q => q.by === 'eng').map(row).join('');
 </script>
 </body></html>
