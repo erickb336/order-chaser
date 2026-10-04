@@ -685,11 +685,13 @@ def test_page_the_close_list_keeps_the_focus_and_the_selection_while_prices_upda
     two_longs(tool)
     stop = threading.Event()
 
-    def prices():                                    # new prices and a new account read about 6 times a second
-        k = 0
+    def prices():                                    # a new best bid and a new account read about 6 times a second
+        k, prev = 0, "62000.0"
         while not stop.is_set():
             k += 1
-            tool.book("BTC/USD", [("62000.0", "0"), (f"{62000 + k % 5}.0", "1")], [])
+            bid = f"{61900 + k % 10 * 10}.0"           # 61,900 to 61,990: the mark moves; the book stays below the ask of 62,000.60
+            tool.book("BTC/USD", [(prev, "0"), (bid, "1")], [])
+            prev = bid
             tool.call(tool.eng.read_account, True)
             time.sleep(0.15)
     th = threading.Thread(target=prices, daemon=True)
@@ -709,6 +711,29 @@ def test_page_the_close_list_keeps_the_focus_and_the_selection_while_prices_upda
     assert got["radio_before"] == got["radio_after"] == ["INPUT", "pos", True]
     assert got["pl_before"] != got["pl_after"]       # the row's profit or loss changed while the radio kept the focus
     assert got["whole_before"] == got["whole_after"] == ["BUTTON", "whole", None]
+
+
+def test_page_the_close_list_profit_follows_the_mark_of_each_price_with_no_new_account_read(tool):
+    # CLOSE-LIST-PL-STALE: the row of the watched pair says "now", so its profit or loss follows each price.
+    two_longs(tool)
+    reads, read = [], tool.eng.gw.read
+    tool.eng.gw.read = lambda now: reads.append(now) or read(now)     # Kraken's TradeBalance and OpenPositions (simulated)
+    at_move = []
+
+    def move():                                      # the mid moves from 62,000.30 to 61,900.30
+        at_move.append(len(reads))
+        tool.book("BTC/USD", [("62000.0", "0"), ("61900.0", "1")], [("62000.6", "0"), ("61900.6", "3")])
+    th = threading.Timer(2.0, move)
+    th.start()
+    pl = "document.querySelector('#poslist label .r').textContent"
+    got = tool.look([{"goto": "/new?what=close&pair=BTC/USD&dir=long"}, {"waitFor": "document.querySelector('#poslist input')"},
+                     {"eval": pl, "as": "before"}, {"waitFor": f"{pl}.startsWith('+12.83')", "timeout": 8000}, {"sleep": 500},
+                     {"eval": pl, "as": "after"}, {"shot": "r3-close-list-pl-follows-the-mark.png"}])
+    th.join()
+    # (62,000.30 - 62,417.90) x 0.01 + (62,000.30 - 61,000.00) x 0.02 = +15.83; at 61,900.30: -5.18 + 18.01 = +12.83
+    assert got["before"] == "+15.83 USDprofit or loss now, at the mark (estimate)"
+    assert got["after"] == "+12.83 USDprofit or loss now, at the mark (estimate)"
+    assert at_move[0] >= 1 and len(reads) == at_move[0]     # the form read the account when it opened; the price made no read
 
 
 NAMES = ("Array.from(document.querySelectorAll('#poslist input')).map(r => [r.getAttribute('aria-labelledby'), r.getAttribute('aria-describedby')]"

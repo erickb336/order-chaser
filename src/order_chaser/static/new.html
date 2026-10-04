@@ -192,7 +192,11 @@ function drawPositions(s) {
         + '<div class="tiny muted" id="posfoot"></div>';
   }
   all.forEach((x, i) => {
-    const on = x.pair + '|' + x.dir === posKey, xb = x.pair.split('/')[0], pd = (s && s.pairs[x.pair] || {}).price_decimals || 2, upl = Number(x.upl);
+    const on = x.pair + '|' + x.dir === posKey, xb = x.pair.split('/')[0], pd = (s && s.pairs[x.pair] || {}).price_decimals || 2;
+    // The watched pair: P/L at the mark of each new price (the mid of the best bid and ask, as the account marks it), with no new
+    // account read. Another pair: P/L at its last mark in the account read.
+    const live = s && x.pair === s.watched && s.feed.ok && s.feed.fresh && s.feed.bid && s.feed.ask;
+    const upl = live ? ((Number(s.feed.bid) + Number(s.feed.ask)) / 2 - Number(x.entry)) * Number(x.qty) * (x.dir === 'long' ? 1 : -1) : Number(x.upl);
     const row = list.children[i], radio = row.querySelector('input');
     row.classList.toggle('on', on);
     if (radio.checked !== on) radio.checked = on;
@@ -204,7 +208,7 @@ function drawPositions(s) {
     const pl = $(`pos${i}p`);
     pl.className = x.upl == null ? 'r small muted' : `r small num ${upl >= 0 ? 'tone-fill' : 'tone-bad'}`;
     put(pl, x.upl == null ? `no price yet<div class="tiny" style="font-family:var(--sans)">profit or loss shows when ${OC.esc(x.pair)} prices arrive</div>`
-      : `${upl >= 0 ? '+' : '−'}${OC.usd(Math.abs(upl))} USD<div class="tiny muted" style="font-family:var(--sans)">${s && x.pair === s.watched ? 'profit or loss now, at the mark' : `at the last price seen, ${OC.clock(x.mark_at)}`} (estimate)</div>`);
+      : `${upl >= 0 ? '+' : '−'}${OC.usd(Math.abs(upl))} USD<div class="tiny muted" style="font-family:var(--sans)">${live ? 'profit or loss now, at the mark' : `at the last price seen, ${OC.clock(x.mark_at)}`} (estimate)</div>`);
   });
   if (account && all.length) text($('posfoot'), `Read from the simulated account at ${readAt(account)}. One row for each pair and direction. A close takes the oldest position first.`);
 }
