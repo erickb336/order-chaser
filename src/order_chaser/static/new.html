@@ -131,7 +131,6 @@ function draw() {
   const fresh = s && s.watched === pair && s.feed.fresh && s.feed.bid;
   const bid = fresh ? Number(s.feed.bid) : null, ask = fresh ? Number(s.feed.ask) : null;
   $('bid').textContent = bid ? P(bid) : '…'; $('ask').textContent = ask ? P(ask) : '…';
-  $('prices').style.opacity = fresh || !s ? 1 : .5;
   if (fresh) {
     const spread = ask - bid;
     $('pnote').textContent = `Spread ${P(spread)} (${(spread / ask * 100).toFixed(4)}%). Updated ${Math.round(s.feed.age)} s ago from the public Kraken feed.`;

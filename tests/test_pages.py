@@ -1,4 +1,4 @@
-"""Page tests: the real app on 127.0.0.1:5180 with a FAKE public feed (sample prices), seen in Chrome.
+"""Page tests: the real app on a free port of 127.0.0.1 with a FAKE public feed (sample prices), seen in Chrome.
 
 They need node, `npm install` in tests/pages (playwright-core, pinned) and Google Chrome; else they skip.
 Set OC_SHOTS to a folder to keep the screenshots.
@@ -78,9 +78,12 @@ class FakeWs:
 class Tool:
     def __init__(self, data_dir, shots):
         self.clock, self.shots, self.books = Clock(), shots, {}
-        guard = create_app(data_dir, connect=False, clock=self.clock, latency=0)
+        with socket.socket() as s:       # a free port: the app on 5180, or another agent, does not block the tests
+            s.bind(("127.0.0.1", 0))
+            self.port = s.getsockname()[1]
+        guard = create_app(data_dir, connect=False, clock=self.clock, latency=0, port=self.port)
         self.eng = guard.app.state.engine
-        self.server = uvicorn.Server(uvicorn.Config(guard, host="127.0.0.1", port=5180, log_level="warning"))
+        self.server = uvicorn.Server(uvicorn.Config(guard, host="127.0.0.1", port=self.port, log_level="warning"))
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_until_complete, args=(self.server.serve(),), daemon=True)
         self.thread.start()
@@ -122,7 +125,7 @@ class Tool:
         """Run the steps in Chrome; return what the steps read."""
         steps = [{**s, "shot": str(self.shots / s["shot"])} if "shot" in s else s for s in steps]
         env = {**os.environ, "HOME": str(self.shots.parent), "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1"}
-        p = subprocess.run(["node", str(PAGES / "look.mjs"), json.dumps({"tabs": tabs, "steps": steps})], cwd=PAGES, env=env,
+        p = subprocess.run(["node", str(PAGES / "look.mjs"), json.dumps({"base": f"http://127.0.0.1:{self.port}", "tabs": tabs, "steps": steps})], cwd=PAGES, env=env,
                            capture_output=True, text=True, timeout=120)
         result = [x for x in p.stdout.splitlines() if x.startswith("RESULT ")]
         assert result, p.stderr
@@ -133,19 +136,8 @@ class Tool:
         self.thread.join(10)
 
 
-def port_free():
-    with socket.socket() as s:
-        return s.connect_ex(("127.0.0.1", 5180)) != 0
-
-
 @pytest.fixture
 def tool(tmp_path):
-    for _ in range(240):              # another agent may use 5180: wait for it
-        if port_free():
-            break
-        time.sleep(0.5)
-    else:
-        pytest.skip("port 5180 stays in use")
     shots = Path(os.environ.get("OC_SHOTS", tmp_path / "shots"))
     shots.mkdir(parents=True, exist_ok=True)
     t = Tool(tmp_path, shots)
@@ -155,6 +147,22 @@ def tool(tmp_path):
 
 def card_shown(state):
     return {"waitFor": f"document.querySelector('#statuscard[data-state=\"{state}\"]')"}
+
+
+# The lowest WCAG contrast of the texts that match sel, on the white card, with the opacity of every ancestor.
+def contrast(sel):
+    return {"eval": "Math.min(...Array.from(document.querySelectorAll(%s)).map(el => {"
+                    " let o = 1; for (let e = el; e; e = e.parentElement) o *= Number(getComputedStyle(e).opacity);"
+                    " const m = getComputedStyle(el).color.match(/[\\d.]+/g).map(Number), a = (m[3] ?? 1) * o;"
+                    " const L = m.slice(0, 3).map(v => (v * a + 255 * (1 - a)) / 255).map(v => v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);"
+                    " return Math.round(1.05 / (0.2126 * L[0] + 0.7152 * L[1] + 0.0722 * L[2] + 0.05) * 100) / 100; }))" % json.dumps(sel),
+            "as": "contrast"}
+
+
+# The space from the lowest rail label to the note under the rail, in px: below 0 they overlap.
+NOTE_GAP = {"eval": "Math.round(OC.$('railnote').getBoundingClientRect().top - Math.max(...Array.from("
+                    "document.querySelectorAll('#statuscard .rail .mk')).map(e => e.getBoundingClientRect().bottom)))", "as": "gap"}
+RAIL_TEXT = "#statuscard .rail .val, #statuscard .rail .lab"
 
 
 def clock_text(t):
@@ -173,8 +181,9 @@ def test_page_a_finished_chase_shows_its_own_end_prices_not_another_pair(tool):
     tool.call(watch_eth)
     got = tool.look([{"goto": "/chase"}, card_shown("stopped"),
                      {"text": "#statuscard .mk.bid .val", "as": "bid"}, {"text": "#statuscard .mk.ask .val", "as": "ask"},
-                     {"text": "#railnote", "as": "note"}, {"shot": "done-chase-own-prices.png"}])
+                     {"text": "#railnote", "as": "note"}, NOTE_GAP, {"shot": "done-chase-own-prices.png"}])
     assert (got["bid"], got["ask"]) == ("62,417.90", "62,418.50")
+    assert got["gap"] >= 0                                # UX3-END-NOTE-OVERLAP: the note is below the "best bid" label
     assert got["note"] == f"Prices at the end of the chase, {clock_text(tool.eng.chase.book_at)}."
 
 
@@ -193,19 +202,20 @@ def test_page_a_tab_asks_again_for_its_pair_when_another_tab_changed_it(tool):
     assert got["head"] == "Prices now: BTC/USD"
 
 
-def test_page_disconnected_shows_the_age_of_the_values_and_dims_the_rail(tool):
-    # UX-STALE-PRICES-NO-AGE
+def test_page_disconnected_shows_the_age_of_the_values_and_dashes_the_rail_with_readable_prices(tool):
+    # UX-STALE-PRICES-NO-AGE, UX3-STALE-RAIL-CONTRAST
     tool.start()
     tool.call(tool.eng.on_link, False, 2, 4)
     tool.clock.t += 9
     got = tool.look([{"goto": "/chase"}, card_shown("disconnected"),
                      {"text": "#statuscard .state", "as": "state"},
                      {"eval": "document.querySelector('#statuscard .rail').classList.contains('stale')", "as": "dim"},
-                     {"shot": "disconnected-age.png"}])
+                     contrast(RAIL_TEXT), {"shot": "disconnected-age.png"}])
+    assert got.pop("contrast") >= 4.5
     assert got == {"state": "Disconnected · values from 9 s ago", "dim": True}
 
 
-def test_page_a_feed_lost_end_shows_the_age_and_dims_the_rail(tool):
+def test_page_a_feed_lost_end_shows_the_age_and_dashes_the_rail_with_readable_prices(tool):
     # UX-STALE-PRICES-NO-AGE, after a feed-lost end
     tool.start(timeout=30)
     tool.clock.t += 5
@@ -215,8 +225,10 @@ def test_page_a_feed_lost_end_shows_the_age_and_dims_the_rail(tool):
     assert (tool.eng.chase.outcome, tool.eng.chase.end_ask) == ("notfilled", None)
     got = tool.look([{"goto": "/chase"}, card_shown("notfilled"), {"text": "#railnote", "as": "note"},
                      {"eval": "document.querySelector('#statuscard .rail').classList.contains('stale')", "as": "dim"},
-                     {"shot": "feed-lost-end.png"}])
-    assert got == {"note": "Prices: values from 30 s before the end. There was no valid price at the end.", "dim": True}
+                     {"text": "#statuscard .state", "as": "state"}, contrast(RAIL_TEXT), NOTE_GAP, {"shot": "feed-lost-end.png"}])
+    assert got.pop("contrast") >= 4.5 and got.pop("gap") >= 0
+    assert got == {"note": "Prices: values from 30 s before the end. There was no valid price at the end.", "dim": True,
+                   "state": "Nothing filled · values from 30 s before the end"}
 
 
 def test_page_a_dry_run_cancel_failed_says_there_is_nothing_to_check_in_kraken_pro(tool):
@@ -299,3 +311,37 @@ def test_page_a_pair_change_clears_the_limit(tool):
                      {"eval": "OC.$('ovp').value", "as": "after"}, {"shot": "override-pair-change.png"}])
     assert (got["before"], got["after"]) == ("62418.5", "")
 
+
+
+def test_page_a_rest_below_the_minimum_offers_no_chase_of_the_rest_and_history_shows_the_fill_word(tool):
+    # UX3-CHASE-REST-BELOW-MIN, HIST-ZERO-STOP-BADGE
+    none = tool.start()
+    tool.call(tool.eng.user, "stop")                                         # nothing filled
+    tool.beat(1)                                                             # history: newest first
+    tiny = tool.start()
+    tool.trade("sell", "62417.0", "0.04996")                                 # the rest, 0.00004 BTC, is below 0.00005
+    tool.call(tool.eng.user, "stop")
+    assert (tool.eng.chase.outcome, tool.eng.chase.qty - tool.eng.chase.filled) == ("stopped", D("0.00004"))
+    rest_links = "document.querySelectorAll(\"a[href^='/new?rest']\").length"
+    got = tool.look([
+        {"goto": "/chase"}, card_shown("stopped"), {"eval": rest_links, "as": "chase_links"},
+        {"text": "#restmin", "as": "chase_text"}, {"shot": "rest-below-min-chase.png"},
+        {"goto": f"/result?id={tiny}"}, {"waitFor": "document.querySelector('.facts')"},
+        {"eval": rest_links, "as": "result_links"}, {"text": "#restmin", "as": "result_text"}, {"shot": "rest-below-min-result.png"},
+        {"goto": f"/result?id={none}"}, {"waitFor": "document.querySelector('.facts')"},
+        {"text": "a[href^='/new?rest']", "as": "none_again"},
+        {"goto": "/history"}, {"waitFor": "document.querySelectorAll('tr.click').length === 2"},
+        {"eval": "Array.from(document.querySelectorAll('tr.click td:last-child .badge')).map(x => x.textContent)", "as": "history"},
+        {"shot": "history-stopped.png"}])
+    text = "The rest, 0.00004 BTC, is below the Kraken minimum (0.00005 BTC or 0.5 USD). You cannot chase it."
+    assert (got["chase_links"], got["chase_text"], got["result_links"], got["result_text"]) == (0, text, 0, text)
+    assert got["none_again"] == "Chase again (0.0500 BTC)"                   # a rest above the minimum keeps the button
+    assert got["history"] == ["Stopped by you · Part filled", "Stopped by you · Not filled"]
+
+
+def test_page_connecting_text_is_readable(tool):
+    # UX3-PRICES-LOADING-CONTRAST: no valid book for more than 10 s, the link is up: "Connecting…"
+    tool.clock.t += 11
+    got = tool.look([{"goto": "/new"}, {"waitFor": "OC.$('pnote').textContent.startsWith('Connecting')"},
+                     contrast("#prices .tiny, #pnote, #bid, #ask"), {"shot": "connecting.png"}])
+    assert got["contrast"] >= 4.5

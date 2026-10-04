@@ -1,12 +1,12 @@
 // Drive the real pages in Chrome and print what a user sees, as JSON. tests/test_pages.py calls it.
-// Usage: node look.mjs '<spec>'. Spec: {"tabs": n, "steps": [step, ...]}. Each step acts on tab "tab" (default 0):
+// Usage: node look.mjs '<spec>'. Spec: {"base": "http://127.0.0.1:port", "tabs": n, "steps": [step, ...]}. Each step acts on tab "tab" (default 0):
 //   {"goto": "/path"} {"click": sel} {"select": [sel, value]} {"fill": [sel, text]}
 //   {"waitFor": "js predicate"} {"text": sel, "as": name} {"eval": "js expression", "as": name}
 //   {"shot": path} {"sleep": ms} {"front": true} (the tab gets the focus)
 import { chromium } from 'playwright-core';
 
 const spec = JSON.parse(process.argv[2]);
-const BASE = 'http://127.0.0.1:5180';
+const BASE = spec.base;
 const out = {};
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 try {

@@ -38,6 +38,7 @@ async function load() {
     const o = r.outcome === 'notfilled' ? ['bad', fw + ': ' + (r.nofeed ? 'no valid price, no IOC' : r.beyond ? (r.side === 'buy' ? 'above cap' : 'below floor') : `IOC at the ${limitWord}`)]
       : r.outcome === 'belowmin' ? ['bad', fw + ': rest below minimum']
       : r.outcome === 'cancelfail' && r.mode === 'live' ? ['bad', 'Cancel failed: check Kraken']
+      : ['stopped', 'ended'].includes(r.outcome) ? [OUT[r.outcome][0], OUT[r.outcome][1] + ' · ' + fw]
       : OUT[r.outcome] || ['plain', r.outcome];
     const taker = 100 - OC.pct(r.maker_qty, r.qty);
     const outcome = r.outcome === 'filled' && taker > 0 ? ['ok', `Filled, ${taker}% ${r.exit === 'fillnow' ? 'by "Fill the rest now"' : 'after timeout'} (simulated)`] : o;

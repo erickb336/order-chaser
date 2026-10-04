@@ -19,6 +19,8 @@ const fillWord = (filled, total) => Number(filled) <= 0 ? 'Not filled' : Number(
 // The button after a chase that did not fill all: the rest, or the whole amount again when nothing filled.
 const againText = c => { const rest = Number(c.qty) - Number(c.filled); return `${Number(c.filled) > 0 ? 'Chase the rest' : 'Chase again'} (${qty(rest)} ${c.pair.base})`; };
 const clock = t => new Date(t * 1000).toLocaleTimeString('en-GB');
+// A rest below a Kraken minimum cannot be chased: the server sets c.rest_below_min with the rule of the core.
+const restBelowMin = c => `The rest, ${qty(Number(c.qty) - Number(c.filled))} ${c.pair.base}, is below the Kraken minimum (${qty(c.pair.ordermin)} ${c.pair.base} or ${c.pair.costmin} ${c.pair.quote}). You cannot chase it.`;
 
 // ---------- Server calls ----------
 async function post(url, body) {
@@ -44,7 +46,8 @@ function chrome(page) {
   const on = p => p.includes(page) ? 'on' : '';
   top.innerHTML = '<div class="brand"><span class="dot"></span>Order chaser</div>' +
     `<nav class="nav"><a href="/" class="${on(['new', 'chase'])}">Chase</a><a href="/history" class="${on(['history', 'result'])}">History</a><a href="/setup" class="${on(['setup'])}">Setup</a></nav>` +
-    '<span class="spacer"></span><span class="badge dry">DRY RUN: no real orders</span><span class="conn" id="conn" role="status"><i></i><span>Kraken feed: connecting…</span></span><span class="badge plain mono">localhost:5180</span>';
+    '<span class="spacer"></span><span class="badge dry">DRY RUN: no real orders</span><span class="conn" id="conn" role="status"><i></i><span>Kraken feed: connecting…</span></span>' +
+    `<span class="badge plain mono">${esc(location.host)}</span>`;
   app.prepend(top);
   const strip = document.createElement('div');
   strip.className = 'drystrip';
@@ -241,7 +244,7 @@ function copy(st, c, snap, ageOff) {
       break;
     case 'pageoffline':
       t.title = 'This page lost the tool';
-      t.sub = `This page cannot reach the tool at localhost:5180. The values below are from ${Math.round(ageOff)} s ago. If the tool still runs, the chase continues without this page. Restart the tool with "uv run order-chaser" if it stopped.`;
+      t.sub = `This page cannot reach the tool at ${location.host}. The values below are from ${Math.round(ageOff)} s ago. If the tool still runs, the chase continues without this page. Restart the tool with "uv run order-chaser" if it stopped.`;
       break;
   }
   return t;
@@ -300,10 +303,10 @@ function card(st, c, snap, ageOff) {
   const ageText = age == null ? 'no valid values' : done ? `values from ${age} s before the end` : `values from ${age} s ago`;
   let label = LABEL[st];
   if (st === 'notfilled') label = (filled > 0 ? 'Rest not filled' : 'Nothing filled') + (!beyond(c) ? '' : c.side === 'buy' ? ' (above cap)' : ' (below floor)');
-  if (st === 'disconnected') label += ' · ' + ageText;
+  if (stale) label += ' · ' + ageText;   // the age in the badge, not faded text
   const railNote = !done ? '' : stale ? `Prices: ${ageText}. There was no valid price at the end.`
     : c.book_at != null ? `Prices at the end of the chase, ${clock(c.book_at)}.` : '';
-  return `<div class="status" id="statuscard" data-state="${st}" style="${stale ? 'opacity:.92' : ''}">
+  return `<div class="status" id="statuscard" data-state="${st}" >
     <div class="state tone-${tone} ${done ? '' : 'pulse'}"><i></i>${label}</div>
     <div class="head">${t.title}</div>
     <div class="sub">${t.sub}</div>${steps}
@@ -323,5 +326,5 @@ function eventLog(c) {
   return `<ul class="log">${c.events.slice().reverse().map(e => `<li><span class="ts">${mmss(e.t)}</span><span class="${kind[e.kind] || ''}">${esc(e.text)}</span></li>`).join('')}</ul>`;
 }
 
-return { TOKEN, $, esc, beyond, pct, fillWord, againText, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
+return { TOKEN, $, esc, beyond, pct, fillWord, againText, restBelowMin, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
 })();

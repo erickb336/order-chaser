@@ -87,7 +87,7 @@ function render(c) {
     </div>
     ${restText ? `<div class="note ${['notfilled', 'ended', 'belowmin', 'cancelfail'].includes(c.outcome) ? 'bad' : 'warn'}" style="margin-top:16px"><b>${restText}</b>${c.outcome === 'notfilled' ? ` To ${w.buy ? 'buy' : 'sell'} the rest, start a new chase. It records a new ${w.limitWord}.` : ''}</div>` : ''}
     ${todo ? `<div class="note info small" style="margin-top:12px"><b>What to do now</b><ul style="margin:4px 0 0;padding-left:18px">${todo.map(x => `<li>${x}</li>`).join('')}</ul></div>` : ''}
-    <div class="row" style="margin-top:18px">${rest > 0 && !['refused', 'belowmin', 'cancelfail'].includes(c.outcome) ? `<a class="btn primary" href="/new?rest=${encodeURIComponent(c.id)}">${OC.againText(c)}</a>` : '<a class="btn primary" href="/new">New chase</a>'}<a class="btn" href="/history">History</a></div>
+    <div class="row" style="margin-top:18px">${rest > 0 && !c.rest_below_min && !['refused', 'cancelfail'].includes(c.outcome) ? `<a class="btn primary" href="/new?rest=${encodeURIComponent(c.id)}">${OC.againText(c)}</a>` : '<a class="btn primary" href="/new">New chase</a>'}<a class="btn" href="/history">History</a>${c.rest_below_min && c.outcome !== 'belowmin' ? `<span class="small" id="restmin">${OC.restBelowMin(c)}</span>` : ''}</div>
   </div>
   <div class="grid2" style="margin-top:16px">
     <div class="card"><h2>Fills (simulated)</h2>
