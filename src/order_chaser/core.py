@@ -29,7 +29,7 @@ import dataclasses
 import json
 import time
 from dataclasses import dataclass, replace
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 MAKER_FEE = Decimal("0.004")
 TAKER_FEE = Decimal("0.008")
@@ -954,7 +954,7 @@ def average(positions) -> tuple[Decimal, Decimal, int]:
     qty = sum((p.qty for p in positions), ZERO)
     cost = sum((p.qty * p.entry for p in positions), ZERO)
     margin = sum((p.margin for p in positions), ZERO)
-    return qty, cost / qty, int((cost / margin).quantize(Decimal(1), "ROUND_HALF_UP"))
+    return qty, cost / qty, int((cost / margin).quantize(Decimal(1), ROUND_HALF_UP))
 
 
 def _at(t: float, ref: float) -> str:
