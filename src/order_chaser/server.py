@@ -150,7 +150,7 @@ class Engine:
         errors = core.validate(pair, side, qty, limit, self.bid, self.ask, self.book_ok, timeout)
         if errors:
             return errors
-        c, cmds = core.begin("oc-" + uuid.uuid4().hex[:16], pair, side, qty, self.bid, self.ask, timeout,
+        c, cmds = core.begin("oc" + uuid.uuid4().hex[:12], pair, side, qty, self.bid, self.ask, timeout,
                              self.clock(), core.SIM_VENUE, limit, self.rate_for(symbol))
         self._apply(c, cmds)
         return []

@@ -86,7 +86,7 @@ def test_the_fallback_ioc_goes_out_at_the_cap_even_when_the_ask_is_far_above():
     c = resting()
     c, cmds = run(c, Book(T0 + 1, D("62430.0"), D("62431.0"), True), Tick(T0 + 121),
                   Book(T0 + 121, D("62430.0"), D("62431.0"), True), Canceled(T0 + 121), OrderState(T0 + 121, False, D(0), None))
-    assert [x for x in cmds if isinstance(x, Ioc)] == [Ioc("oc-1-ioc", "buy", D("62418.5"), D("0.05"))]
+    assert [x for x in cmds if isinstance(x, Ioc)] == [Ioc("oc-1-i", "buy", D("62418.5"), D("0.05"))]
 
 
 # ---------- partial fills and the remainder ----------
@@ -96,7 +96,7 @@ def test_remainder_after_partial_fills_sizes_the_ioc():
     c, cmds = run(c, Filled(T0 + 31, D("0.018"), D("62417.9"), True, cum=D("0.018")),
                   Filled(T0 + 40, D("0.002"), D("62417.9"), True, cum=D("0.020")),
                   beat(c, T0 + 120), Tick(T0 + 120), Canceled(T0 + 120), OrderState(T0 + 120, False, D("0.020"), None))
-    assert [x for x in cmds if isinstance(x, Ioc)] == [Ioc("oc-1-ioc", "buy", D("62418.5"), D("0.030"))]
+    assert [x for x in cmds if isinstance(x, Ioc)] == [Ioc("oc-1-i", "buy", D("62418.5"), D("0.030"))]
     assert c.phase == "ioc"
 
 
@@ -130,7 +130,7 @@ def test_timeout_fallback_is_cancel_then_canceled_event_then_reread_then_ioc_for
     assert cmds == []
 
     c, cmds = run(c, beat(c, T0 + 122), OrderState(T0 + 122, False, D("0.020"), None))
-    assert cmds == [Ioc("oc-1-ioc", "buy", D("62418.5"), D("0.030"))]
+    assert cmds == [Ioc("oc-1-i", "buy", D("62418.5"), D("0.030"))]
 
     c, _ = run(c, Filled(T0 + 122, D("0.030"), D("62418.5"), False, "ioc"), IocDone(T0 + 122))
     assert (c.phase, c.outcome, c.filled) == ("done", "filled", D("0.050"))
@@ -306,7 +306,7 @@ def test_fill_the_rest_now_runs_the_fallback_at_once():
     c, cmds = run(c, Filled(T0 + 10, D("0.01"), D("62417.9"), True, cum=D("0.01")), beat(c, T0 + 20), UserFillNow(T0 + 20))
     assert cmds == [Cancel("oc-1")]
     c, cmds = run(c, Canceled(T0 + 20), OrderState(T0 + 20, False, D("0.01"), None))
-    assert cmds == [Query("oc-1"), Ioc("oc-1-ioc", "buy", D("62418.5"), D("0.04"))]
+    assert cmds == [Query("oc-1"), Ioc("oc-1-i", "buy", D("62418.5"), D("0.04"))]
 
 
 # ---------- sell is the mirror ----------
@@ -326,7 +326,7 @@ def test_sell_rests_at_the_ask_moves_down_never_below_the_floor_and_ioc_at_the_f
             c, _ = run(c, Amended(now))
     assert amends == [D("62418.3"), D("62418.0"), D("62417.9")]
     c, cmds = run(c, beat(c, T0 + 120), Tick(T0 + 120), Canceled(T0 + 120), OrderState(T0 + 120, False, D(0), None))
-    assert [x for x in cmds if isinstance(x, Ioc)] == [Ioc("oc-1-ioc", "sell", D("62417.9"), D("0.05"))]
+    assert [x for x in cmds if isinstance(x, Ioc)] == [Ioc("oc-1-i", "sell", D("62417.9"), D("0.05"))]
 
 
 def test_sell_saving_counts_money_received():
@@ -425,14 +425,14 @@ def test_sim_fills_a_resting_order_as_maker_when_the_book_crosses_it():
     assert gw.send(Place("oc-1", "buy", D("100.1"), D("0.05")), T0) == [Placed(T0)]
     crossed = [(D("100.0"), D("0.02")), (D("100.1"), D("0.01")), (D("100.2"), D("5"))]
     assert gw.on_book([(D("99.9"), D("1"))], crossed, T0 + 1) == [
-        Filled(T0 + 1, D("0.03"), D("100.1"), True, "chase", D("0.03"))]
+        Filled(T0 + 1, D("0.03"), D("100.1"), True, "chase", D("0.03"), "oc-1")]
     # The same public levels do not fill twice.
     assert gw.on_book([(D("99.9"), D("1"))], crossed, T0 + 2) == []
     # New size at a crossing level fills, up to the rest of the order.
     more = [(D("100.0"), D("0.10")), (D("100.1"), D("0.01")), (D("100.2"), D("5"))]
     assert gw.on_book([(D("99.9"), D("1"))], more, T0 + 3) == [
-        Filled(T0 + 3, D("0.02"), D("100.1"), True, "chase", D("0.05"))]
-    assert gw.send(Query("oc-1"), T0 + 3) == [OrderState(T0 + 3, False, D("0.05"), D("100.1"))]
+        Filled(T0 + 3, D("0.02"), D("100.1"), True, "chase", D("0.05"), "oc-1")]
+    assert gw.send(Query("oc-1"), T0 + 3) == [OrderState(T0 + 3, False, D("0.05"), D("100.1"), "oc-1")]
 
 
 def test_sim_does_not_refill_from_a_level_that_flickers_out_and_back():
@@ -443,7 +443,7 @@ def test_sim_does_not_refill_from_a_level_that_flickers_out_and_back():
     at_our_price = [(D("100.1"), D("0.3")), (D("100.2"), D("5"))]
     away = [(D("100.2"), D("5"))]
     assert gw.on_book([(D("100.0"), D("1"))], at_our_price, T0 + 1) == [
-        Filled(T0 + 1, D("0.3"), D("100.1"), True, "chase", D("0.3"))]
+        Filled(T0 + 1, D("0.3"), D("100.1"), True, "chase", D("0.3"), "oc-1")]
     assert gw.on_book([(D("100.0"), D("1"))], away, T0 + 2) == []
     assert gw.on_book([(D("100.0"), D("1"))], at_our_price, T0 + 3) == []
 
@@ -453,7 +453,7 @@ def test_sim_fills_a_resting_sell_when_the_bid_rises_through_it():
     gw.on_book([(D("99.8"), D("1"))], [(D("100.0"), D("1"))], T0)
     gw.send(Place("oc-1", "sell", D("99.9"), D("0.05")), T0)
     assert gw.on_book([(D("99.9"), D("0.01")), (D("99.8"), D("1"))], [(D("100.0"), D("1"))], T0 + 1) == [
-        Filled(T0 + 1, D("0.01"), D("99.9"), True, "chase", D("0.01"))]
+        Filled(T0 + 1, D("0.01"), D("99.9"), True, "chase", D("0.01"), "oc-1")]
 
 
 def test_a_cancel_reject_with_the_order_still_open_retries_then_ends_and_says_check_kraken():
@@ -593,7 +593,7 @@ def test_no_ioc_on_a_book_older_than_10_seconds():
     stale, cmds = run(c, OrderState(T0 + 120, False, D(0), None))
     assert [x for x in cmds if isinstance(x, Ioc)] == [] and (stale.outcome, stale.end_ask) == ("notfilled", None)
     _, cmds = run(c, beat(c, T0 + 119), OrderState(T0 + 120, False, D(0), None))
-    assert [x for x in cmds if isinstance(x, Ioc)] == [Ioc("oc-1-ioc", "buy", D("62418.5"), D("0.05"))]
+    assert [x for x in cmds if isinstance(x, Ioc)] == [Ioc("oc-1-i", "buy", D("62418.5"), D("0.05"))]
 
 
 # ---------- SIM-FILL-DOUBLE-COUNT-SUSPECT ----------
@@ -604,11 +604,11 @@ def test_sim_a_sell_print_takes_bid_liquidity_so_the_ask_side_never_fills_it_aga
     gw = SimGateway()
     gw.on_book([(D("99.9"), D("0.3"))], [(D("100.1"), D("1"))], T0)
     gw.send(Place("oc-1", "buy", D("100.0"), D("1")), T0)
-    assert gw.on_trade("sell", D("99.9"), D("0.3"), T0 + 1) == [Filled(T0 + 1, D("0.3"), D("100.0"), True, "chase", D("0.3"))]
+    assert gw.on_trade("sell", D("99.9"), D("0.3"), T0 + 1) == [Filled(T0 + 1, D("0.3"), D("100.0"), True, "chase", D("0.3"), "oc-1")]
     assert gw.on_book([], [(D("100.1"), D("1"))], T0 + 1) == []     # the bid at 99.9 is gone: nothing more
     # A seller whose remainder rests as an ask at 99.9 is new liquidity: it fills once, the print does not repeat.
     assert gw.on_book([], [(D("99.9"), D("0.2")), (D("100.1"), D("1"))], T0 + 2) == [
-        Filled(T0 + 2, D("0.2"), D("100.0"), True, "chase", D("0.5"))]
+        Filled(T0 + 2, D("0.2"), D("100.0"), True, "chase", D("0.5"), "oc-1")]
     assert gw.on_book([], [(D("99.9"), D("0.2")), (D("100.1"), D("1"))], T0 + 3) == []
 
 
