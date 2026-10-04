@@ -8,8 +8,9 @@ Phases (the chase states):
   placing -> resting <-> amending
   resting -> cancelling (timeout, "fill the rest now" or stop)
   cancelling -> reread -> ioc -> done        (timeout and "fill the rest now")
-  cancelling -> done                         (stop)
+  cancelling -> done                         (stop; or the cancel is rejected 3 times)
   resting -> feed_lost -> reconcile -> resting
+  feed_lost -> cancelling -> reread -> done  (timeout while the feed is lost: no IOC)
   amend rejected -> reconcile -> resting     (no blind retry)
   any phase -> done (outcome "ended") on a tool restart
 """
@@ -26,7 +27,8 @@ RATE_MAX = 60
 RATE_SLOW_ABOVE = 40
 AMEND_EVERY = 5
 AMEND_EVERY_SLOW = 15
-TIMEOUT_MIN, TIMEOUT_MAX = 30, 900
+TIMEOUTS = (30, 60, 120, 300, 600, 900)
+CANCEL_TRIES = 3
 ZERO = Decimal(0)
 
 
@@ -71,8 +73,7 @@ class Chase:
     pending: Decimal | None = None    # price of a place or amend in flight
     placed_at: float | None = None
     last_amend_at: float | None = None
-    fills: tuple[Fill, ...] = ()
-    order_cum: Decimal = ZERO         # filled qty of the chase order, as the venue reports it
+    fills: tuple[Fill, ...] = ()      # the venue's filled qty is the truth: see _venue_cum()
     exit: str | None = None           # "timeout", "fillnow" or "stop", once asked for
     bid: Decimal | None = None
     ask: Decimal | None = None
@@ -85,7 +86,9 @@ class Chase:
     reject_at: float | None = None
     reject_price: Decimal | None = None
     reconcile_for: str | None = None  # "feed" or "reject"
-    outcome: str | None = None        # filled, notfilled, belowmin, stopped, ended, refused
+    cancel_tries: int = 0             # cancels sent for the chase order
+    cancel_wait: bool = False         # a cancel was rejected and the order is open: retry when the rate allows
+    outcome: str | None = None        # filled, notfilled, belowmin, stopped, ended, refused, cancelfail
     ended_at: float | None = None
     end_ask: Decimal | None = None    # the ask (buy) or bid (sell) when the chase ended
     off_from: float | None = None     # last event before the tool stopped (outcome "ended")
@@ -104,8 +107,7 @@ class Chase:
 
     @property
     def remainder(self) -> Decimal:
-        done = max(self.order_cum, self.chase_filled) + sum((f.qty for f in self.fills if f.order == "ioc"), ZERO)
-        return max(self.qty - done, ZERO)
+        return max(self.qty - self.filled, ZERO)
 
 
 # ---------- Events (input) ----------
@@ -150,6 +152,7 @@ class Filled:
     price: Decimal
     maker: bool
     order: str = "chase"
+    cum: Decimal | None = None   # the venue's filled qty of the order after this fill, when it reports it
 
 @dataclass(frozen=True)
 class Canceled:
@@ -160,7 +163,7 @@ class OrderState:
     now: float
     open: bool
     cum_qty: Decimal
-    price: Decimal | None
+    price: Decimal | None    # the order's limit price, also when it is closed; None for an unknown order
 
 @dataclass(frozen=True)
 class IocDone:
@@ -240,17 +243,19 @@ def validate(pair: Pair, side: str, qty: Decimal, limit: Decimal | None,
         errors.append("Pick buy or sell.")
     if bid is None or ask is None or not book_ok:
         errors.append("Start needs live prices.")
-    if not (TIMEOUT_MIN <= timeout <= TIMEOUT_MAX):
-        errors.append("The timeout must be from 30 s to 15 min.")
-    if qty <= 0 or qty != qty.quantize(Decimal(1).scaleb(-pair.qty_decimals)):
+    if timeout not in TIMEOUTS:
+        errors.append("Pick a timeout from the list: 30 s to 15 min.")
+    if qty <= 0 or qty.normalize().as_tuple().exponent < -pair.qty_decimals:
         errors.append(f"Enter an amount above 0 with at most {pair.qty_decimals} decimals.")
     elif ask is not None and bid is not None:
         ref = ask if side == "buy" else bid
         if qty < pair.ordermin or qty * ref < pair.costmin:
             errors.append(f"The amount is below the Kraken minimums for {pair.symbol}: "
                           f"at least {fmt_qty(pair.ordermin)} {pair.base} and {pair.costmin} {pair.quote}.")
-    if limit is not None and bid is not None and ask is not None:
-        if limit != limit.quantize(pair.tick):
+    if limit is not None and limit <= 0:
+        errors.append(f"The {'cap' if side == 'buy' else 'floor'} must be above 0.")
+    elif limit is not None and bid is not None and ask is not None:
+        if limit % pair.tick != 0:
             errors.append(f"The limit must be a multiple of {pair.tick}.")
         elif side == "buy" and limit < ask:
             errors.append("A higher limit must be at or above the ask now.")
@@ -326,11 +331,15 @@ def step(c: Chase, ev) -> tuple[Chase, list]:
             out += more
 
     elif isinstance(ev, Tick):
-        if c.phase == "resting" and c.exit is None and t >= c.timeout:
+        if c.phase in ("resting", "feed_lost") and c.exit is None and t >= c.timeout:
             c = replace(c, exit="timeout")
-            out.append(Log(t, "Timeout. Cancelling the resting order.", "warn"))
-        if c.phase == "resting":
+            out.append(Log(t, "Timeout. Cancelling the resting order." if c.phase == "resting"
+                           else "Timeout while the price feed is lost. Cancelling the order.", "warn"))
+        if c.phase in ("resting", "feed_lost"):
             c, more = _settle(c, ev.now)
+            out += more
+        elif c.phase == "cancelling" and c.cancel_wait:
+            c, more = _cancel(c, ev.now)
             out += more
 
     elif isinstance(ev, FeedLost):
@@ -365,12 +374,15 @@ def step(c: Chase, ev) -> tuple[Chase, list]:
         out += more
 
     elif isinstance(ev, Filled):
-        c = replace(c, fills=c.fills + (Fill(ev.qty, ev.price, ev.maker, t, ev.order),))
-        if ev.order == "chase":
-            c = replace(c, order_cum=max(c.order_cum, c.chase_filled))
+        qty = ev.qty
+        if ev.order == "chase" and ev.cum is not None:
+            qty = ev.cum - c.chase_filled          # a fill that a reread already counted adds nothing
+        if qty <= 0:
+            return c, out
+        c = replace(c, fills=c.fills + (Fill(qty, ev.price, ev.maker, t, ev.order),))
         complete = c.filled >= c.qty
         kind = "maker" if ev.maker else "taker, IOC"
-        out.append(Log(t, f"Filled {fmt_qty(ev.qty)} {base} at {p(ev.price)} ({kind})." + (" Order complete." if complete else ""), "fill"))
+        out.append(Log(t, f"Filled {fmt_qty(qty)} {base} at {p(ev.price)} ({kind})." + (" Order complete." if complete else ""), "fill"))
         if complete and c.phase != "ioc":
             c, more = _end(c, ev.now, "filled")
             out += more
@@ -425,13 +437,21 @@ def _settle(c: Chase, now: float) -> tuple[Chase, list]:
         return _end(c, now, "filled")
     if c.phase not in ("resting", "feed_lost"):
         return c, []
-    if c.exit == "stop" or (c.exit and c.phase == "resting"):
-        age = now - (c.placed_at or now)
-        c = _add_rate(replace(c, phase="cancelling"), cancel_cost(age))
-        return c, [Cancel(c.id)]
+    if c.exit:
+        return _cancel(replace(c, phase="cancelling"), now)
     if not c.feed_ok:
         return replace(c, phase="feed_lost"), []
     return _maybe_amend(c, now)
+
+
+def _cancel(c: Chase, now: float) -> tuple[Chase, list]:
+    """Send a cancel of the chase order when the estimated rate counter has room for it; else wait for a Tick."""
+    cost = cancel_cost(now - (c.placed_at or now))
+    if c.cancel_tries and c.rate + cost > RATE_MAX:
+        return replace(c, cancel_wait=True), []
+    c = _add_rate(replace(c, cancel_wait=False, cancel_tries=c.cancel_tries + 1), cost)
+    out = [Log(now - c.started, f"Sending the cancel again (try {c.cancel_tries} of {CANCEL_TRIES}).", "warn")] if c.cancel_tries > 1 else []
+    return c, out + [Cancel(c.id)]
 
 
 def _maybe_amend(c: Chase, now: float) -> tuple[Chase, list]:
@@ -479,7 +499,7 @@ def _rejected(c: Chase, ev: Rejected, t: float) -> tuple[Chase, list]:
             c = replace(c, rate=float(RATE_MAX), slow=True)
         return c, out
     if ev.op == "cancel" and c.phase == "cancelling":
-        return c, [Query(c.id)]
+        return c, [Log(t, f"Cancel rejected: {why}. Reading the order again.", "warn"), Query(c.id)]
     if ev.op == "ioc" and c.phase == "ioc":
         out = [Log(t, f"The IOC was rejected: {why}.", "bad")]
         c, more = _end(c, ev.now, "notfilled")
@@ -499,13 +519,23 @@ def _after_cancel(c: Chase, now: float, t: float, venue: str) -> tuple[Chase, li
 def _order_state(c: Chase, ev: OrderState, t: float) -> tuple[Chase, list]:
     p = lambda x: fmt_price(c.pair, x)
     base = c.pair.base
-    c = replace(c, order_cum=max(c.order_cum, ev.cum_qty))
+    venue = c.venue[0].upper() + c.venue[1:]
+    c, out = _venue_cum(c, ev, t)
     if c.phase == "cancelling" and not ev.open:
-        return _after_cancel(c, ev.now, t, c.venue[0].upper() + c.venue[1:])
+        c, more = _after_cancel(c, ev.now, t, venue)
+        return c, out + more
+    if c.phase == "cancelling":            # the cancel was rejected and the order is still open
+        if c.cancel_tries >= CANCEL_TRIES:
+            out.append(Log(t, f"{venue} rejected the cancel {CANCEL_TRIES} times and the order is still open. The tool "
+                              "stopped the chase. Check Kraken Pro for an open order and cancel it there.", "bad"))
+            c, more = _end(c, ev.now, "cancelfail")
+        else:
+            c, more = _cancel(c, ev.now)
+        return c, out + more
     if c.phase == "reconcile":
         state = "open" if ev.open else "closed"
         at = f", at {p(ev.price)}" if ev.open and ev.price is not None else ""
-        out = [Log(t, f"Read the order again: {state}, {fmt_qty(ev.cum_qty)} {base} filled{at}.")]
+        out.append(Log(t, f"Read the order again: {state}, {fmt_qty(ev.cum_qty)} {base} filled{at}."))
         if not ev.open:
             c, more = _end(c, ev.now, "filled" if c.remainder == 0 else "notfilled")
             return c, out + more
@@ -513,9 +543,13 @@ def _order_state(c: Chase, ev: OrderState, t: float) -> tuple[Chase, list]:
         return c, out + more
     if c.phase == "reread":
         rest = c.remainder
-        out = [Log(t, f"Read the filled quantity again: {fmt_qty(c.qty - rest)} {base}.")]
+        out.append(Log(t, f"Read the filled quantity again: {fmt_qty(c.qty - rest)} {base}."))
         if rest == 0:
             c, more = _end(c, ev.now, "filled")
+            return c, out + more
+        if not c.feed_ok:
+            out.append(Log(t, "No IOC: the price feed is lost, so there is no valid price. The rest counts as not filled.", "bad"))
+            c, more = _end(c, ev.now, "notfilled")
             return c, out + more
         if rest < c.pair.ordermin or rest * c.limit < c.pair.costmin:
             out.append(Log(t, f"The rest, {fmt_qty(rest)} {base}, is below the Kraken minimum for {c.pair.symbol} "
@@ -526,7 +560,19 @@ def _order_state(c: Chase, ev: OrderState, t: float) -> tuple[Chase, list]:
         out += [Ioc(c.id + "-ioc", c.side, c.limit, rest),
                 Log(t, f"Sending an IOC {c.side}, {fmt_qty(rest)} {base} at {p(c.limit)}…", "warn")]
         return c, out
-    return c, []
+    return c, out
+
+
+def _venue_cum(c: Chase, ev: OrderState, t: float) -> tuple[Chase, list]:
+    """The venue's filled qty is the truth. Record a fill that the tool did not see, at the order's price."""
+    missing = ev.cum_qty - c.chase_filled
+    if missing <= 0:
+        return c, []
+    price = ev.price if ev.price is not None else c.limit   # no price from the venue: count the worst price
+    venue = c.venue[0].upper() + c.venue[1:]
+    c = replace(c, fills=c.fills + (Fill(missing, price, True, t, "chase"),))
+    return c, [Log(t, f"{venue} reports {fmt_qty(missing)} {c.pair.base} more filled than the tool saw. "
+                      f"Recorded it at {fmt_price(c.pair, price)} (maker).", "fill")]
 
 
 def _restarted(c: Chase, ev: Restarted, t: float) -> tuple[Chase, list]:
@@ -608,7 +654,8 @@ def from_json(s: str) -> Chase:
     pr = d.pop("pair")
     pair = Pair(**{**pr, "tick": Decimal(pr["tick"]), "ordermin": Decimal(pr["ordermin"]), "costmin": Decimal(pr["costmin"])})
     fills = tuple(Fill(Decimal(f["qty"]), Decimal(f["price"]), f["maker"], f["t"], f["order"]) for f in d.pop("fills"))
-    for k in ("qty", "limit", "start_bid", "start_ask", "order_cum"):
+    d.pop("order_cum", None)   # a field of the first build; the fills hold the venue's qty now
+    for k in ("qty", "limit", "start_bid", "start_ask"):
         d[k] = Decimal(d[k])
     for k in ("price", "pending", "bid", "ask", "end_ask", "reject_price"):
         d[k] = _dec(d[k])

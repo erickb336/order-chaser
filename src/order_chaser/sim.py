@@ -4,8 +4,12 @@ It takes the core's commands and answers with the same events that the Kraken
 gateway gives in T4. It sends nothing to Kraken.
 
 Rules:
-- A simulated buy at P fills only when a public sell trade prints below P
+- A simulated buy at P fills when a public sell trade prints below P
   (sell: a buy trade above P). Fill qty = min(remainder, trade qty), as maker, at P.
+- A resting buy at P also fills when the public ask comes to or below P (sell: the
+  bid to or above P), as maker, at P, up to the size at those levels. Kraken fills a
+  resting order in the same way. Each public level fills the order once: only new
+  size at a level fills again.
 - A post-only place or amend is rejected when the price is at or above the
   best ask (sell: at or below the best bid).
 - The IOC fills against the book, level by level, up to its limit, as taker.
@@ -22,9 +26,25 @@ class SimGateway:
         self.order: dict | None = None    # {id, side, price, qty, cum, open}
         self.bids: list[tuple[Decimal, Decimal]] = []   # best first
         self.asks: list[tuple[Decimal, Decimal]] = []
+        self.taken: dict[Decimal, Decimal] = {}         # crossing level -> qty our order took from it
 
-    def on_book(self, bids, asks) -> None:
+    def on_book(self, bids, asks, now: float) -> list:
         self.bids, self.asks = list(bids), list(asks)
+        o = self.order
+        if not o or not o["open"]:
+            return []
+        buy = o["side"] == "buy"
+        crossing = [(p, q) for p, q in (self.asks if buy else self.bids) if (p <= o["price"] if buy else p >= o["price"])]
+        # A level that left the book comes back as new size.
+        self.taken = {p: t for p, t in self.taken.items() if any(p == lp for lp, _ in crossing)}
+        left = o["qty"] - o["cum"]
+        take_total = Decimal(0)
+        for p, q in crossing:
+            take = min(left - take_total, max(q - self.taken.get(p, Decimal(0)), Decimal(0)))
+            if take > 0:
+                self.taken[p] = self.taken.get(p, Decimal(0)) + take
+                take_total += take
+        return self._fill(take_total, now) if take_total > 0 else []
 
     def _crosses(self, side: str, price: Decimal) -> bool:
         if side == "buy":
@@ -38,6 +58,7 @@ class SimGateway:
                 return [core.Rejected(now, "place", "would_cross")]
             self.order = {"id": cmd.id, "side": cmd.side, "price": cmd.price, "qty": cmd.qty,
                           "cum": Decimal(0), "open": True}
+            self.taken = {}
             return [core.Placed(now)]
         if isinstance(cmd, core.Amend):
             if not o or not o["open"] or o["id"] != cmd.id:
@@ -54,7 +75,7 @@ class SimGateway:
         if isinstance(cmd, core.Query):
             if not o or o["id"] != cmd.id:
                 return [core.OrderState(now, False, Decimal(0), None)]
-            return [core.OrderState(now, o["open"], o["cum"], o["price"] if o["open"] else None)]
+            return [core.OrderState(now, o["open"], o["cum"], o["price"])]
         if isinstance(cmd, core.Ioc):
             return self._ioc(cmd, now)
         raise TypeError(cmd)
@@ -77,8 +98,11 @@ class SimGateway:
         through = (side == "sell" and price < o["price"]) if o["side"] == "buy" else (side == "buy" and price > o["price"])
         if not through:
             return []
-        take = min(o["qty"] - o["cum"], qty)
+        return self._fill(min(o["qty"] - o["cum"], qty), now)
+
+    def _fill(self, take: Decimal, now: float) -> list:
+        o = self.order
         o["cum"] += take
         if o["cum"] >= o["qty"]:
             o["open"] = False
-        return [core.Filled(now, take, o["price"], maker=True, order="chase")]
+        return [core.Filled(now, take, o["price"], maker=True, order="chase", cum=o["cum"])]

@@ -57,7 +57,7 @@ def test_validate_blocks_a_pair_that_is_not_online_and_an_amount_below_the_minim
         "The amount is below the Kraken minimums for BTC/USD: at least 0.00005 BTC and 0.5 USD."]
     assert core.validate(BTC, "buy", D("0.05"), None, D("62417.9"), D("62418.5"), True, 120) == []
     assert core.validate(BTC, "buy", D("0.05"), None, D("62417.9"), D("62418.5"), True, 20) == [
-        "The timeout must be from 30 s to 15 min."]
+        "Pick a timeout from the list: 30 s to 15 min."]
     assert core.validate(BTC, "buy", D("0.05"), None, D("62417.9"), D("62418.5"), False, 120) == ["Start needs live prices."]
 
 
@@ -163,7 +163,7 @@ def test_never_buys_more_than_asked_on_random_markets():
     for trial in range(300):
         gw = SimGateway()
         bid = D("100.0")
-        gw.on_book([(bid, D("1"))], [(bid + D("0.1"), D("0.3")), (bid + D("0.2"), D("5"))])
+        gw.on_book([(bid, D("1"))], [(bid + D("0.1"), D("0.3")), (bid + D("0.2"), D("5"))], 0.0)
         pair = core.Pair("X/USD", "X", "USD", D("0.1"), D("0.001"), D("0.01"), 1, 8, "online")
         c, cmds = core.begin("oc", pair, "buy", D("1.0"), bid, bid + D("0.1"), 30, 0.0, "the simulation")
         sent_qty = D(0)
@@ -181,9 +181,12 @@ def test_never_buys_more_than_asked_on_random_markets():
             r = rnd.random()
             if r < 0.4:
                 bid += D(rnd.choice(["-0.3", "-0.1", "0.1", "0.2"]))
-                gw.on_book([(bid, D("1"))], [(bid + D("0.1"), D("0.3")), (bid + D("0.2"), D("5"))])
-                ev = Book(now, bid, bid + D("0.1"), True)
-                c, more = core.step(c, ev)
+                more = []
+                for ev in gw.on_book([(bid, D("1"))], [(bid + D("0.1"), D("0.3")), (bid + D("0.2"), D("5"))], now):
+                    c, m = core.step(c, ev)
+                    more += m
+                c, m = core.step(c, Book(now, bid, bid + D("0.1"), True))
+                more += m
             elif r < 0.8:
                 more = []
                 for ev in gw.on_trade("sell", bid - D("0.1"), D(rnd.choice(["0.1", "0.25", "0.7"])), now):
@@ -344,11 +347,11 @@ def test_feed_lost_freezes_the_order_then_reconciles():
     c, texts = logs(c, FeedLost(T0 + 55))
     assert c.phase == "feed_lost"
     assert texts == ["Lost the public Kraken price feed. Order frozen at 62,417.90."]
-    c, cmds = run(c, Book(T0 + 60, D("62418.2"), D("62418.5"), True), Tick(T0 + 200))
-    assert cmds == [] and c.phase == "feed_lost"   # no amend, and no timeout without prices
-    c, cmds = run(c, FeedBack(T0 + 201))
+    c, cmds = run(c, Book(T0 + 60, D("62418.2"), D("62418.5"), True), Tick(T0 + 100))
+    assert cmds == [] and c.phase == "feed_lost"   # no amend without the feed
+    c, cmds = run(c, FeedBack(T0 + 101))
     assert cmds == [Query("oc-1")] and c.phase == "reconcile"
-    c, cmds = run(c, OrderState(T0 + 201, True, D(0), D("62417.9")))
+    c, cmds = run(c, OrderState(T0 + 101, True, D(0), D("62417.9")))
     assert cmds == [Amend("oc-1", D("62418.2"))]   # the book seen during the outage is not used...
 
 
@@ -400,3 +403,116 @@ def test_state_survives_json():
     c = resting()
     c, _ = run(c, Filled(T0 + 31, D("0.018"), D("62418.1"), True))
     assert core.from_json(core.to_json(c)) == c
+
+
+# ---------- repair round 1 (R13 code review) ----------
+
+def test_sim_fills_a_resting_order_as_maker_when_the_book_crosses_it():
+    # SIM-CROSSED-NO-FILL: real Kraken fills a resting post-only order at once, at our price,
+    # when the opposite side comes to or through it.
+    gw = SimGateway()
+    gw.on_book([(D("100.0"), D("1"))], [(D("100.2"), D("1"))], T0)
+    assert gw.send(Place("oc-1", "buy", D("100.1"), D("0.05")), T0) == [Placed(T0)]
+    crossed = [(D("100.0"), D("0.02")), (D("100.1"), D("0.01")), (D("100.2"), D("5"))]
+    assert gw.on_book([(D("99.9"), D("1"))], crossed, T0 + 1) == [
+        Filled(T0 + 1, D("0.03"), D("100.1"), True, "chase", D("0.03"))]
+    # The same public levels do not fill twice.
+    assert gw.on_book([(D("99.9"), D("1"))], crossed, T0 + 2) == []
+    # New size at a crossing level fills, up to the rest of the order.
+    more = [(D("100.0"), D("0.10")), (D("100.1"), D("0.01")), (D("100.2"), D("5"))]
+    assert gw.on_book([(D("99.9"), D("1"))], more, T0 + 3) == [
+        Filled(T0 + 3, D("0.02"), D("100.1"), True, "chase", D("0.05"))]
+    assert gw.send(Query("oc-1"), T0 + 3) == [OrderState(T0 + 3, False, D("0.05"), D("100.1"))]
+
+
+def test_sim_fills_a_resting_sell_when_the_bid_rises_through_it():
+    gw = SimGateway()
+    gw.on_book([(D("99.8"), D("1"))], [(D("100.0"), D("1"))], T0)
+    gw.send(Place("oc-1", "sell", D("99.9"), D("0.05")), T0)
+    assert gw.on_book([(D("99.9"), D("0.01")), (D("99.8"), D("1"))], [(D("100.0"), D("1"))], T0 + 1) == [
+        Filled(T0 + 1, D("0.01"), D("99.9"), True, "chase", D("0.01"))]
+
+
+def test_a_cancel_reject_with_the_order_still_open_retries_then_ends_and_says_check_kraken():
+    # CANCEL-REJECT-STUCK
+    c = resting()
+    c, cmds = run(c, UserStop(T0 + 20))
+    assert cmds == [Cancel("oc-1")]
+    for attempt in (2, 3):
+        c, cmds = run(c, Rejected(T0 + 20, "cancel", "EGeneral:Temporary lockout"))
+        assert cmds == [Query("oc-1")]
+        c, cmds = run(c, OrderState(T0 + 20, True, D(0), D("62417.9")))
+        assert cmds == [Cancel("oc-1")], attempt
+    c, cmds = run(c, Rejected(T0 + 21, "cancel", "EGeneral:Temporary lockout"))
+    c, texts = logs(c, OrderState(T0 + 21, True, D(0), D("62417.9")))
+    assert (c.phase, c.outcome) == ("done", "cancelfail")
+    assert texts == ["The simulation rejected the cancel 3 times and the order is still open. The tool stopped "
+                     "the chase. Check Kraken Pro for an open order and cancel it there."]
+
+
+def test_a_cancel_retry_waits_for_room_on_the_rate_counter():
+    c = resting(rate=40)                  # begin adds 1, the cancel at age 1 adds 8: 49
+    c, cmds = run(c, UserStop(T0 + 1), Rejected(T0 + 1, "cancel", "x"))
+    c = core.replace(c, rate=59.0, rate_at=T0 + 1)
+    c, cmds = run(c, OrderState(T0 + 1, True, D(0), D("62417.9")))
+    assert cmds == []                     # 59 + 8 is above 60: wait
+    c, cmds = run(c, Tick(T0 + 2))
+    assert cmds == []                     # 58 + 8: still above 60
+    c, cmds = run(c, Tick(T0 + 7))
+    assert cmds == [Cancel("oc-1")]       # 53 + 6 (age 7) = 59
+
+
+def test_the_outcome_and_the_summary_use_the_venue_filled_quantity():
+    # OUTCOME-VS-VENUE-QTY: the venue reports 0.4 filled that the tool never saw; the IOC fills 0.6.
+    c = resting(qty="1.0")
+    c, texts = logs(c, Tick(T0 + 120), Canceled(T0 + 120), OrderState(T0 + 120, False, D("0.4"), D("62417.9")))
+    assert "The simulation reports 0.4000 BTC more filled than the tool saw. Recorded it at 62,417.90 (maker)." in texts
+    c, cmds = run(c, Filled(T0 + 121, D("0.6"), D("62418.5"), False, "ioc"), IocDone(T0 + 121))
+    assert (c.phase, c.outcome, c.filled) == ("done", "filled", D("1.0"))
+    assert core.summary(c)["maker_qty"] == D("0.4")
+
+
+def test_a_late_fill_report_after_the_reread_is_not_counted_twice():
+    c = resting()
+    c, cmds = run(c, Tick(T0 + 120), Canceled(T0 + 120), OrderState(T0 + 120, False, D("0.01"), D("62417.9")))
+    assert [x.qty for x in cmds if isinstance(x, Ioc)] == [D("0.04")]
+    # The fill report of the same 0.01 arrives after the reread: the venue total stays 0.01.
+    c, _ = run(c, Filled(T0 + 120.5, D("0.01"), D("62417.9"), True, "chase", D("0.01")))
+    assert c.filled == D("0.01")
+
+
+def test_the_timeout_runs_while_the_feed_is_lost_and_ends_with_no_ioc():
+    # TIMEOUT-FROZEN-FEED-LOST
+    c = resting(timeout=30)
+    c, cmds = run(c, FeedLost(T0 + 10), Tick(T0 + 29))
+    assert cmds == [] and c.phase == "feed_lost"
+    c, texts = logs(c, Tick(T0 + 30))
+    assert c.phase == "cancelling"
+    assert texts == ["Timeout while the price feed is lost. Cancelling the order."]
+    c, cmds = run(c, Canceled(T0 + 30))
+    c, texts = logs(c, OrderState(T0 + 30, False, D(0), D("62417.9")))
+    assert [x for x in cmds if isinstance(x, Ioc)] == []
+    assert (c.phase, c.outcome) == ("done", "notfilled")
+    assert texts[-1] == "No IOC: the price feed is lost, so there is no valid price. The rest counts as not filled."
+
+
+def test_a_limit_must_be_above_0_and_a_multiple_of_the_tick_size():
+    # SELL-FLOOR-NO-BOUND and LIMIT-NOT-POSITIVE
+    v = lambda side, lim, pair=BTC: core.validate(pair, side, D("0.05"), D(lim), D("62417.9"), D("62418.5"), True, 120)
+    assert v("sell", "0") == ["The floor must be above 0."]
+    assert v("sell", "-1") == ["The floor must be above 0."]
+    assert v("buy", "0") == ["The cap must be above 0."]
+    assert v("sell", "62417.85") == ["The limit must be a multiple of 0.1."]
+    half = core.Pair(**{**BTC.__dict__, "tick": D("0.5")})
+    assert v("sell", "62417.3", half) == ["The limit must be a multiple of 0.5."]
+    assert v("sell", "62417.5", half) == []
+    assert v("sell", "62000", BTC) == []
+
+
+def test_validate_answers_a_huge_amount_with_an_error_not_an_exception():
+    # HUGE-QTY-500 (core part)
+    errs = core.validate(BTC, "buy", D("1e30"), None, D("62417.9"), D("62418.5"), True, 120)
+    assert errs == []  # many decimals are the problem, not size: the server bounds the size
+    assert core.validate(BTC, "buy", D("0.123456789"), None, D("62417.9"), D("62418.5"), True, 120) == [
+        "Enter an amount above 0 with at most 8 decimals."]
+    assert core.validate(BTC, "buy", D("0.050000000"), None, D("62417.9"), D("62418.5"), True, 120) == []

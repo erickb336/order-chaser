@@ -75,9 +75,13 @@ class Engine:
     # ----- feed callbacks -----
     def on_book(self, book, ok: bool) -> None:
         self.bid, self.ask, self.book_ok = book.best_bid, book.best_ask, ok
+        fills = []
         if ok:
             self.book_at = self.clock()
-            self.gw.on_book(book.top_bids(), book.top_asks())
+            fills = self.gw.on_book(book.top_bids(), book.top_asks(), self.clock())
+        if self.active:
+            for ev in fills:
+                self.handle(ev)
         if self.active:
             self.handle(core.Book(self.clock(), self.bid, self.ask, ok))
         self.version += 1
