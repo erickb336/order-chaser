@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Setup · Order chaser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="oc-token" content="{{TOKEN}}">
+<link rel="stylesheet" href="/static/style.css"></head>
+<body>
+<main class="app">
+  <div style="max-width:820px">
+    <h1>Setup for live chases</h1>
+    <p class="muted">A live chase needs a Kraken API key and your choice about the safety timer. A dry run needs neither.</p>
+    <div class="row" style="margin-bottom:22px"><a class="btn drybtn" href="/new">Skip setup: start a dry run</a><span class="small muted">You can come back here at any time.</span></div>
+    <div class="steps">
+      <div class="step done"><div class="no">✓</div><div class="card" style="padding:16px">
+        <div class="row"><h2 style="margin:0">1. Local tool</h2><span class="spacer"></span><span class="badge ok">Running</span></div>
+        <p class="small muted" style="margin:6px 0 0">The tool runs on this Mac at localhost:5180 and receives public Kraken prices. Only this Mac can open this page.</p>
+      </div></div>
+      <div class="step" style="opacity:.55"><div class="no">2</div><div class="card" style="padding:16px">
+        <div class="row"><h2 style="margin:0">2. Kraken API key</h2><span class="spacer"></span><span class="badge plain">Later version</span></div>
+        <p class="small muted" style="margin:6px 0 0">Live trading comes in a later version. This version takes no key and sends no order to Kraken.</p>
+      </div></div>
+      <div class="step" style="opacity:.55"><div class="no">3</div><div class="card" style="padding:16px">
+        <div class="row"><h2 style="margin:0">3. Safety timer</h2><span class="spacer"></span><span class="badge plain">Later version</span></div>
+        <p class="small muted" style="margin:6px 0 0">Live trading comes in a later version. A dry run needs no safety timer: no order rests on Kraken.</p>
+      </div></div>
+    </div>
+  </div>
+</main>
+<script src="/static/app.js"></script>
+<script>OC.chrome('setup'); OC.stream(() => {});</script>
+</body></html>

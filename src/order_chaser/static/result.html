@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Chase result · Order chaser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="oc-token" content="{{TOKEN}}">
+<link rel="stylesheet" href="/static/style.css"></head>
+<body>
+<main class="app">
+  <div class="note info small" style="margin-bottom:16px">DRY RUN RESULT: simulated. No order went to Kraken. A real chase can fill less: a simulated order fills only when a public trade prints through your price, or when the other side of the public book comes to your price.</div>
+  <div id="out"><div class="card"><span class="skel">Loading the result…</span></div></div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+OC.chrome('result'); OC.stream(() => {});
+const $ = OC.$;
+const id = new URLSearchParams(location.search).get('id');
+
+function render(c) {
+  const w = OC.words(c), P = w.p, B = c.pair.base, Q = c.pair.quote, s = c.summary;
+  const filled = Number(s.filled), total = Number(c.qty), rest = total - filled;
+  const filledPct = filled / total * 100;
+  const makerShare = filled ? Number(s.maker_qty) / filled : 0;
+  const pctM = Math.round(makerShare * 100);
+  const dur = OC.mmss(c.ended_at - c.started);
+  const head = filled >= total ? `${w.Bought} ${OC.qty(c.qty)} ${B}` : `${w.Bought} ${OC.qty(filled)} of ${OC.qty(c.qty)} ${B}`;
+  const end = c.end_ask;
+  let badge = ['ok', 'Complete'], line = '', restText = null, todo = null;
+  switch (c.outcome) {
+    case 'filled':
+      line = pctM === 100 ? `All of it filled as maker in ${dur}. The tool never moved ${w.above} the ${w.limitWord}.`
+        : `${pctM}% filled as maker. ${c.exit === 'fillnow' ? 'After you pressed "Fill the rest now"' : `After the ${OC.mmss(c.timeout)} timeout`}, one IOC at the ${w.limitWord} filled the rest as taker.`;
+      break;
+    case 'notfilled':
+      badge = ['bad', OC.fillWord(filled, total)];
+      line = end == null ? `${c.feed_ok ? 'The order book was not valid at the end' : `The ${OC.mmss(c.timeout)} timeout passed while the public Kraken price feed was lost`}. With no valid price, the tool sent no IOC.`
+        : (OC.beyond(c) ? `The price ${w.buy ? 'rose above your cap' : 'fell below your floor'} before the rest could fill.` : `The book had too little at the ${w.limitWord} for the rest.`) +
+          ` The IOC at the ${w.limitWord} filled ${c.fills.some(f => f.order === 'ioc') ? 'only part of the rest' : 'nothing'}.`;
+      restText = `Not filled (simulated): ${OC.qty(rest)} ${B}.` + (end == null ? '' : Number(end) === Number(c.limit) ? ` The ${w.other} at the end was ${P(end)}, at your ${w.limitWord}.`
+        : ` The ${w.other} at the end was ${P(end)}, which is ${P(Math.abs(Number(end) - Number(c.limit)))} ${Number(end) > Number(c.limit) ? 'above' : 'below'} your ${w.limitWord}.`) + ' A dry run sends no orders to Kraken.';
+      break;
+    case 'belowmin':
+      badge = ['bad', OC.fillWord(filled, total)];
+      line = `The rest was below the Kraken minimum for ${c.pair.symbol}, so the tool did not send the IOC. The rest counts as "not filled".`;
+      restText = `Not filled (simulated): ${OC.qty(rest)} ${B}, below the Kraken minimum (${OC.qty(c.pair.ordermin)} ${B} or ${c.pair.costmin} ${Q}). A dry run sends no orders to Kraken.`;
+      break;
+    case 'stopped':
+      badge = ['plain', 'Stopped'];
+      line = `You stopped the chase at ${dur}. The simulated exchange confirmed the cancel.`;
+      restText = `Not filled (simulated): ${OC.qty(rest)} ${B}, because you stopped the chase. A dry run sends no orders to Kraken.`;
+      break;
+    case 'ended': {
+      badge = ['bad', 'Ended: tool restarted'];
+      const off = c.off_from == null ? null : OC.mmss(c.off_from - c.started);
+      line = (off ? `The tool stopped at ${off} and started again at ${dur}.` : 'The tool stopped and started again.') + ' It recorded the simulated fills and did not continue the dry run.';
+      restText = `Not filled (simulated): ${OC.qty(rest)} ${B}, because the tool restarted. A dry run sends no orders to Kraken.`;
+      todo = ['To test again, start a new dry run.'];
+      break;
+    }
+    case 'cancelfail':
+      badge = ['bad', 'Cancel failed'];
+      line = 'The simulated exchange rejected the cancel 3 times and still showed the order as open. The tool stopped the chase and sent no IOC.';
+      restText = `Not filled (simulated): ${OC.qty(rest)} ${B}, because the cancel did not go through. A dry run sends no orders to Kraken.`;
+      todo = [c.mode === 'live' ? OC.LIVE_CANCEL_TODO : OC.DRY_TODO];
+      break;
+    case 'refused':
+      badge = ['bad', 'Not filled'];
+      line = 'The simulated exchange rejected the order. Nothing filled.';
+      break;
+  }
+  const sv = Number(s.saving), sm = Number(s.saving_maker), st = Number(s.saving_taker);
+  const savingLabel = sv >= 0 ? 'Saving vs a market order at the start' : 'Extra cost vs a market order at the start';
+  const fee = f => Number(f.qty) * Number(f.price) * (f.maker ? 0.004 : 0.008);
+  const amountWord = w.buy ? 'Market order at the start' : 'Market sell at the start';
+  $('out').innerHTML = `
+  <div class="card">
+    <div class="row"><span class="badge ${badge[0]}">${badge[1]}</span><span class="small muted">${OC.esc(c.pair.symbol)} · ${c.side} · dry run · ${new Date(c.started * 1000).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} · 0:00 to ${dur}</span></div>
+    <h1 style="margin-top:10px">${head} (simulated)</h1>
+    <p class="muted">${line}</p>
+    <div class="facts" style="margin-top:14px">
+      <div><div class="k">Filled</div><div class="v">${OC.qty(filled)} ${B}</div><div class="s">${Math.round(filledPct)}% of ${OC.qty(c.qty)}</div></div>
+      <div><div class="k">Average price</div><div class="v">${filled ? P(s.avg) : '—'}</div><div class="s">${w.limitWord} was ${P(c.limit)}</div></div>
+      <div><div class="k">Fees</div><div class="v">${OC.usd(s.fee)} ${Q}</div><div class="s">${!filled ? 'no fills' : pctM === 100 ? 'all at 0.40% maker' : pctM === 0 ? 'all at 0.80% taker' : 'mixed 0.40% / 0.80%'}</div></div>
+      <div style="background:var(--fill-bg)"><div class="k">${savingLabel}</div><div class="v ${sv >= 0 ? 'tone-fill' : 'tone-bad'}">${OC.usd(Math.abs(sv))} ${Q}</div><div class="s">${Number(s.market) ? (Math.abs(sv) / Number(s.market) * 100).toFixed(2) + '% of ' + OC.usd(s.market) + ' ' + Q : 'nothing filled'}</div></div>
+    </div>
+    <div style="margin-top:18px">
+      <div class="row small"><b>Maker ${pctM}%</b><span class="muted">Taker ${filled ? 100 - pctM : 0}%</span>${filled < total ? '<span class="muted">· Not filled ' + Math.round(100 - filledPct) + '%</span>' : ''}<span class="spacer"></span><span class="tiny muted">share of ${OC.qty(c.qty)} ${B}</span></div>
+      <div class="bar" style="margin-top:6px;height:14px"><i class="m" style="width:${makerShare * filledPct}%"></i><i class="tk" style="width:${(1 - makerShare) * filledPct}%"></i><i class="nf" style="width:${100 - filledPct}%"></i></div>
+    </div>
+    ${restText ? `<div class="note ${['notfilled', 'ended', 'belowmin', 'cancelfail'].includes(c.outcome) ? 'bad' : 'warn'}" style="margin-top:16px"><b>${restText}</b>${c.outcome === 'notfilled' ? ` To ${w.buy ? 'buy' : 'sell'} the rest, start a new chase. It records a new ${w.limitWord}.` : ''}</div>` : ''}
+    ${todo ? `<div class="note info small" style="margin-top:12px"><b>What to do now</b><ul style="margin:4px 0 0;padding-left:18px">${todo.map(x => `<li>${x}</li>`).join('')}</ul></div>` : ''}
+    <div class="row" style="margin-top:18px">${rest > 0 && !c.rest_below_min && !['refused', 'cancelfail'].includes(c.outcome) ? `<a class="btn primary" href="/new?rest=${encodeURIComponent(c.id)}">${OC.againText(c)}</a>` : '<a class="btn primary" href="/new">New chase</a>'}<a class="btn" href="/history">History</a>${c.rest_below_min && c.outcome !== 'belowmin' ? `<span class="small" id="restmin">${OC.restBelowMin(c)}</span>` : ''}</div>
+  </div>
+  <div class="grid2" style="margin-top:16px">
+    <div class="card"><h2>Fills (simulated)</h2>
+      ${c.fills.length ? `<table class="t"><tr><th>Time</th><th class="r">${B}</th><th class="r">Price</th><th>Type</th><th class="r">Fee ${Q}</th></tr>
+      ${c.fills.map(f => `<tr><td class="mono">${OC.mmss(f.t)}</td><td class="r num">${OC.qty(f.qty)}</td><td class="r num">${P(f.price)}</td><td>${f.maker ? '<span class="badge ok">maker</span>' : '<span class="badge warn">taker (IOC)</span>'}</td><td class="r num">${OC.usd(fee(f))}</td></tr>`).join('')}
+      </table>` : '<p class="muted small">No fills.</p>'}</div>
+    <div class="card"><h2>How the saving is counted</h2>
+      <table class="t small">
+        <tr><td>${amountWord}, for the ${OC.qty(filled)} ${B} that filled</td><td class="r num">${OC.usd(s.market)}</td></tr>
+        <tr><td class="muted" colspan="2" style="padding-top:0">${OC.qty(filled)} × ${P(s.ref)} (start ${w.buy ? 'ask' : 'bid'}) ${w.buy ? '+' : '−'} 0.80% taker fee</td></tr>
+        <tr><td>This chase: price ${w.buy ? '+' : '−'} fees</td><td class="r num">${OC.usd(s.ours)}</td></tr>
+        <tr><td class="muted">Of which: saving on maker fills</td><td class="r num">${OC.usd(sm)}</td></tr>
+        <tr><td class="muted">Of which: on taker (IOC) fills</td><td class="r num">${OC.usd(st)}</td></tr>
+        <tr><td><b>${sv >= 0 ? 'Saving' : 'Extra cost'}</b></td><td class="r num ${sv >= 0 ? 'tone-fill' : 'tone-bad'}"><b>${OC.usd(Math.abs(sv))}</b></td></tr>
+      </table>
+      <p class="tiny muted" style="margin:10px 0 0">Saving = ${w.buy ? 'market order at the start − this chase' : 'this chase − market sell at the start'}. With the ${w.buy ? 'start ask as the cap' : 'start bid as the floor'}, the saving is never below 0: the chase never ${w.buy ? 'pays more than the start ask plus' : 'gets less than the start bid minus'} the taker fee. A real market order can ${w.buy ? 'cost more' : 'bring less'} than this estimate on a thin book, so the true saving can be larger. Fees: a dry run has no key, so the tool uses the highest rates, 0.40% maker and 0.80% taker.</p>
+    </div>
+  </div>
+  <div class="card" style="margin-top:16px"><h2>What the tool did</h2>${OC.eventLog(c)}</div>`;
+  document.title = head + ' · Order chaser';
+}
+
+(async () => {
+  const r = id ? await fetch('/api/chase/' + encodeURIComponent(id)) : null;
+  if (!r || !r.ok) { $('out').innerHTML = '<div class="note bad">No result for this chase. <a href="/history">Open the history</a></div>'; return; }
+  const c = await r.json();
+  if (c.phase !== 'done') { location.href = '/chase'; return; }
+  render(c);
+})();
+</script>
+</body></html>

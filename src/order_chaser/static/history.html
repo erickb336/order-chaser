@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>History · Order chaser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="oc-token" content="{{TOKEN}}">
+<link rel="stylesheet" href="/static/style.css"></head>
+<body>
+<main class="app">
+  <div class="row" style="margin-bottom:12px"><h1 style="margin:0">History</h1><span class="spacer"></span><span class="small muted" id="tot"></span></div>
+  <div class="card" style="padding:6px 10px" id="out"></div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+OC.chrome('history'); OC.stream(() => {});
+const $ = OC.$;
+const HEAD = '<tr><th>When</th><th>Pair</th><th>Side</th><th class="r">Filled / asked</th><th class="r">Average price</th><th class="r">Saving USD</th><th>Mode</th><th>Outcome</th></tr>';
+const OUT = { filled: ['ok', 'Filled (simulated)'], stopped: ['plain', 'Stopped by you'], ended: ['bad', 'Ended: tool restarted'], refused: ['bad', 'Order rejected'], cancelfail: ['bad', 'Cancel failed'] };
+function when(t) {
+  const d = new Date(t * 1000), today = new Date();
+  const hm = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === today.toDateString()) return 'Today ' + hm;
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) + ' ' + hm;
+}
+async function load() {
+  $('out').innerHTML = '<table class="t">' + HEAD + [1, 2, 3].map(() => '<tr>' + Array(8).fill('<td><span class="skel" style="display:inline-block;width:80%">x</span></td>').join('') + '</tr>').join('') + '</table>';
+  let rows;
+  try { const r = await fetch('/api/history'); if (!r.ok) throw new Error(r.status); rows = await r.json(); }
+  catch (e) {
+    $('out').innerHTML = '<div class="note bad" style="margin:12px"><b>The tool cannot read the history file.</b> No order went to Kraken: this version runs dry runs only. <button class="btn" id="retry" style="margin-left:8px;padding:4px 10px;font-size:13px">Try again</button></div>';
+    $('retry').onclick = load; return;
+  }
+  if (!rows.length) {
+    $('out').innerHTML = '<div style="text-align:center;padding:48px 20px"><h2>No chases yet</h2><p class="muted">Each chase you run, dry or live, shows here with its fill and its saving.</p><a class="btn drybtn" href="/new">Start a dry run</a></div>';
+    return;
+  }
+  $('out').innerHTML = '<table class="t">' + HEAD + rows.map(r => {
+    const limitWord = r.side === 'buy' ? 'cap' : 'floor', d = r.price_decimals;
+    const fw = OC.fillWord(r.filled, r.qty);
+    const o = r.outcome === 'notfilled' ? ['bad', fw + ': ' + (r.nofeed ? 'no valid price, no IOC' : r.beyond ? (r.side === 'buy' ? 'above cap' : 'below floor') : `IOC at the ${limitWord}`)]
+      : r.outcome === 'belowmin' ? ['bad', fw + ': rest below minimum']
+      : r.outcome === 'cancelfail' && r.mode === 'live' ? ['bad', 'Cancel failed: check Kraken']
+      : ['stopped', 'ended'].includes(r.outcome) ? [OUT[r.outcome][0], OUT[r.outcome][1] + ' · ' + fw]
+      : OUT[r.outcome] || ['plain', r.outcome];
+    const taker = 100 - OC.pct(r.maker_qty, r.qty);
+    const outcome = r.outcome === 'filled' && taker > 0 ? ['ok', `Filled, ${taker}% ${r.exit === 'fillnow' ? 'by "Fill the rest now"' : 'after timeout'} (simulated)`] : o;
+    const sv = Number(r.saving);
+    return `<tr class="click" data-id="${OC.esc(r.id)}" tabindex="0"><td>${when(r.started)}</td><td>${OC.esc(r.pair)}</td><td class="${r.side === 'buy' ? 'tone-fill' : 'tone-bad'}">${r.side === 'buy' ? 'Buy' : 'Sell'}</td><td class="r num">${OC.qty(r.filled)} / ${OC.qty(r.qty)}</td><td class="r num">${Number(r.filled) ? OC.px(r.avg, d) : '—'}</td><td class="r num ${sv >= 0 ? 'tone-fill' : 'tone-bad'}">${sv < 0 ? '−' : ''}${OC.usd(Math.abs(sv))}</td><td><span class="badge dry">Dry run</span></td><td><span class="badge ${outcome[0]}">${outcome[1]}</span></td></tr>`;
+  }).join('') + '</table>';
+  document.querySelectorAll('tr.click').forEach(tr => {
+    const go = () => location.href = '/result?id=' + encodeURIComponent(tr.dataset.id);
+    tr.onclick = go; tr.onkeydown = e => { if (e.key === 'Enter') go(); };
+  });
+  $('tot').innerHTML = `Live chases: 0 · Dry runs: ${rows.length} (dry-run savings are simulated and not counted)`;
+}
+load();
+</script>
+</body></html>

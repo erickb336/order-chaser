@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>New chase</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main class="app">
+  <div class="switcher"><span class="lbl">Prototype: form state</span>
+    <div class="opts" id="opts">
+      <button data-id="ready">Ready (dry run)</button>
+      <button data-id="live">Ready (live)</button>
+      <button data-id="loading">Prices loading</button>
+      <button data-id="feedfail">Prices failed</button>
+      <button data-id="pairoff">Pair not online</button>
+      <button data-id="correction">Amount needs a fix</button>
+      <button data-id="override">Higher limit (cap override)</button>
+      <button data-id="sell">Sell side</button>
+      <button data-id="nokey">Live, no key yet</button>
+      <button data-id="confirm">Live: confirm</button>
+      <button data-id="busy">Another chase runs</button>
+      <button data-id="rest">Chase the rest</button>
+    </div>
+  </div>
+
+  <div class="split">
+    <div class="card">
+      <h1>New chase</h1>
+      <p class="muted">The tool places a post-only limit at the best bid and moves it up as the bid rises. It never goes above the cap.</p>
+      <div id="busy" class="note warn hidden" style="margin-bottom:16px"><b>A chase runs now:</b> buy 0.0500 BTC/USD, 36% filled. You can start a new chase when it ends. <a href="chase.html#partial">Open it</a></div>
+      <div id="restnote" class="note info hidden" style="margin-bottom:16px">You chase the rest of your last order: 0.0320 BTC. The cap is the ask at the new start, not the old cap.</div>
+
+      <div class="field"><label class="f">Mode</label>
+        <div class="seg lg" id="mode"><button data-m="dry" class="dry">Dry run</button><button data-m="live" class="live">Live</button></div>
+        <div class="help" id="modehelp"></div>
+      </div>
+
+      <div class="grid2">
+        <div class="field"><label class="f" for="pair">Pair</label>
+          <select class="input" id="pair"><option>BTC/USD</option><option>ETH/USD</option><option>SOL/USD</option></select></div>
+        <div class="field"><label class="f">Side</label>
+          <div class="seg" id="side"><button data-s="buy" class="buy">Buy</button><button data-s="sell" class="sell">Sell</button></div>
+          <div class="help" id="sidehelp"></div></div>
+      </div>
+
+      <div class="field"><label class="f" for="amt">Amount</label>
+        <div class="row"><input class="input num" id="amt" value="0.0500" style="max-width:220px"><span class="muted">BTC</span><span class="spacer"></span><span class="small muted num" id="est">≈ 3,120.93 USD at the ask now</span></div>
+        <div class="help" id="amthelp"></div>
+        <div class="mins small" id="mins"></div>
+      </div>
+
+      <div class="field"><label class="f"><span id="capword">Cap</span></label>
+        <div class="note" style="border-color:var(--line);background:#faf9f6" id="capbox">
+          <div class="row"><div><b id="capline">The ask at the start</b><div class="small muted" id="capsub">Now 62,418.50. The tool records it when you press Start.</div></div><span class="spacer"></span><button class="btn" id="ovbtn" style="padding:6px 12px;font-size:13px">Set a higher limit</button></div>
+          <div id="ov" class="hidden" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+            <label class="f" for="ovp">Your limit for this chase</label>
+            <div class="row"><input class="input num" id="ovp" value="62,480.00" style="max-width:220px"><span class="muted">USD</span><span class="spacer"></span><button class="btn" id="ovoff" style="padding:6px 12px;font-size:13px">Use the start ask</button></div>
+            <div class="note warn small" style="margin-top:10px"><b>Warning: this can cost more than a market order now.</b> Your limit is 61.50 above the ask (0.10%). In the worst case the tool buys at 62,480.00 plus the taker fee: <b class="num">3,148.99 USD</b>. A market order now costs about <b class="num">3,145.89 USD</b>. Worst extra: <b class="num">3.10 USD</b>.</div>
+            <label class="check small" style="margin-top:8px"><input type="checkbox" id="ovok"> I accept that this chase can cost up to 3.10 USD more than a market order now.</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="field"><label class="f" for="to">Timeout</label>
+        <div class="row"><select class="input" id="to" style="max-width:220px"><option>30 s</option><option>1 min</option><option selected>2 min</option><option>5 min</option><option>15 min</option></select>
+        <span class="small muted">After this time, the tool sends one IOC limit at the cap for the rest. If the price is above the cap, the rest does not fill.</span></div>
+      </div>
+
+      <div id="nokey" class="note bad hidden" style="margin-bottom:14px"><b>Live needs an API key.</b> Add a Kraken key in setup and accept the safety timer. A dry run needs no key. <a href="setup.html">Go to setup</a></div>
+      <div id="firstdry" class="note info small hidden" style="margin-bottom:14px">Run one dry run before your first live chase.</div>
+      <div id="pairoff" class="note bad hidden" style="margin-bottom:14px"><b>Kraken accepts no new chase for BTC/USD now.</b> Pair status: <span class="mono">cancel_only</span>. A chase needs the status <span class="mono">online</span>. The tool reads the status again every 30 s, and Start comes back when it is online.
+        <table class="t small" style="margin-top:8px;background:#fff"><tr><th>Status</th><th>What Kraken allows</th><th>Chase</th></tr>
+        <tr><td class="mono">online</td><td>All orders</td><td class="tone-fill">possible</td></tr>
+        <tr><td class="mono">cancel_only</td><td>Cancels only</td><td class="tone-bad">blocked</td></tr>
+        <tr><td class="mono">post_only</td><td>Post-only orders only: the IOC fallback cannot go out</td><td class="tone-bad">blocked</td></tr>
+        <tr><td class="mono">limit_only</td><td>Limit orders only. The pair is not in normal trading.</td><td class="tone-bad">blocked</td></tr>
+        <tr><td class="mono">maintenance</td><td>No orders</td><td class="tone-bad">blocked</td></tr></table></div>
+
+      <div class="row"><button class="btn" id="start"></button><span class="small muted" id="startnote"></span></div>
+    </div>
+
+    <aside class="side">
+      <div class="card">
+        <h3>Prices now: BTC/USD</h3>
+        <div id="prices">
+          <div class="grid2" style="gap:8px">
+            <div><div class="tiny muted">Best bid</div><div class="num tone-bad" style="color:var(--bid);font-size:20px" id="bid">62,417.90</div></div>
+            <div><div class="tiny muted">Best ask</div><div class="num" style="color:var(--ask);font-size:20px" id="ask">62,418.50</div></div>
+          </div>
+          <div class="tiny muted" style="margin-top:6px" id="pnote">Spread 0.60 (0.001%). Updated 1 s ago from the public Kraken feed.</div>
+          <div class="small" style="margin-top:8px" id="pstat">Pair status: <span class="badge ok mono">online</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>What the tool does</h3>
+        <ol class="small" style="padding-left:18px;margin:0" id="what">
+          <li>Records the ask now as the cap.</li>
+          <li>Places a post-only buy at the best bid.</li>
+          <li>Moves it up with the best bid, at most every 5 s, never above the cap.</li>
+          <li>After the timeout: cancels, confirms, re-reads the fill, then sends one IOC at the cap for the rest.</li>
+          <li>Before the IOC: checks the rest against both Kraken minimums. A rest below a minimum stops as "not filled".</li>
+        </ol>
+      </div>
+      <div class="card">
+        <h3>Worst case</h3>
+        <p class="small" style="margin:0" id="worst">Never more than a market order at the start: about <b class="num">3,145.89 USD</b> (0.0500 × 62,418.50 + 0.80% taker fee). Best case: about <b class="num">3,133.38 USD</b> (all maker at 62,417.90 + 0.40%).</p>
+      </div>
+    </aside>
+  </div>
+</main>
+
+<div class="scrim hidden" id="confirm"><div class="modal">
+  <div class="livestrip" style="margin-bottom:14px">LIVE: real orders on your Kraken account</div>
+  <h2>Start a live chase?</h2>
+  <table class="t small">
+    <tr><td class="muted">Order</td><td class="r"><b>Buy 0.0500 BTC/USD</b></td></tr>
+    <tr><td class="muted">Cap</td><td class="r num">the ask at the start (now 62,418.50)</td></tr>
+    <tr><td class="muted">Timeout</td><td class="r">2 min, then IOC at the cap</td></tr>
+    <tr><td class="muted">Worst case</td><td class="r num">3,145.89 USD</td></tr>
+  </table>
+  <p class="small" style="margin-top:12px"><b>Reminder:</b> while the chase runs, the safety timer is on. If the tool stops, Kraken cancels all your orders on all pairs.</p>
+  <div class="row"><span class="spacer"></span><button class="btn" id="cno">Back</button><a class="btn livebtn" href="chase.html#placing">Start live chase</a></div>
+</div></div>
+
+<script src="assets/proto.js"></script>
+<script>
+OC.chrome('new', { top: true });
+const $ = id => document.getElementById(id);
+let st = location.hash.slice(1) || 'ready';
+function set(m, s) {
+  document.querySelectorAll('#mode button').forEach(b => b.classList.toggle('on', b.dataset.m === m));
+  document.querySelectorAll('#side button').forEach(b => b.classList.toggle('on', b.dataset.s === s));
+}
+function draw() {
+  const live = ['live', 'nokey', 'confirm', 'override'].includes(st);
+  const sell = st === 'sell';
+  set(live ? 'live' : 'dry', sell ? 'sell' : 'buy');
+  ['busy', 'restnote', 'nokey', 'firstdry', 'ov', 'confirm'].forEach(i => $(i).classList.add('hidden'));
+  $('amt').classList.remove('err'); $('amt').value = '0.0500'; $('amthelp').className = 'help';
+  $('amthelp').innerHTML = 'Balance: 4,210.55 USD available, read from Kraken (sample). The key has Query Funds.';
+  const mins = (aOk, cOk, what) => `<span class="tone-${aOk ? 'fill' : 'bad'}">${aOk ? '✓' : '✗'} ${what || 'Amount'} at least 0.00005 BTC</span> <span class="tone-${cOk ? 'fill' : 'bad'}">${cOk ? '✓' : '✗'} Value at least 0.50 USD</span> <span class="tiny muted">Kraken minimums for BTC/USD (ordermin, costmin)</span>`;
+  $('mins').innerHTML = mins(true, true);
+  $('pairoff').classList.add('hidden');
+  $('pstat').innerHTML = 'Pair status: <span class="badge ok mono">online</span>';
+  $('est').textContent = '≈ 3,120.93 USD at the ask now';
+  $('modehelp').innerHTML = live ? '<b class="tone-bad" style="color:var(--live)">Live sends real orders to Kraken.</b> Your key is in the macOS Keychain.' : '<b style="color:var(--dry)">Dry run sends no orders.</b> It runs the chase on live public prices and simulates the fills.';
+  $('sidehelp').textContent = sell ? 'Sell: rests at the best ask and moves down. Floor = the bid at the start.' : '';
+  $('capword').innerHTML = sell ? 'Floor' : 'Cap';
+  $('capline').textContent = sell ? 'The bid at the start' : 'The ask at the start';
+  $('capsub').textContent = sell ? 'Now 62,417.90. The tool never sells below it.' : 'Now 62,418.50. The tool records it when you press Start.';
+  $('ovbtn').textContent = sell ? 'Set a lower limit' : 'Set a higher limit';
+  $('what').innerHTML = sell
+    ? '<li>Records the bid now as the floor.</li><li>Places a post-only sell at the best ask.</li><li>Moves it down with the best ask, at most every 5 s, never below the floor.</li><li>After the timeout: cancels, confirms, re-reads the fill, then sends one IOC at the floor for the rest.</li><li>Before the IOC: checks the rest against both Kraken minimums. A rest below a minimum stops as "not filled".</li>'
+    : '<li>Records the ask now as the cap.</li><li>Places a post-only buy at the best bid.</li><li>Moves it up with the best bid, at most every 5 s, never above the cap.</li><li>After the timeout: cancels, confirms, re-reads the fill, then sends one IOC at the cap for the rest.</li><li>Before the IOC: checks the rest against both Kraken minimums. A rest below a minimum stops as "not filled".</li>';
+  $('worst').innerHTML = sell
+    ? 'Never less than a market sell at the start: about <b class="num">3,095.93 USD</b> received (0.0500 × 62,417.90 − 0.80% taker fee). The fees use the highest rates, so this is a true minimum.'
+    : 'Never more than a market order at the start: about <b class="num">3,145.89 USD</b> (0.0500 × 62,418.50 + 0.80% taker fee). Best case: about <b class="num">3,133.38 USD</b> (all maker at 62,417.90 + 0.40%). The fees use the highest rates, so the worst case is a true maximum.';
+  // prices
+  $('prices').style.opacity = 1;
+  $('bid').classList.remove('skel'); $('ask').classList.remove('skel');
+  $('pnote').innerHTML = 'Spread 0.60 (0.001%). Updated 1 s ago from the public Kraken feed.';
+  let startOk = true, note = '';
+  if (st === 'loading') { $('bid').classList.add('skel'); $('ask').classList.add('skel'); $('pnote').textContent = 'Connecting to the public Kraken feed…'; $('est').textContent = '≈ … USD'; startOk = false; note = 'Start is possible when prices arrive.'; }
+  if (st === 'feedfail') { $('prices').style.opacity = .5; $('pnote').innerHTML = '<b class="tone-bad">No prices for 15 s.</b> The tool retries every 5 s. Check your internet connection.'; startOk = false; note = 'Start needs live prices.'; }
+  if (st === 'correction') {
+    $('amt').value = '0.000005'; $('amt').classList.add('err'); $('amthelp').className = 'help err';
+    $('amthelp').textContent = 'The amount is below both Kraken minimums for BTC/USD. Enter 0.00005 BTC or more.'; $('est').textContent = '≈ 0.31 USD'; startOk = false;
+    $('mins').innerHTML = mins(false, false); note = 'Fix the amount to start.';
+  }
+  if (st === 'pairoff') {
+    $('pairoff').classList.remove('hidden'); startOk = false; note = 'Start comes back when the pair is online.';
+    $('pstat').innerHTML = 'Pair status: <span class="badge bad mono">cancel_only</span>';
+  }
+  $('ovbtn').classList.toggle('hidden', st === 'override');
+  if (st === 'override') { $('ov').classList.remove('hidden'); $('capline').textContent = 'Your limit: 62,480.00'; $('capsub').textContent = 'Higher than the ask now (62,418.50).'; startOk = $('ovok').checked; note = startOk ? '' : 'Accept the extra cost to start.'; }
+  if (st === 'nokey') { $('nokey').classList.remove('hidden'); startOk = false; }
+  if (st === 'busy') { $('busy').classList.remove('hidden'); startOk = false; }
+  if (st === 'rest') { $('restnote').classList.remove('hidden'); $('amt').value = '0.0320'; $('est').textContent = '≈ 1,997.39 USD at the ask now'; $('mins').innerHTML = mins(true, true, 'Rest'); }
+  if (st === 'live' || st === 'confirm') $('firstdry').classList.add('hidden');
+  if (st === 'ready') $('firstdry').classList.remove('hidden');
+  if (st === 'confirm') $('confirm').classList.remove('hidden');
+  const b = $('start');
+  b.className = 'btn ' + (live ? 'livebtn' : 'drybtn');
+  b.textContent = live ? 'Start live chase' : 'Start dry run';
+  b.disabled = !startOk;
+  $('startnote').textContent = note;
+  document.querySelectorAll('#opts button').forEach(x => x.classList.toggle('on', x.dataset.id === st));
+}
+$('opts').onclick = e => { const b = e.target.closest('button'); if (b) { st = b.dataset.id; history.replaceState(null, '', '#' + st); draw(); } };
+$('mode').onclick = e => { const b = e.target.closest('button'); if (b) { st = b.dataset.m === 'live' ? 'live' : 'ready'; draw(); } };
+$('side').onclick = e => { const b = e.target.closest('button'); if (b) { st = b.dataset.s === 'sell' ? 'sell' : 'ready'; draw(); } };
+$('ovbtn').onclick = () => { st = 'override'; draw(); };
+$('ovoff').onclick = () => { st = 'live'; draw(); };
+$('ovok').onchange = draw;
+$('cno').onclick = () => { st = 'live'; draw(); };
+$('start').onclick = () => {
+  if (['live', 'override'].includes(st)) { st = 'confirm'; draw(); }
+  else location.href = 'chase.html#placing-dry';
+};
+draw();
+</script>
+</body></html>
