@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>New chase · Order chaser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="oc-token" content="{{TOKEN}}">
+<link rel="stylesheet" href="/static/style.css"></head>
+<body>
+<main class="app">
+  <div class="split">
+    <div class="card">
+      <h1>New chase</h1>
+      <p class="muted" id="intro">The tool places a post-only limit at the best bid and moves it up as the bid rises. It never goes above the cap.</p>
+      <div id="busy" class="note warn hidden" style="margin-bottom:16px"></div>
+      <div id="restnote" class="note info hidden" style="margin-bottom:16px"></div>
+
+      <div class="field"><label class="f">Mode</label>
+        <div class="seg lg" id="mode"><button class="dry on" type="button">Dry run</button><button class="live" type="button" disabled title="Live trading comes in a later version.">Live</button></div>
+        <div class="help"><b style="color:var(--dry)">Dry run sends no orders.</b> It runs the chase on live public prices and simulates the fills. Live trading comes in a later version.</div>
+      </div>
+
+      <div class="grid2">
+        <div class="field"><label class="f" for="pairsel">Pair</label>
+          <select class="input" id="pairsel"><option>BTC/USD</option><option>ETH/USD</option><option>SOL/USD</option></select></div>
+        <div class="field"><label class="f">Side</label>
+          <div class="seg" id="side"><button data-s="buy" class="buy on" type="button">Buy</button><button data-s="sell" class="sell" type="button">Sell</button></div>
+          <div class="help" id="sidehelp"></div></div>
+      </div>
+
+      <div class="field"><label class="f" for="amt">Amount</label>
+        <div class="row"><input class="input num" id="amt" value="0.0500" style="max-width:220px" inputmode="decimal" autocomplete="off"><span class="muted" id="unit">BTC</span><span class="spacer"></span><span class="small muted num" id="est"></span></div>
+        <div class="help" id="amthelp"></div>
+        <div class="mins small" id="mins"></div>
+      </div>
+
+      <div class="field"><label class="f"><span id="capword">Cap</span></label>
+        <div class="note" style="border-color:var(--line);background:#faf9f6">
+          <div class="row"><div><b id="capline">The ask at the start</b><div class="small muted" id="capsub"></div></div><span class="spacer"></span><button class="btn" id="ovbtn" type="button" style="padding:6px 12px;font-size:13px">Set a higher limit</button></div>
+          <div id="ov" class="hidden" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+            <label class="f" for="ovp">Your limit for this chase</label>
+            <div class="row"><input class="input num" id="ovp" style="max-width:220px" inputmode="decimal" autocomplete="off"><span class="muted" id="ovunit">USD</span><span class="spacer"></span><button class="btn" id="ovoff" type="button" style="padding:6px 12px;font-size:13px">Use the start ask</button></div>
+            <div class="note warn small" style="margin-top:10px" id="ovwarn"></div>
+            <label class="check small" style="margin-top:8px"><input type="checkbox" id="ovok"> <span id="ovoktext"></span></label>
+          </div>
+        </div>
+      </div>
+
+      <div class="field"><label class="f" for="to">Timeout</label>
+        <div class="row"><select class="input" id="to" style="max-width:220px"><option value="30">30 s</option><option value="60">1 min</option><option value="120" selected>2 min</option><option value="300">5 min</option><option value="600">10 min</option><option value="900">15 min</option></select>
+        <span class="small muted" id="tohelp"></span></div>
+      </div>
+
+      <div id="pairoff" class="note bad hidden" style="margin-bottom:14px"></div>
+
+      <div class="row"><button class="btn drybtn" id="start" type="button">Start dry run</button><span class="small muted" id="startnote"></span></div>
+    </div>
+
+    <aside class="side">
+      <div class="card">
+        <h3 id="priceshead">Prices now</h3>
+        <div id="prices">
+          <div class="grid2" style="gap:8px">
+            <div><div class="tiny muted">Best bid</div><div class="num" style="color:var(--bid);font-size:20px" id="bid">…</div></div>
+            <div><div class="tiny muted">Best ask</div><div class="num" style="color:var(--ask);font-size:20px" id="ask">…</div></div>
+          </div>
+          <div class="tiny muted" style="margin-top:6px" id="pnote">Connecting to the public Kraken feed…</div>
+          <div class="small" style="margin-top:8px" id="pstat"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>What the tool does</h3>
+        <ol class="small" style="padding-left:18px;margin:0" id="what"></ol>
+      </div>
+      <div class="card">
+        <h3>Worst case</h3>
+        <p class="small" style="margin:0" id="worst"></p>
+      </div>
+    </aside>
+  </div>
+</main>
+
+<script src="/static/app.js"></script>
+<script>
+OC.chrome('new');
+const $ = OC.$;
+const params = new URLSearchParams(location.search);
+let side = 'buy', snap = null, override = false, restOf = null, busy = false;
+
+async function watch(pair) { await OC.post('/api/watch', { pair }); }
+$('pairsel').onchange = () => watch($('pairsel').value);
+$('side').onclick = e => { const b = e.target.closest('button'); if (b) { side = b.dataset.s; draw(); } };
+$('ovbtn').onclick = () => { override = true; const s = snap; if (s && s.feed.ask) { const p = pairInfo(); $('ovp').value = (side === 'buy' ? Number(s.feed.ask) : Number(s.feed.bid)).toFixed(p ? p.price_decimals : 2); } draw(); };
+$('ovoff').onclick = () => { override = false; $('ovok').checked = false; draw(); };
+['amt', 'ovp'].forEach(id => $(id).oninput = draw);
+$('ovok').onchange = draw;
+$('to').onchange = draw;
+
+function pairInfo() { return snap && snap.pairs[$('pairsel').value]; }
+
+function draw() {
+  const s = snap, pair = $('pairsel').value, p = pairInfo();
+  const [B, Q] = pair.split('/');
+  const buy = side === 'buy';
+  const d = p ? p.price_decimals : 2;
+  const P = v => OC.px(v, d);
+  document.querySelectorAll('#side button').forEach(b => b.classList.toggle('on', b.dataset.s === side));
+  $('unit').textContent = B; $('ovunit').textContent = Q;
+  $('priceshead').textContent = 'Prices now: ' + pair;
+  $('intro').textContent = buy ? 'The tool places a post-only limit at the best bid and moves it up as the bid rises. It never goes above the cap.'
+    : 'The tool places a post-only limit at the best ask and moves it down as the ask falls. It never goes below the floor.';
+  $('sidehelp').textContent = buy ? '' : 'Sell: rests at the best ask and moves down. Floor = the bid at the start.';
+  $('capword').textContent = buy ? 'Cap' : 'Floor';
+  $('ovbtn').textContent = buy ? 'Set a higher limit' : 'Set a lower limit';
+  $('ovoff').textContent = buy ? 'Use the start ask' : 'Use the start bid';
+  $('tohelp').textContent = `After this time, the tool sends one IOC limit at the ${buy ? 'cap' : 'floor'} for the rest. If the price is ${buy ? 'above the cap' : 'below the floor'}, the rest does not fill.`;
+  $('what').innerHTML = buy
+    ? '<li>Records the ask now as the cap.</li><li>Places a post-only buy at the best bid.</li><li>Moves it up with the best bid, at most every 5 s, never above the cap.</li><li>After the timeout: cancels, confirms, re-reads the fill, then sends one IOC at the cap for the rest.</li><li>Before the IOC: checks the rest against both Kraken minimums. A rest below a minimum stops as "not filled".</li>'
+    : '<li>Records the bid now as the floor.</li><li>Places a post-only sell at the best ask.</li><li>Moves it down with the best ask, at most every 5 s, never below the floor.</li><li>After the timeout: cancels, confirms, re-reads the fill, then sends one IOC at the floor for the rest.</li><li>Before the IOC: checks the rest against both Kraken minimums. A rest below a minimum stops as "not filled".</li>';
+
+  let startOk = true, note = '';
+  // prices
+  const fresh = s && s.watched === pair && s.feed.ok && s.feed.bid && s.feed.age != null && s.feed.age < 15;
+  const bid = fresh ? Number(s.feed.bid) : null, ask = fresh ? Number(s.feed.ask) : null;
+  $('bid').textContent = bid ? P(bid) : '…'; $('ask').textContent = ask ? P(ask) : '…';
+  $('prices').style.opacity = fresh || !s ? 1 : .5;
+  if (fresh) {
+    const spread = ask - bid;
+    $('pnote').textContent = `Spread ${P(spread)} (${(spread / ask * 100).toFixed(4)}%). Updated ${Math.round(s.feed.age)} s ago from the public Kraken feed.`;
+  } else if (s && !s.feed.up && s.feed.attempt) {
+    $('pnote').innerHTML = `<b class="tone-bad">No prices: the feed is lost.</b> The tool retries (attempt ${s.feed.attempt}, next try in ${s.feed.next_in} s). Check your internet connection.`;
+    startOk = false; note = 'Start needs live prices.';
+  } else { $('pnote').textContent = 'Connecting to the public Kraken feed…'; startOk = false; note = 'Start is possible when prices arrive.'; }
+  // pair status
+  if (s && s.pairs_error && !p) { $('pstat').innerHTML = `<span class="tone-bad">${OC.esc(s.pairs_error)}</span>`; startOk = false; note = 'Start needs the Kraken pair list.'; }
+  else if (p) $('pstat').innerHTML = `Pair status: <span class="badge ${p.status === 'online' ? 'ok' : 'bad'} mono">${OC.esc(p.status)}</span>`;
+  else $('pstat').textContent = 'Pair status: reading…';
+  const off = p && p.status !== 'online';
+  $('pairoff').classList.toggle('hidden', !off);
+  if (off) {
+    $('pairoff').innerHTML = `<b>Kraken accepts no new chase for ${pair} now.</b> Pair status: <span class="mono">${OC.esc(p.status)}</span>. A chase needs the status <span class="mono">online</span>. The tool reads the status again every 30 s, and Start comes back when it is online.
+      <table class="t small" style="margin-top:8px;background:#fff"><tr><th>Status</th><th>What Kraken allows</th><th>Chase</th></tr>
+      <tr><td class="mono">online</td><td>All orders</td><td class="tone-fill">possible</td></tr>
+      <tr><td class="mono">cancel_only</td><td>Cancels only</td><td class="tone-bad">blocked</td></tr>
+      <tr><td class="mono">post_only</td><td>Post-only orders only: the IOC fallback cannot go out</td><td class="tone-bad">blocked</td></tr>
+      <tr><td class="mono">limit_only</td><td>Limit orders only. The pair is not in normal trading.</td><td class="tone-bad">blocked</td></tr>
+      <tr><td class="mono">maintenance</td><td>No orders</td><td class="tone-bad">blocked</td></tr></table>`;
+    startOk = false; note = 'Start comes back when the pair is online.';
+  }
+  // amount and minimums
+  const raw = $('amt').value.trim();
+  const q = Number(raw);
+  const ref = buy ? ask : bid;
+  $('est').textContent = ref && q > 0 ? `≈ ${OC.usd(q * ref)} ${Q} at the ${buy ? 'ask' : 'bid'} now` : `≈ … ${Q}`;
+  $('amt').classList.remove('err'); $('amthelp').className = 'help'; $('amthelp').textContent = 'Dry run: no balance check. A live chase reads your balance from Kraken.';
+  if (p) {
+    const what = restOf ? 'Rest' : 'Amount';
+    const aOk = q >= Number(p.ordermin), cOk = ref ? q * ref >= Number(p.costmin) : true;
+    $('mins').innerHTML = `<span class="tone-${aOk ? 'fill' : 'bad'}">${aOk ? '✓' : '✗'} ${what} at least ${OC.qty(p.ordermin)} ${B}</span> <span class="tone-${cOk ? 'fill' : 'bad'}">${cOk ? '✓' : '✗'} Value at least ${OC.usd(p.costmin)} ${Q}</span> <span class="tiny muted">Kraken minimums for ${pair} (ordermin, costmin)</span>`;
+    const decOk = !raw.includes('.') || raw.split('.')[1].length <= p.qty_decimals;
+    if (!(q > 0) || !/^\d*\.?\d+$|^\d+\.$/.test(raw) || !decOk) {
+      $('amt').classList.add('err'); $('amthelp').className = 'help err';
+      $('amthelp').textContent = `Enter an amount in ${B}, above 0, with at most ${p.qty_decimals} decimals.`; startOk = false; note = 'Fix the amount to start.';
+    } else if (!aOk || !cOk) {
+      $('amt').classList.add('err'); $('amthelp').className = 'help err';
+      $('amthelp').textContent = `The amount is below ${!aOk && !cOk ? 'both Kraken minimums' : 'a Kraken minimum'} for ${pair}. Enter ${OC.qty(Math.max(Number(p.ordermin), ref ? Number(p.costmin) / ref : 0))} ${B} or more.`;
+      startOk = false; note = 'Fix the amount to start.';
+    }
+  }
+  // cap or floor, and the override
+  $('ov').classList.toggle('hidden', !override);
+  $('ovbtn').classList.toggle('hidden', override);
+  const lim = override ? Number($('ovp').value.replace(/,/g, '')) : ref;
+  if (!override) {
+    $('capline').textContent = buy ? 'The ask at the start' : 'The bid at the start';
+    $('capsub').textContent = ref ? (buy ? `Now ${P(ref)}. The tool records it when you press Start.` : `Now ${P(ref)}. The tool never sells below it.`) : 'Waiting for prices.';
+  } else {
+    $('capline').textContent = 'Your limit: ' + (lim ? P(lim) : '…');
+    $('capsub').textContent = ref ? `${buy ? 'Higher' : 'Lower'} than the ${buy ? 'ask' : 'bid'} now (${P(ref)}).` : '';
+    const ok = lim > 0 && ref && (buy ? lim >= ref : lim <= ref);
+    if (!ok) {
+      $('ovwarn').innerHTML = `<b>Enter a limit ${buy ? 'at or above the ask' : 'at or below the bid'} now${ref ? ' (' + P(ref) + ')' : ''}.</b>`;
+      $('ovoktext').textContent = ''; startOk = false; note = 'Fix the limit to start.';
+    } else if (q > 0) {
+      const worst = buy ? q * lim * 1.008 : q * lim * 0.992, market = buy ? q * ref * 1.008 : q * ref * 0.992;
+      const extra = Math.abs(worst - market), diff = Math.abs(lim - ref);
+      $('ovwarn').innerHTML = buy
+        ? `<b>Warning: this can cost more than a market order now.</b> Your limit is ${P(diff)} above the ask (${(diff / ref * 100).toFixed(2)}%). In the worst case the tool buys at ${P(lim)} plus the taker fee: <b class="num">${OC.usd(worst)} ${Q}</b>. A market order now costs about <b class="num">${OC.usd(market)} ${Q}</b>. Worst extra: <b class="num">${OC.usd(extra)} ${Q}</b>.`
+        : `<b>Warning: this can bring less than a market sell now.</b> Your limit is ${P(diff)} below the bid (${(diff / ref * 100).toFixed(2)}%). In the worst case the tool sells at ${P(lim)} minus the taker fee: <b class="num">${OC.usd(worst)} ${Q}</b> received. A market sell now brings about <b class="num">${OC.usd(market)} ${Q}</b>. Worst loss: <b class="num">${OC.usd(extra)} ${Q}</b>.`;
+      $('ovoktext').textContent = buy ? `I accept that this chase can cost up to ${OC.usd(extra)} ${Q} more than a market order now.` : `I accept that this chase can bring up to ${OC.usd(extra)} ${Q} less than a market sell now.`;
+      if (!$('ovok').checked && startOk) { startOk = false; note = 'Accept the extra cost to start.'; }
+    }
+  }
+  // worst case
+  if (ref && q > 0) {
+    const L = lim || ref;
+    $('worst').innerHTML = buy
+      ? (override ? `Never more than <b class="num">${OC.usd(q * L * 1.008)} ${Q}</b> (${OC.qty(q)} × ${P(L)} + 0.80% taker fee).` : `Never more than a market order at the start: about <b class="num">${OC.usd(q * ref * 1.008)} ${Q}</b> (${OC.qty(q)} × ${P(ref)} + 0.80% taker fee).`) +
+        ` Best case: about <b class="num">${OC.usd(q * bid * 1.004)} ${Q}</b> (all maker at ${P(bid)} + 0.40%). The fees use the highest rates, so the worst case is a true maximum.`
+      : (override ? `Never less than <b class="num">${OC.usd(q * L * 0.992)} ${Q}</b> received (${OC.qty(q)} × ${P(L)} − 0.80% taker fee).` : `Never less than a market sell at the start: about <b class="num">${OC.usd(q * ref * 0.992)} ${Q}</b> received (${OC.qty(q)} × ${P(ref)} − 0.80% taker fee).`) +
+        ' The fees use the highest rates, so this is a true minimum.';
+  } else $('worst').textContent = 'Shown when prices arrive and the amount is valid.';
+  // a chase runs
+  $('busy').classList.toggle('hidden', !busy);
+  if (busy) {
+    const c = s.chase;
+    $('busy').innerHTML = `<b>A chase runs now:</b> ${c.side} ${OC.qty(c.qty)} ${OC.esc(c.pair.symbol)}, ${Math.floor(Number(c.filled) / Number(c.qty) * 100)}% filled. You can start a new chase when it ends. <a href="/chase">Open it</a>`;
+    startOk = false; note = '';
+  }
+  $('pairsel').disabled = busy;
+  $('start').disabled = !startOk;
+  if (!$('startnote').dataset.err) $('startnote').textContent = note;
+}
+
+$('start').onclick = async () => {
+  if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
+  const body = { pair: $('pairsel').value, side, qty: $('amt').value.trim(), timeout: Number($('to').value) };
+  if (override) { body.limit = $('ovp').value.trim(); body.accept_extra = $('ovok').checked; }
+  $('start').disabled = true;
+  const r = await OC.post('/api/chase', body);
+  if (r.ok) { location.href = '/chase'; return; }
+  $('startnote').dataset.err = '1';
+  $('startnote').innerHTML = `<span class="tone-bad">${(r.data.errors || ['Refused.']).map(OC.esc).join(' ')}</span>`;
+  setTimeout(() => { delete $('startnote').dataset.err; draw(); }, 6000);
+};
+
+async function init() {
+  if (params.get('rest')) {
+    const r = await fetch('/api/chase/' + encodeURIComponent(params.get('rest')));
+    if (r.ok) {
+      restOf = await r.json();
+      const rest = Number(restOf.qty) - Number(restOf.filled);
+      $('pairsel').value = restOf.pair.symbol; side = restOf.side;
+      $('amt').value = rest.toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+      $('restnote').classList.remove('hidden');
+      $('restnote').textContent = `You chase the rest of your last order: ${OC.qty(rest)} ${restOf.pair.base}. The ${side === 'buy' ? 'cap is the ask' : 'floor is the bid'} at the new start, not the old ${side === 'buy' ? 'cap' : 'floor'}.`;
+    }
+  }
+  OC.stream(s => {
+    const first = !snap;
+    snap = s;
+    busy = !!(s.chase && s.chase.phase !== 'done');
+    if (first && !busy && s.watched !== $('pairsel').value) watch($('pairsel').value);
+    else if (first && busy) $('pairsel').value = s.watched;
+    draw();
+  });
+  draw();
+}
+init();
+</script>
+</body></html>

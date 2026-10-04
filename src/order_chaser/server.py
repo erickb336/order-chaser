@@ -322,6 +322,7 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
                          "price_decimals": c.pair.price_decimals})
         return JSONResponse(rows)
 
+    @contextlib.asynccontextmanager
     async def lifespan(app):
         eng.end_unfinished()
         tasks = []

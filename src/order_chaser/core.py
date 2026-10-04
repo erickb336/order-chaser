@@ -83,10 +83,12 @@ class Chase:
     slow: bool = False                # amends every 15 s, not 5 s
     reject: str | None = None         # reason of the last amend reject
     reject_at: float | None = None
+    reject_price: Decimal | None = None
     reconcile_for: str | None = None  # "feed" or "reject"
     outcome: str | None = None        # filled, notfilled, belowmin, stopped, ended, refused
     ended_at: float | None = None
     end_ask: Decimal | None = None    # the ask (buy) or bid (sell) when the chase ended
+    off_from: float | None = None     # last event before the tool stopped (outcome "ended")
 
     @property
     def buy(self) -> bool:
@@ -467,7 +469,8 @@ def _rejected(c: Chase, ev: Rejected, t: float) -> tuple[Chase, list]:
         return c, out + more
     if ev.op == "amend" and c.phase == "amending":
         out = [Log(t, f"Amend to {p(c.pending)} rejected: {why}.", "warn"), Query(c.id)]
-        c = replace(c, phase="reconcile", reconcile_for="reject", pending=None, reject=ev.reason, reject_at=ev.now)
+        c = replace(c, phase="reconcile", reconcile_for="reject", pending=None, reject=ev.reason, reject_at=ev.now,
+                    reject_price=c.pending)
         if ev.reason == "rate_limit":
             # The estimate was too low: trust Kraken and start again from the maximum.
             c = replace(c, rate=float(RATE_MAX), slow=True)
@@ -532,7 +535,7 @@ def _restarted(c: Chase, ev: Restarted, t: float) -> tuple[Chase, list]:
                  Log(t, "Did not continue the dry run.")]
     else:  # T4 replaces this with a reconcile against Kraken before it ends the chase.
         lines = [Log(t, f"Tool started again after {off} s off. Chase ended, not continued.", "bad")]
-    c, more = _end(c, ev.now, "ended")
+    c, more = _end(replace(c, off_from=ev.last_seen), ev.now, "ended")
     return c, lines + more
 
 
@@ -604,6 +607,6 @@ def from_json(s: str) -> Chase:
     fills = tuple(Fill(Decimal(f["qty"]), Decimal(f["price"]), f["maker"], f["t"], f["order"]) for f in d.pop("fills"))
     for k in ("qty", "limit", "start_bid", "start_ask", "order_cum"):
         d[k] = Decimal(d[k])
-    for k in ("price", "pending", "bid", "ask", "end_ask"):
+    for k in ("price", "pending", "bid", "ask", "end_ask", "reject_price"):
         d[k] = _dec(d[k])
     return Chase(pair=pair, fills=fills, **d)

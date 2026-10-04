@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Live chase · Order chaser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="oc-token" content="{{TOKEN}}">
+<link rel="stylesheet" href="/static/style.css"></head>
+<body>
+<main class="app">
+  <div id="none" class="card hidden" style="text-align:center;padding:48px 20px"><h2>No chase runs now</h2><p class="muted">Start a dry run on the form. It runs on live public prices and simulates the fills.</p><a class="btn drybtn" href="/new">New chase</a></div>
+  <div class="split" id="main">
+    <div>
+      <div id="card"></div>
+      <div class="row" id="actions" style="margin:14px 0 18px"></div>
+      <div class="card">
+        <div class="row"><h2 style="margin:0">What the tool did</h2><span class="spacer"></span><span class="small muted">Newest first</span></div>
+        <div id="log" style="margin-top:8px"></div>
+        <p class="tiny muted" style="margin:8px 0 0">Dry run: each event above is simulated. A simulated order fills only when a public trade prints through your price.</p>
+      </div>
+    </div>
+    <aside class="side">
+      <div class="card">
+        <h3>This chase</h3>
+        <table class="t small" style="font-size:13.5px">
+          <tr><td class="muted" style="padding:5px 0">Order</td><td class="r" style="padding:5px 0"><b id="order"></b></td></tr>
+          <tr><td class="muted" style="padding:5px 0">Pair</td><td class="r" style="padding:5px 0" id="pair"></td></tr>
+          <tr><td class="muted" style="padding:5px 0" id="limitname"></td><td class="r num" style="padding:5px 0" id="limit"></td></tr>
+          <tr><td class="muted" style="padding:5px 0">Your price now</td><td class="r num" style="padding:5px 0" id="yp"></td></tr>
+          <tr><td class="muted" style="padding:5px 0">Average so far</td><td class="r num" style="padding:5px 0" id="avg"></td></tr>
+          <tr><td class="muted" style="padding:5px 0">Timeout</td><td class="r" style="padding:5px 0" id="to"></td></tr>
+        </table>
+      </div>
+      <div class="card">
+        <h3>Worst case</h3>
+        <p class="small" style="margin:0 0 6px" id="worsthead"></p>
+        <div class="num" style="font-size:18px" id="worst"></div>
+        <p class="tiny muted" style="margin:4px 0 10px" id="worstwhy"></p>
+        <div class="small" id="saving"></div>
+      </div>
+      <div class="card">
+        <h3 id="ratehead">Rate counter, estimated</h3>
+        <div class="meter"><span id="ratetext"></span><span class="num" id="ratenum"></span><div class="bar"><i id="ratebar"></i></div></div>
+        <div class="small" style="margin-top:8px">Maximum: <b>60 (lowest tier assumed)</b></div>
+        <p class="tiny muted" style="margin:6px 0 0">Kraken does not show this counter. The tool estimates it from its own orders. It falls by 1 each second. Above 40, or after an "EOrder:Rate limit exceeded" reject, the tool amends only every 15 s, so that a cancel stays possible. In a dry run the tool counts the simulated orders.</p>
+      </div>
+    </aside>
+  </div>
+</main>
+
+<div class="scrim hidden" id="stopdlg"><div class="modal">
+  <h2>Stop this chase?</h2>
+  <p>The tool cancels your order and waits for the simulated exchange to confirm. You keep what filled: <b class="num" id="stopq"></b>. The rest does not fill.</p>
+  <div class="row"><span class="spacer"></span><button class="btn" id="stopno">Keep chasing</button><button class="btn danger" id="stopyes">Stop and cancel</button></div>
+</div></div>
+
+<script src="/static/app.js"></script>
+<script>
+OC.chrome('chase');
+const $ = OC.$;
+let current = null, wasActive = null, snapNow = 0;
+
+function side(c, snap) {
+  const w = OC.words(c), s = c.summary, B = c.pair.base;
+  $('order').textContent = `${w.buy ? 'Buy' : 'Sell'} ${OC.qty(c.qty)} ${B}`;
+  $('pair').textContent = c.pair.symbol;
+  $('limitname').textContent = w.limitName[0].toUpperCase() + w.limitName.slice(1);
+  $('limit').textContent = w.p(c.limit);
+  $('yp').textContent = c.price ? w.p(c.price) : (c.pending ? 'sending…' : 'no order');
+  $('avg').textContent = Number(s.filled) ? w.p(s.avg) : 'nothing filled';
+  $('to').textContent = `${OC.mmss(c.timeout)}, then IOC at the ${w.limitWord}`;
+  const isStart = c.limit === (w.buy ? c.start_ask : c.start_bid);
+  $('worsthead').textContent = w.buy
+    ? (isStart ? 'This chase never costs more than a market order at the start:' : 'This chase never costs more than:')
+    : (isStart ? 'This chase never brings less than a market sell at the start:' : 'This chase never brings less than:');
+  $('worst').textContent = OC.usd(c.worst) + ' ' + c.pair.quote + (w.buy ? '' : ' received');
+  $('worstwhy').textContent = `${OC.qty(c.qty)} × ${w.p(c.limit)} ${w.buy ? '+' : '−'} 0.80% taker fee. The tool uses the highest fee rates, 0.40% maker and 0.80% taker, so this is a true ${w.buy ? 'maximum' : 'minimum'}.`;
+  const sv = Number(s.saving);
+  $('saving').innerHTML = Number(s.filled)
+    ? `So far: <b class="${sv >= 0 ? 'tone-fill' : 'tone-bad'} num">${OC.usd(Math.abs(sv))} ${c.pair.quote}</b> ${sv >= 0 ? (w.buy ? 'less than' : 'more than') : (w.buy ? 'more than' : 'less than')} a market order at the start, for the ${OC.qty(s.filled)} ${B} that filled.`
+    : '<span class="muted">So far: nothing filled.</span>';
+  const done = c.phase === 'done';
+  const rate = done ? c.rate : c.rate;
+  $('ratehead').textContent = `Rate counter, estimated (${c.pair.symbol})`;
+  $('ratetext').textContent = done ? 'No orders now' : (c.slow ? 'Near: amends every 15 s' : 'Normal: amends every 5 s');
+  $('ratenum').textContent = Math.floor(rate) + ' / 60';
+  $('ratebar').style.width = (rate / 60 * 100) + '%';
+  $('ratebar').style.background = rate > 40 ? '#e0a100' : 'var(--fill)';
+}
+
+function actions(st, c) {
+  const a = [], rest = Number(c.qty) - Number(c.filled);
+  const canStop = ['placing', 'resting', 'amending', 'partial', 'rejected', 'ratenear', 'disconnected'].includes(st);
+  const canFill = ['resting', 'amending', 'partial', 'rejected', 'ratenear'].includes(st);
+  if (canStop) a.push('<button class="btn danger" id="stop">Stop</button>');
+  if (canFill) a.push('<button class="btn" style="white-space:nowrap" id="fillnow">Fill the rest now</button>');
+  if (OC.DONE.includes(st)) a.push(`<a class="btn primary" href="/result?id=${encodeURIComponent(c.id)}">See the result</a>`);
+  if (st === 'filled' || st === 'refused') a.push('<a class="btn" href="/new">New chase</a>');
+  else if (OC.DONE.includes(st) && rest > 0) a.push(`<a class="btn" href="/new?rest=${encodeURIComponent(c.id)}">Chase the rest (${OC.qty(rest)} ${c.pair.base}), new ${OC.words(c).limitWord}</a>`);
+  if (st === 'fallback' || st === 'stopping') a.push('<span class="small muted">No action during the fallback. It ends in 1 to 2 s.</span>');
+  if (st === 'pageoffline') a.push('<button class="btn" disabled>Stop</button><span class="small muted">Stop works again when the page reaches the tool.</span>');
+  else if (OC.DONE.includes(st)) a.push('<span class="spacer"></span><span class="small muted">The chase ended. The form is open again.</span>');
+  else a.push('<span class="spacer"></span><span class="small muted">You can close this page. The browser asks "Leave this page?" first. The tool keeps the chase.</span>');
+  $('actions').innerHTML = a.join(' ');
+  if ($('stop')) $('stop').onclick = () => { $('stopq').textContent = OC.qty(c.filled) + ' ' + c.pair.base; $('stopdlg').classList.remove('hidden'); };
+  if ($('fillnow')) $('fillnow').onclick = async () => { $('fillnow').disabled = true; await OC.post('/api/chase/fillnow'); };
+}
+
+function draw(c, snap, st, ageOff) {
+  $('none').classList.add('hidden'); $('main').classList.remove('hidden');
+  $('card').innerHTML = OC.card(st, c, snap, ageOff);
+  $('log').innerHTML = OC.eventLog(c);
+  side(c, snap);
+  // Keep the buttons while the state stays the same, so that a click is not lost.
+  if ($('actions').dataset.st !== st) { actions(st, c); $('actions').dataset.st = st; }
+  const done = c.phase === 'done';
+  document.title = (done ? '' : '● ') + OC.copy(st, c, snap, ageOff).title + ' · Order chaser';
+}
+
+OC.stream(snap => {
+  const c = snap.chase;
+  if (!c) { $('main').classList.add('hidden'); $('none').classList.remove('hidden'); document.title = 'No chase · Order chaser'; return; }
+  current = c;
+  const active = c.phase !== 'done';
+  const st = OC.stateOf(c, snap.now);
+  draw(c, snap, st, 0);
+  if (wasActive === true && !active && 'Notification' in window && Notification.permission === 'granted') {
+    new Notification('Order chaser: ' + OC.copy(st, c, snap, 0).title, { body: `${OC.qty(c.filled)} of ${OC.qty(c.qty)} ${c.pair.base} filled (dry run).` });
+  }
+  wasActive = active;
+}, (snap, age) => {
+  if (current && current.phase !== 'done') draw(current, null, 'pageoffline', age);
+});
+
+window.addEventListener('beforeunload', e => { if (current && current.phase !== 'done') { e.preventDefault(); e.returnValue = ''; } });
+$('stopno').onclick = () => $('stopdlg').classList.add('hidden');
+$('stopyes').onclick = async () => { $('stopdlg').classList.add('hidden'); await OC.post('/api/chase/stop'); };
+</script>
+</body></html>
