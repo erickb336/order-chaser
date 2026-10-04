@@ -37,18 +37,19 @@
         <h3>Worst case</h3>
         <p class="small" style="margin:0 0 6px">This chase never costs more than a market order at the start:</p>
         <div class="num" style="font-size:18px">3,145.89 USD</div>
-        <p class="tiny muted" style="margin:4px 0 10px">0.0500 × 62,418.50 + 0.80% taker fee.</p>
+        <p class="tiny muted" style="margin:4px 0 10px">0.0500 × 62,418.50 + 0.80% taker fee. The tool uses the highest fee rates, 0.40% maker and 0.80% taker, so this is a true maximum.</p>
         <div class="small" id="saving"></div>
       </div>
       <div class="card" id="dmscard">
         <h3>Safety timer</h3>
         <div class="meter"><span id="dmstext"></span><span class="num" id="dmsnum"></span><div class="bar"><i id="dmsbar" style="background:var(--ink)"></i></div></div>
-        <p class="tiny muted" style="margin:8px 0 0">If the tool stops, Kraken cancels <b>all</b> your orders on all pairs, also stop-losses. You accepted this in setup. <a href="#" data-q="Q5">Q5</a></p>
+        <p class="tiny muted" style="margin:8px 0 0">If the tool stops, Kraken cancels <b>all</b> your orders on all pairs, also stop-losses. You accepted this in setup.</p>
       </div>
       <div class="card">
-        <h3>Kraken rate counter (BTC/USD)</h3>
+        <h3>Rate counter, estimated (BTC/USD)</h3>
         <div class="meter"><span id="ratetext"></span><span class="num" id="ratenum"></span><div class="bar"><i id="ratebar"></i></div></div>
-        <p class="tiny muted" style="margin:8px 0 0">Starter tier: max 60, falls by 1 each second. Above 40, the tool slows its amends so that a cancel stays possible.</p>
+        <div class="small" style="margin-top:8px">Maximum: <b>60 (lowest tier assumed)</b></div>
+        <p class="tiny muted" style="margin:6px 0 0">Kraken does not show this counter. The tool estimates it from its own orders. It falls by 1 each second. Above 40, or after an "EOrder:Rate limit exceeded" reject, the tool amends only every 15 s, so that a cancel stays possible.</p>
       </div>
     </aside>
   </div>
@@ -73,11 +74,17 @@ function draw() {
   if (dry) {
     st2.sub = st.sub.replace(/The tool sends/g, 'The tool simulates').replace(/rests on Kraken/g, 'rests in the simulation').replace(/Kraken/g, 'the simulated exchange') + ' (Simulated. No order goes to Kraken.)';
     if (st.id === 'disconnected') st2.sub = 'The tool lost the public Kraken price feed 8 s ago. The simulation pauses until the feed is back. Attempt 3: next try in 4 s.';
-    if (st.id === 'disconnected' || st.id === 'pageoffline') st2.note = null;
+    if (st.id === 'disconnected' || st.id === 'pageoffline' || st.id === 'ended') st2.note = null;
+    if (st.id === 'ended') {
+      st2.sub = 'The tool stopped at 1:02 and started again at 1:10 (sample cause: a crash). After a restart the tool does not continue a dry run. It did these steps:';
+      st2.steps = [['done', 'Ended the simulated order. No order was on Kraken.'], ['done', 'Recorded the simulated fills: 0.0180 of 0.0500 BTC.'], ['done', 'Did not continue the dry run.']];
+      st2.todo = ['Nothing to check in Kraken Pro: a dry run sends no orders.', 'To test again, start a new dry run.'];
+    }
+    if (st.id === 'ratenear' || st.id === 'rejected') st2.note2 = null;
     if (st.id === 'ratenear') { st2.sub = 'In a dry run the tool sends no orders, so it uses no rate counter. This state does not occur in a dry run. Shown here for completeness.'; }
   }
   $('card').innerHTML = OC.card(st2, false);
-  $('log').innerHTML = OC.eventLog(dry ? Object.assign({}, st, { events: st.events.filter(e => !/Safety timer/.test(e[1])).map(e => [e[0], e[1].replace(/Safety timer off\.?/, '').replace(/Kraken/g, 'The simulation'), e[2]]) }) : st) + (dry ? '<p class="tiny muted" style="margin:8px 0 0">Dry run: each event above is simulated. Fills follow the dry-run fill rule <a href="#" data-q="Q12">Q12</a>.</p>' : '');
+  $('log').innerHTML = OC.eventLog(dry ? Object.assign({}, st, { events: st.events.filter(e => !/Safety timer/.test(e[1])).map(e => [e[0], e[1].replace(/Safety timer off\.?/, '').replace(/Kraken/g, 'The simulation'), e[2]]) }) : st) + (dry ? '<p class="tiny muted" style="margin:8px 0 0">Dry run: each event above is simulated. A simulated order fills only when a public trade prints through your price.</p>' : '');
   $('modestrip').innerHTML = dry
     ? '<div class="drystrip">DRY RUN: no orders go to Kraken. Prices are live public prices; fills are simulated.</div>'
     : '<div class="livestrip">LIVE: this chase sends real orders to your Kraken account.</div>';
@@ -98,21 +105,21 @@ function draw() {
     $('dmsbar').style.width = (left / 60 * 100) + '%';
     $('dmsbar').style.background = left < 40 ? 'var(--bad)' : 'var(--ink)';
   }
-  $('ratetext').textContent = dry ? 'Not used in a dry run' : (st.rate >= 40 ? 'Near the limit' : 'Normal');
+  $('ratetext').textContent = dry ? 'Not used in a dry run' : st.done ? 'No orders now' : (st.rate >= 40 ? 'Near: amends every 15 s' : 'Normal: amends every 5 s');
   $('ratenum').textContent = dry ? '' : st.rate + ' / 60';
   $('ratebar').style.width = dry ? '0%' : (st.rate / 60 * 100) + '%';
   $('ratebar').style.background = st.rate >= 40 ? '#e0a100' : 'var(--fill)';
   // actions
   const a = [];
   if (st.actions.includes('stop')) a.push('<button class="btn danger" id="stop">Stop</button>');
-  if (st.actions.includes('fillnow')) a.push('<button class="btn proposal" title="Proposal: depends on Q6">Fill the rest now</button> <a href="#" data-q="Q6" class="qlink">Q6</a>');
+  if (st.actions.includes('fillnow')) a.push('<button class="btn" style="white-space:nowrap">Fill the rest now</button>');
   if (st.actions.includes('result')) a.push(`<a class="btn primary" href="result.html#${st.id === 'filled' ? 'filled' : st.id}${dry ? '-dry' : ''}">See the result</a>`);
   if (st.actions.includes('new')) a.push('<a class="btn" href="new.html">New chase</a>');
   if (st.actions.includes('again')) a.push('<a class="btn" href="new.html#rest">Chase the rest (0.0320 BTC), new cap</a>');
   if (!st.actions.length && st.id === 'fallback') a.push('<span class="small muted">No action during the fallback. It ends in 1 to 2 s.</span>');
   if (st.id === 'pageoffline') a.push('<button class="btn" disabled>Stop</button><span class="small muted">Stop works again when the page reaches the tool. To stop at once, cancel the order in Kraken Pro.</span>');
-  if (st.id === 'filled' || st.id === 'notfilled' || st.id === 'stopped') a.push('<span class="spacer"></span><span class="small muted">The chase ended. The form is open again.</span>');
-  else if (st.id !== 'pageoffline') a.push('<span class="spacer"></span><span class="small muted">You can close this page. The tool keeps the chase. <a href="#" data-q="Q3">Q3</a></span>');
+  if (st.done) a.push('<span class="spacer"></span><span class="small muted">The chase ended. The form is open again.</span>');
+  else if (st.id !== 'pageoffline') a.push('<span class="spacer"></span><span class="small muted">You can close this page. The browser asks "Leave this page?" first. The tool keeps the chase.</span>');
   $('actions').innerHTML = a.join(' ');
   const sb = $('stop'); if (sb) sb.onclick = () => { $('stopq').textContent = OC.fq(sm.q) + ' BTC'; $('stopdlg').classList.remove('hidden'); };
   document.querySelectorAll('#opts button').forEach(b => b.classList.toggle('on', b.dataset.id === st.id));

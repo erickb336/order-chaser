@@ -10,6 +10,7 @@
       <button data-id="mixed">Filled after timeout (maker + IOC)</button>
       <button data-id="notfilled">Part filled: price above cap</button>
       <button data-id="stopped">Stopped by you</button>
+      <button data-id="ended">Ended: tool stopped or restarted</button>
       <button data-id="filled-dry">Dry run result</button>
     </div>
   </div>
@@ -30,20 +31,25 @@ const R = {
     rest: 'Not filled: 0.0320 BTC. The ask at the end was 62,431.00, which is 12.50 above your cap. No order of yours rests on Kraken.' },
   stopped: { fills: [F1], head: 'Bought 0.0180 of 0.0500 BTC', tone: 'muted', line: 'You stopped the chase at 0:55. Kraken confirmed the cancel.',
     rest: 'Not filled: 0.0320 BTC, because you stopped the chase. No order of yours rests on Kraken.' },
+  ended: { fills: [F1], head: 'Bought 0.0180 of 0.0500 BTC', tone: 'bad', badge: 'Ended: tool restarted', line: 'The tool stopped at 1:02 and started again at 1:10 (sample cause: a crash). It read the order, cancelled it, recorded the fills and did not continue the chase.',
+    rest: 'Not filled: 0.0320 BTC, because the tool restarted. No order of yours rests on Kraken.',
+    todo: ['To buy the rest, start a new chase. It records a new cap.', 'The tool was off for 8 s, so the safety timer did not fire. Your other orders did not change.', 'If the tool is off for 60 s or more, Kraken cancels ALL your orders on all pairs. Then this page says so: check your other orders, for example stop-losses, in Kraken Pro.'],
+    dry: { line: 'The tool stopped at 1:02 and started again at 1:10 (sample cause: a crash). It recorded the simulated fills and did not continue the dry run.', rest: 'Not filled (simulated): 0.0320 BTC, because the tool restarted. A dry run sends no orders to Kraken.', todo: ['To test again, start a new dry run.'] } },
 };
 let cur = location.hash.slice(1) || 'filled';
 function draw() {
   const dry = cur.endsWith('-dry');
   const key = cur.replace(/-dry$/, '');
-  const r = R[key] || R.filled;
+  const r0 = R[key] || R.filled;
+  const r = dry && r0.dry ? Object.assign({}, r0, r0.dry) : r0;
   const sm = OC.summarize(r.fills);
   const pctM = Math.round(sm.makerShare * 100);
   const filledPct = sm.q / OC.S.qty * 100;
-  $('modestrip').innerHTML = dry ? '<div class="drystrip">DRY RUN RESULT: simulated. No order went to Kraken. A real chase can fill less. <a class="qlink" data-q="Q12" href="#">Q12</a></div>' : '';
+  $('modestrip').innerHTML = dry ? '<div class="drystrip">DRY RUN RESULT: simulated. No order went to Kraken. A real chase can fill less: a simulated order fills only when a public trade prints through your price.</div>' : '';
   const sim = dry ? ' (simulated)' : '';
   $('out').innerHTML = `
   <div class="card">
-    <div class="row"><span class="badge ${r.tone === 'fill' ? 'ok' : r.tone === 'bad' ? 'bad' : 'plain'}">${key === 'filled' || key === 'mixed' ? 'Complete' : key === 'stopped' ? 'Stopped' : 'Part filled'}</span><span class="small muted">BTC/USD · buy · ${dry ? 'dry run' : 'live'} · today 09:52 · 0:00 to ${key === 'filled' ? '1:18' : key === 'stopped' ? '0:55' : '2:01'}</span></div>
+    <div class="row"><span class="badge ${r.tone === 'fill' ? 'ok' : r.tone === 'bad' ? 'bad' : 'plain'}">${r.badge || (key === 'filled' || key === 'mixed' ? 'Complete' : key === 'stopped' ? 'Stopped' : 'Part filled')}</span><span class="small muted">BTC/USD · buy · ${dry ? 'dry run' : 'live'} · today 09:52 · 0:00 to ${key === 'filled' ? '1:18' : key === 'stopped' ? '0:55' : key === 'ended' ? '1:10' : '2:01'}</span></div>
     <h1 style="margin-top:10px">${r.head}${sim}</h1>
     <p class="muted">${r.line}</p>
     <div class="facts" style="margin-top:14px">
@@ -56,7 +62,8 @@ function draw() {
       <div class="row small"><b>Maker ${pctM}%</b><span class="muted">Taker ${100 - pctM}%</span>${sm.q < OC.S.qty ? '<span class="muted">· Not filled ' + Math.round(100 - filledPct) + '%</span>' : ''}<span class="spacer"></span><span class="tiny muted">share of 0.0500 BTC</span></div>
       <div class="bar" style="margin-top:6px;height:14px"><i class="m" style="width:${sm.makerShare * filledPct}%"></i><i class="tk" style="width:${(1 - sm.makerShare) * filledPct}%"></i><i class="nf" style="width:${100 - filledPct}%"></i></div>
     </div>
-    ${r.rest ? `<div class="note ${key === 'notfilled' ? 'bad' : 'warn'}" style="margin-top:16px"><b>${r.rest}</b>${key === 'notfilled' ? ' To buy the rest, start a new chase. It records a new cap.' : ''}</div>` : ''}
+    ${r.rest ? `<div class="note ${key === 'notfilled' || key === 'ended' ? 'bad' : 'warn'}" style="margin-top:16px"><b>${r.rest}</b>${key === 'notfilled' ? ' To buy the rest, start a new chase. It records a new cap.' : ''}</div>` : ''}
+    ${r.todo ? `<div class="note info small" style="margin-top:12px"><b>What to do now</b><ul style="margin:4px 0 0;padding-left:18px">${r.todo.map(x => `<li>${x}</li>`).join('')}</ul></div>` : ''}
     <div class="row" style="margin-top:18px">${r.rest ? '<a class="btn primary" href="new.html#rest">Chase the rest (0.0320 BTC)</a>' : '<a class="btn primary" href="new.html">New chase</a>'}<a class="btn" href="history.html">History</a><a class="btn" href="chase.html#${key === 'mixed' ? 'fallback' : key}${dry ? '-dry' : ''}">Back to the chase</a></div>
   </div>
   <div class="grid2" style="margin-top:16px">
@@ -71,7 +78,7 @@ function draw() {
         <tr><td>This chase: price + fees</td><td class="r num">${OC.f2(sm.ours)}</td></tr>
         <tr><td><b>Saving</b></td><td class="r num tone-fill"><b>${OC.f2(sm.saving)}</b></td></tr>
       </table>
-      <p class="tiny muted" style="margin:10px 0 0">The saving is never below 0: the chase never pays more than the start ask plus the taker fee. A real market order can cost more than this estimate on a thin book, so the true saving can be larger. Fees: Kraken Pro tier 1 (sample).</p>
+      <p class="tiny muted" style="margin:10px 0 0">The saving is never below 0: the chase never pays more than the start ask plus the taker fee. A real market order can cost more than this estimate on a thin book, so the true saving can be larger. Fees: your fee tier, read from Kraken, because the key has Query Funds (sample: 0.40% maker, 0.80% taker). Without Query Funds the tool uses the highest rates, 0.40% and 0.80%.</p>
     </div>
   </div>`;
   document.querySelectorAll('#opts button').forEach(x => x.classList.toggle('on', x.dataset.id === cur));

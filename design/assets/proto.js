@@ -69,6 +69,7 @@ const STATES = [
     title: 'Amend rejected: checking the order',
     sub: 'Kraken rejected the amend to 62,418.40. Reason: the ask fell to 62,418.40, so a post-only order at that price would take liquidity. The tool does not retry. It reads the order state again first.',
     steps: [['done', 'Amend rejected: post-only order would cross the ask.'], ['done', 'Read the order state again: open, 0.0180 BTC filled, price 62,418.30.'], ['now', 'Wait for the next change of the best bid. Next amend possible in 3 s.']],
+    note2: 'If the reject reason is "EOrder:Rate limit exceeded", the tool does the same steps, and then waits 15 s between amends, not 5 s.',
     events: base.concat(amended, fill1, amended2, [['0:52', 'Amend to 62,418.40 rejected: would cross the ask (post-only).', 'ev-warn'], ['0:52', 'Read the order again: open, 0.0180 BTC filled, at 62,418.30.', '']]), actions: ['stop', 'fillnow'] },
   { id: 'disconnected', label: 'Disconnected', tone: 'bad', pulse: true, t: 63, fills: [F1], you: 62418.3, bid: 62418.3, ask: 62418.5, rate: 6, conn: 'bad', dms: 26, stale: true,
     title: 'Connection to Kraken lost: reconnecting',
@@ -83,74 +84,55 @@ const STATES = [
     events: base.concat(amended, fill1, amended2), actions: [] },
   { id: 'ratenear', label: 'Rate limit near', tone: 'warn', pulse: true, t: 70, fills: [F1], you: 62418.3, bid: 62418.4, ask: 62418.5, rate: 47, conn: 'ok', dms: 10,
     title: 'Slowing down: rate limit near',
-    sub: 'Your Kraken rate counter for BTC/USD is at 47 of 60. The tool now waits 15 s between amends, not 5 s. This keeps room for a cancel. Your order can trail the best bid for a short time.',
-    events: base.concat(amended, fill1, amended2, [['1:04', 'Rate counter at 47 of 60. Next amend in 15 s, not 5 s.', 'ev-warn']]), actions: ['stop', 'fillnow'] },
+    sub: 'The estimated rate counter for BTC/USD is at 47 of 60. The tool now waits 15 s between amends, not 5 s. This keeps room for a cancel. Your order can trail the best bid for a short time.',
+    steps: [['done', 'Estimated counter above 40: amends every 15 s.'], ['todo', 'Kraken rejects an amend with "EOrder:Rate limit exceeded": the tool also switches to 15 s amends.'], ['todo', 'Counter below 40 again: amends every 5 s.']],
+    events: base.concat(amended, fill1, amended2, [['1:04', 'Estimated rate counter at 47 of 60. Next amend in 15 s, not 5 s.', 'ev-warn']]), actions: ['stop', 'fillnow'] },
+  { id: 'ended', label: 'Ended: tool stopped or restarted', tone: 'bad', t: 70, fills: [F1], you: null, bid: 62418.4, ask: 62418.5, rate: 0, conn: 'ok', dms: null, done: true,
+    title: 'Ended: the tool stopped or restarted',
+    sub: 'The tool stopped at 1:02 and started again at 1:10 (sample cause: a crash). After a restart the tool does not continue a chase. It did these steps:',
+    steps: [['done', 'Read the order from Kraken: open, 0.0180 BTC filled.'], ['done', 'Cancelled the resting order and waited for Kraken to confirm.'], ['done', 'Recorded the fills: 0.0180 of 0.0500 BTC. The rest, 0.0320 BTC, did not fill.'], ['done', 'Did not continue the chase. Safety timer off.']],
+    todo: ['Nothing rests on Kraken from this chase.', 'To buy the rest, start a new chase. It records a new cap.', 'The tool was off for 8 s, so the safety timer did not fire. Your other orders did not change.'],
+    note: 'If the tool is off for 60 s or more, the safety timer fires: Kraken cancels ALL your orders on all pairs. Then this screen says so. Check your other orders, for example stop-losses, in Kraken Pro.',
+    events: base.concat(amended, fill1, amended2, [['1:02', 'Last event from the tool before it stopped.', ''], ['1:10', 'Tool started again. Read the order: open, 0.0180 BTC filled.', 'ev-bad'], ['1:10', 'Cancelled the resting order. Kraken confirmed the cancel.', ''], ['1:10', 'Recorded the fills. Chase ended, not continued. Safety timer off.', '']]), actions: ['result', 'again'] },
   { id: 'stopped', label: 'Stopped by you', tone: 'muted', t: 55, fills: [F1], you: null, bid: 62418.3, ask: 62418.5, rate: 7, conn: 'ok', dms: null, done: true,
     title: 'Stopped by you',
     sub: 'You stopped the chase. The tool cancelled the order and Kraken confirmed the cancel. 0.0180 BTC filled before the stop. No order of yours rests on Kraken.',
     events: base.concat(amended, fill1, amended2, [['0:55', 'You pressed Stop. Cancelled the order.', ''], ['0:55', 'Kraken confirmed the cancel. Filled: 0.0180 BTC. Safety timer off.', '']]), actions: ['result', 'again'] },
 ];
 
-// ---------- Questions for the owner ----------
-const QUESTIONS = [
-  { id: 'Q1', on: ['new', 'chase'], t: 'More than one chase at a time?',
-    why: 'The safety timer and the rate counter are per account and per pair. Two chases share them.',
-    o: [['a', 'One chase at a time. The form is locked while a chase runs.'], ['b', 'One chase per pair.'], ['c', 'Any number of chases.']], rec: 'a', def: 'a' },
-  { id: 'Q2', on: ['new'], t: 'Unit of the amount: base or quote currency?',
-    why: 'Kraken sizes a limit order in the base currency (BTC). A quote amount (USD) must be turned into BTC at the start.',
-    o: [['a', 'Base currency (0.0500 BTC). The form shows the USD estimate.'], ['b', 'Quote currency (3,000 USD). The tool converts at the start ask.'], ['c', 'A switch on the form to pick each time.']], rec: 'a', def: 'a' },
-  { id: 'Q3', on: ['chase'], t: 'What happens when the page closes while a chase runs?',
-    why: 'The local tool, not the page, runs the chase. The page is only a view.',
-    o: [['a', 'The tool keeps chasing. The page shows the chase again when you open it.'], ['b', 'The tool stops the chase and cancels the order.'], ['c', 'The browser asks "Leave this page?" first, then (a).']], rec: 'c', def: 'c' },
-  { id: 'Q4', on: ['new', 'chase'], t: 'Sell side: is an exact mirror correct?',
-    why: 'A sell rests at the best ask and moves down. Its limit is a floor: the bid seen at the start.',
-    o: [['a', 'Exact mirror: rest at the best ask, floor = start bid, fallback IOC at the start bid. Show the word "floor" for a sell.'], ['b', 'Buy only in the first version.']], rec: 'a', def: 'a' },
-  { id: 'Q5', on: ['setup'], t: 'How often must you accept the safety timer risk?',
-    why: 'The safety timer (Kraken CancelAllOrdersAfter) cancels ALL your orders on ALL pairs if the tool stops, also stop-losses you placed by hand.',
-    o: [['a', 'Once in setup. Each live chase shows a one-line reminder.'], ['b', 'On every live chase.'], ['c', 'Only allow live chases in a Kraken sub-account.']], rec: 'a', def: 'a' },
-  { id: 'Q6', on: ['chase'], t: 'What can you do during a chase: Stop only, or also "Fill the rest now"?',
-    why: '"Fill the rest now" runs the timeout fallback at once: cancel, confirm, re-read, then IOC at the cap.',
-    o: [['a', 'Stop only: cancel the order and keep what filled.'], ['b', 'Stop, and also a "Fill the rest now" button.']], rec: 'b', def: 'a' },
-  { id: 'Q7', on: ['new'], t: 'Can you change the timeout for each chase?',
-    why: 'A short timeout gives faster fills but more taker fees. A long one gives more maker fills but more price risk.',
-    o: [['a', 'No. Always 2 minutes.'], ['b', 'Yes, from 30 s to 15 min. The form starts at 2 min.']], rec: 'b', def: 'b' },
-  { id: 'Q8', on: ['new'], t: 'Limits on the cap override?',
-    why: 'An override above the start ask can cost more than a market order at the start.',
-    o: [['a', 'Any higher limit. The form shows the extra worst-case cost, and you confirm it.'], ['b', 'At most 1% above the start ask.'], ['c', 'No override in the first version.']], rec: 'a', def: 'a' },
-  { id: 'Q9', on: ['chase', 'result'], t: 'What if the rest is below the Kraken minimum order size?',
-    why: 'Kraken rejects an order below its minimum (sample: 0.00005 BTC). Then the fallback IOC cannot go out.',
-    o: [['a', 'Stop, and report the small rest as "not filled: below the minimum".'], ['b', 'Round the IOC up to the minimum (you buy a little more than you asked).']], rec: 'a', def: 'a' },
-  { id: 'Q10', on: ['setup', 'new'], t: 'Add the "Query Funds" permission to check your balance?',
-    why: 'Without it, the form cannot show your balance. Kraken then rejects an order that is too large, after you start.',
-    o: [['a', 'Add Query Funds (read only). The form blocks an amount above your balance.'], ['b', 'No balance check. Kraken rejects the order, and the tool shows why.']], rec: 'a', def: 'b' },
-  { id: 'Q11', on: ['setup'], t: 'How does the API key get into the macOS Keychain?',
-    why: 'The key must never be in a file. Both options keep it in the Keychain only.',
-    o: [['a', 'Paste it in the setup page. The local tool writes it to the Keychain and never shows it again.'], ['b', 'Run one Terminal command that the page shows (security add-generic-password).']], rec: 'a', def: 'a' },
-  { id: 'Q12', on: ['chase', 'result'], t: 'Dry run: when does a simulated order fill?',
-    why: 'A dry run does not know your place in the queue. The rule sets how optimistic its result is.',
-    o: [['a', 'When a public trade prints at your price or better.'], ['b', 'Only when a public trade prints through your price (below it, for a buy).']], rec: 'b', def: 'b' },
-  { id: 'Q13', on: ['chase'], t: 'How do you learn that a chase ended, when the tab is in the background?',
-    why: 'A chase can run for minutes.',
-    o: [['a', 'A macOS notification from the browser, and the tab title.'], ['b', 'The tab title only.']], rec: 'a', def: 'b' },
-  { id: 'Q14', on: ['new'], t: 'Must a dry run come before the first live chase?',
-    why: 'A dry run shows the behaviour on live prices with no risk.',
-    o: [['a', 'Yes, one dry run before the first live chase.'], ['b', 'Yes, one dry run for each new pair.'], ['c', 'No rule. Dry run is only the default mode.']], rec: 'a', def: 'a' },
+// ---------- Decisions (no open questions) ----------
+// by: 'owner' = the owner chose it (relayed by the chief); 'eng' = engineering default after the PE check.
+const DECISIONS = [
+  { id: 'Q2', by: 'owner', on: ['new'], t: 'Unit of the amount', a: 'The base currency (0.0500 BTC). The form shows the USD estimate.' },
+  { id: 'Q4', by: 'owner', on: ['new', 'chase'], t: 'Sell side', a: 'An exact mirror of a buy. The limit is a "floor": the bid at the start. The fallback IOC goes out at the floor.' },
+  { id: 'Q5', by: 'owner', on: ['setup', 'new', 'chase'], t: 'Safety timer risk', a: 'You accept it once in setup. Each live chase shows a one-line reminder.' },
+  { id: 'Q6', by: 'owner', on: ['chase'], t: 'Controls during a chase', a: 'Stop, and "Fill the rest now". "Fill the rest now" runs the timeout fallback at once.' },
+  { id: 'Q7', by: 'owner', on: ['new'], t: 'Timeout', a: 'You set it for each chase, from 30 s to 15 min. The form starts at 2 min.' },
+  { id: 'Q8', by: 'owner', on: ['new'], t: 'Higher limit (cap override)', a: 'Any higher limit. The form shows the extra worst-case cost, and you confirm it.' },
+  { id: 'Q1', by: 'eng', on: ['new', 'chase'], t: 'Chases at a time', a: 'One chase at a time. The form is locked while a chase runs.' },
+  { id: 'Q3', by: 'eng', on: ['chase'], t: 'Closing the page', a: 'The tool owns the chase. The page asks "Leave this page?". Closing it changes nothing.' },
+  { id: 'Q9', by: 'eng', on: ['new', 'chase', 'result'], t: 'Rest below the Kraken minimum', a: 'The chase stops. The small rest counts as "not filled".' },
+  { id: 'Q10', by: 'eng', on: ['setup', 'new'], t: 'Query Funds permission', a: 'Optional. If the key has it, the tool shows your balance and your live fee tier.' },
+  { id: 'Q11', by: 'eng', on: ['setup'], t: 'Key into the Keychain', a: 'You paste the key in the setup page. The tool writes it to the macOS Keychain.' },
+  { id: 'Q12', by: 'eng', on: ['chase', 'result'], t: 'Dry-run fill rule', a: 'A simulated order fills only when a public trade prints through your price.' },
+  { id: 'Q13', by: 'eng', on: ['chase'], t: 'Chase end in a background tab', a: 'A macOS notification and the tab title.' },
+  { id: 'Q14', by: 'eng', on: ['setup', 'new'], t: 'Dry run first', a: 'One dry run before the first live chase.' },
 ];
 
 // ---------- Chrome: prototype strip, sample-data ribbon, product top bar ----------
 const PAGES = [
   ['index', 'index.html', 'Start'], ['compare', 'compare.html', 'Compare directions'],
   ['setup', 'setup.html', '1 Setup'], ['new', 'new.html', '2 New chase'], ['chase', 'chase.html', '3 Live chase'],
-  ['result', 'result.html', '4 Result'], ['history', 'history.html', '5 History'], ['questions', 'questions.html', 'Questions'],
+  ['result', 'result.html', '4 Result'], ['history', 'history.html', '5 History'], ['questions', 'questions.html', 'Decisions'],
 ];
 function chrome(page, opts) {
   opts = opts || {};
-  const n = QUESTIONS.filter(q => q.on.includes(page)).length;
+  const n = DECISIONS.filter(q => q.on.includes(page)).length;
   const strip = document.createElement('div');
   strip.className = 'proto';
   strip.innerHTML = '<div class="in"><span class="tag">Prototype</span>' +
     PAGES.map(p => `<a href="${p[1]}" class="${p[0] === page ? 'on' : ''}">${p[2]}</a>`).join('') +
-    '<span class="spacer"></span>' + (n ? `<button id="qbtn">Questions for this screen (${n})</button>` : '') + '</div>';
+    '<span class="spacer"></span>' + (n ? `<button id="qbtn">Decisions for this screen (${n})</button>` : '') + '</div>';
   const ribbon = document.createElement('div');
   ribbon.className = 'sample';
   ribbon.innerHTML = '<b>SAMPLE DATA</b>: all prices, fills and fees on this page are invented for the prototype. No page calls Kraken.';
@@ -168,10 +150,10 @@ function chrome(page, opts) {
   if (n) {
     const d = document.createElement('aside');
     d.className = 'qdrawer'; d.id = 'qdrawer';
-    d.innerHTML = '<div class="row"><h2>Questions for the owner</h2><span class="spacer"></span><button class="btn" id="qclose">Close</button></div>' +
-      '<p class="muted small">These cases are not decided. The prototype shows the default. Answer with the letter, for example "Q3: a".</p>' +
-      QUESTIONS.filter(q => q.on.includes(page)).map(qHTML).join('') +
-      '<p class="small"><a href="questions.html">See all 14 questions</a></p>';
+    d.innerHTML = '<div class="row"><h2>Decisions for this screen</h2><span class="spacer"></span><button class="btn" id="qclose">Close</button></div>' +
+      '<p class="muted small">All product questions are decided. This screen shows these decisions.</p>' +
+      DECISIONS.filter(q => q.on.includes(page)).map(qHTML).join('') +
+      '<p class="small"><a href="questions.html">See all 14 decisions</a></p>';
     document.body.appendChild(d);
     document.getElementById('qbtn').onclick = () => d.classList.add('open');
     document.getElementById('qclose').onclick = () => d.classList.remove('open');
@@ -182,12 +164,8 @@ function chrome(page, opts) {
   }
 }
 function qHTML(q) {
-  const lab = k => q.o.find(x => x[0] === k)[0];
-  return `<div class="q" id="d-${q.id}"><span class="qid">${q.id}</span><h3>${q.t}</h3><p class="small muted">${q.why}</p>
-    <ul class="opts">${q.o.map(o => `<li data-k="(${o[0]})" class="${o[0] === q.rec ? 'rec' : ''}">${o[1]}</li>`).join('')}</ul>
-    <div class="def">Recommendation: (${lab(q.rec)}). Default if you do not answer: (${lab(q.def)}).</div></div>`;
+  return `<div class="q" id="d-${q.id}"><span class="qid">${q.id}</span> <span class="badge ${q.by === 'owner' ? 'ok' : 'plain'}">${q.by === 'owner' ? 'Owner chose' : 'Engineering default'}</span><h3 style="margin-top:6px">${q.t}</h3><p class="small" style="margin:0">${q.a}</p></div>`;
 }
-const qref = id => `<a class="qlink" data-q="${id}" href="questions.html#${id}" title="Open question ${id}">${id}</a>`;
 
 // ---------- Renderers for the three live-chase directions ----------
 const toneVar = { you: 'var(--you)', fill: 'var(--fill)', warn: 'var(--warn)', bad: 'var(--bad)', muted: 'var(--muted)' };
@@ -224,11 +202,13 @@ function card(st, compact) {
   const pct = Math.round(sm.q / S.qty * 100);
   const tone = st.tone;
   const steps = st.steps ? `<ol class="small" style="margin:10px 0 0;padding-left:20px">${st.steps.map(s => `<li style="padding:2px 0" class="${s[0] === 'now' ? 'tone-' + tone : s[0] === 'todo' ? 'muted' : ''}">${s[0] === 'done' ? '✓ ' : s[0] === 'now' ? '→ ' : ''}${s[1]}</li>`).join('')}</ol>` : '';
-  const notfilled = st.id === 'notfilled' ? `<i class="nf" style="width:${100 - pct}%"></i>` : '';
+  const notfilled = st.id === 'notfilled' || st.id === 'ended' ? `<i class="nf" style="width:${100 - pct}%"></i>` : '';
   return `<div class="status" style="${st.stale ? 'opacity:.92' : ''}">
     <div class="state tone-${tone} ${st.pulse ? 'pulse' : ''}"><i></i>${st.label}${st.stale ? ' · values from 8–12 s ago' : ''}</div>
     <div class="head" style="${compact ? 'font-size:21px' : ''}">${st.title}</div>
     <div class="sub ${compact ? 'small' : ''}">${st.sub}</div>${steps}
+    ${st.todo ? `<div class="note info small" style="margin-top:12px"><b>What to do now</b><ul style="margin:4px 0 0;padding-left:18px">${st.todo.map(x => `<li>${x}</li>`).join('')}</ul></div>` : ''}
+    ${st.note2 ? `<div class="note warn small" style="margin-top:12px">${st.note2}</div>` : ''}
     ${st.note ? `<div class="note bad small" style="margin-top:12px"><b>Warning:</b> ${st.note}</div>` : ''}
     <div class="row" style="margin-top:18px;align-items:flex-end;flex-wrap:wrap">
       <div><div class="small muted">Filled</div><div class="big" style="white-space:nowrap;${compact ? 'font-size:24px' : ''}">${fq(sm.q)} <span class="muted" style="font-size:.55em">of ${fq(S.qty)} BTC</span></div></div>
@@ -264,7 +244,7 @@ function ladder(st) {
   });
   h += '</div>';
   const sm = summarize(st.fills);
-  return `<div class="row small" style="margin-bottom:8px"><span class="badge" style="background:${toneVar[st.tone]};color:#fff">${st.label}</span><span class="spacer"></span><span class="num">${fq(sm.q)} / ${fq(S.qty)} BTC</span><span class="num muted">${mmss(st.t)}</span></div>` + h +
+  return `<div class="row small" style="margin-bottom:8px"><span class="badge" style="background:${toneVar[st.tone]};color:#fff">${st.label}</span><span class="spacer"></span><span class="num" style="white-space:nowrap">${fq(sm.q)} / ${fq(S.qty)} BTC</span><span class="num muted">${mmss(st.t)}</span></div>` + h +
     `<div class="tiny muted" style="margin-top:6px">Blue row: your order. Black line: the cap. Depth bars: sample sizes.</div>`;
 }
 
@@ -279,5 +259,5 @@ function eventLog(st) {
   return `<ul class="log">${st.events.slice().reverse().map(e => `<li><span class="ts">${e[0]}</span><span class="${e[2]}">${e[1]}</span></li>`).join('')}</ul>`;
 }
 
-window.OC = { S, STATES, QUESTIONS, summarize, f2, fq, mmss, chrome, qHTML, qref, rail, card, ladder, timeline, eventLog };
+window.OC = { S, STATES, DECISIONS, summarize, f2, fq, mmss, chrome, qHTML, rail, card, ladder, timeline, eventLog };
 })();

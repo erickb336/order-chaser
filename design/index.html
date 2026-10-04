@@ -6,10 +6,10 @@
 <main class="app" style="padding-top:22px">
   <h1>Order chaser: screen design for your approval</h1>
   <p style="max-width:82ch">This is a clickable prototype of the browser page for the Kraken Pro order chaser (task T2). It comes after the research (T1), where you chose: a page on localhost:5180, Kraken Pro only, the start ask as the cap with a per-trade override, and an IOC at the start ask after the timeout. Nothing is built yet. All numbers are sample data, and no page calls Kraken.</p>
-  <div class="note info" style="max-width:82ch;margin-bottom:22px"><b>What I need from you:</b>
-    <ol style="margin:6px 0 0;padding-left:20px"><li>Pick a direction for the live chase screen. I recommend B, the status card. <a href="compare.html">Compare the 3 directions</a>.</li>
-    <li>Answer the open questions, or accept the defaults. <a href="questions.html">See the 14 questions</a>.</li>
-    <li>Approve the flow below, or mark what to change.</li></ol></div>
+  <div class="note info" style="max-width:82ch;margin-bottom:22px"><b>What I need from you:</b> approve the flow below, or mark what to change. The rest is decided:
+    <ul style="margin:6px 0 0;padding-left:20px"><li>You chose direction B, the status card, for the live chase screen. <a href="compare.html">See the 3 directions</a>.</li>
+    <li>All 14 product questions are decided. <a href="questions.html">See the 14 decisions</a>.</li>
+    <li>This version adds the 9 changes from the principal engineer review: key check, rate counter, tool restart, pair status and minimums.</li></ul></div>
 
   <h2>1. The core screen: 3 directions</h2>
   <div class="tiles" style="grid-template-columns:1fr;margin-bottom:24px">
@@ -23,7 +23,7 @@
     <a class="tile" href="chase.html#partial"><span class="n">3 · chase.html</span><h3>Live chase</h3><p>The status card, the price rail and the event log. 12 states, live and dry run.</p></a>
     <a class="tile" href="result.html"><span class="n">4 · result.html</span><h3>Result</h3><p>Filled, average price, fees, maker vs taker, saving against a market order at the start. 5 outcomes.</p></a>
     <a class="tile" href="history.html"><span class="n">5 · history.html</span><h3>History</h3><p>Past chases with outcome and saving. List, empty, loading, failure.</p></a>
-    <a class="tile" href="questions.html"><span class="n">questions.html</span><h3>Questions for the owner</h3><p>14 open product cases, each with options, my recommendation and a default.</p></a>
+    <a class="tile" href="questions.html"><span class="n">questions.html</span><h3>Decisions</h3><p>14 decided cases: 6 that the owner chose and 8 engineering defaults. No open questions.</p></a>
   </div>
 
   <h2>3. Every state of the live chase</h2>

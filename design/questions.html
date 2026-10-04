@@ -1,20 +1,23 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Questions for the owner</title>
+<html lang="en"><head><meta charset="utf-8"><title>Questions and decisions</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="assets/style.css"></head>
 <body>
 <main class="app" style="padding-top:22px">
-  <h1>Questions for the owner</h1>
-  <p class="muted" style="max-width:80ch">The brief does not decide these 14 cases. Each one changes what the build does, so I do not decide them silently. The prototype shows the default of each. To answer, reply with the number and the letter, for example "Q3: a, Q6: b". With no answer, the build uses the default.</p>
+  <h1>Questions and decisions</h1>
+  <div class="note ok" style="max-width:80ch;margin-bottom:18px"><b>Open questions: 0.</b> All 14 product cases are decided. The screens show each decision.</div>
+  <h2 id="decided">Decided</h2>
+  <p class="muted" style="max-width:80ch">The owner chose 6 cases: the recommended answer of each, relayed by the chief. The principal engineer review set the other 8 as engineering defaults. To change one, tell the chief its number.</p>
   <table class="t card" style="padding:0;margin-bottom:20px" id="sum"></table>
-  <div class="grid2" id="all"></div>
 </main>
 <script src="assets/proto.js"></script>
 <script>
 OC.chrome('questions');
 const SCREEN = { setup: 'Setup', new: 'New chase', chase: 'Live chase', result: 'Result' };
-document.getElementById('sum').innerHTML = '<tr><th>No.</th><th>Question</th><th>Screens</th><th>Recommendation</th><th>Default</th></tr>' +
-  OC.QUESTIONS.map(q => `<tr><td class="mono"><a href="#d-${q.id}">${q.id}</a></td><td>${q.t}</td><td class="small muted">${q.on.map(s => SCREEN[s]).join(', ')}</td><td class="mono">(${q.rec})</td><td class="mono">(${q.def})${q.def !== q.rec ? ' <span class="badge warn">differs</span>' : ''}</td></tr>`).join('');
-document.getElementById('all').innerHTML = OC.QUESTIONS.map(OC.qHTML).join('');
+const row = q => `<tr id="d-${q.id}"><td class="mono">${q.id}</td><td><b>${q.t}</b><div class="small">${q.a}</div></td><td class="small muted">${q.on.map(s => SCREEN[s]).join(', ')}</td></tr>`;
+document.getElementById('sum').innerHTML =
+  '<tr><th>No.</th><th>Decision</th><th>Screens</th></tr>' +
+  '<tr><td colspan="3" style="background:var(--fill-bg)"><b>Owner chose (6)</b></td></tr>' + OC.DECISIONS.filter(q => q.by === 'owner').map(row).join('') +
+  '<tr><td colspan="3" style="background:#f3f1ec"><b>Engineering defaults (8)</b></td></tr>' + OC.DECISIONS.filter(q => q.by === 'eng').map(row).join('');
 </script>
 </body></html>
