@@ -25,7 +25,7 @@ class Db:
         folder.mkdir(parents=True, exist_ok=True)
         os.chmod(folder, 0o700)
         self.path = folder / "order-chaser.sqlite3"
-        self.cx = sqlite3.connect(self.path, isolation_level=None)
+        self.cx = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)  # one event loop uses it
         self.cx.row_factory = sqlite3.Row
         self.cx.executescript(SCHEMA)
 
