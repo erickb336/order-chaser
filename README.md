@@ -29,6 +29,8 @@ uv run pytest -q
 
 To see the rare chase states (amend rejected, disconnected, fallback, rest below the minimum, rate limit near) without waiting for the market, run `uv run python scripts/demo_states.py /tmp/oc-demo` and open <http://127.0.0.1:5180/chase>. It drives the real app with a fake feed and sample prices.
 
+The page tests (`tests/test_pages.py`) drive the real pages in Google Chrome on 127.0.0.1:5180 with a fake feed. They need node and a one-time `npm install` in `tests/pages` (playwright-core, pinned; it downloads no browser). Without them, they skip. Set `OC_SHOTS=/some/folder` to keep their screenshots.
+
 The tests need no network. A recorded sample of the public Kraken feed (`tests/fixtures/kraken-btcusd.jsonl`) checks the book checksum. A fake feed drives one dry run end to end.
 
 ## How it works
@@ -45,7 +47,8 @@ Dry-run rules:
 
 - A simulated buy at price P fills only when a public sell trade prints below P. The fill is the smaller of the rest and the trade quantity. A sell is the mirror.
 - A resting simulated buy at P also fills, as maker at P, when the public ask comes to or below P, up to the size at those levels. A price level fills the order at most up to the largest size seen there. A sell is the mirror.
-- If a cancel is rejected and the order is still open, the tool tries again (3 tries in total, within the rate counter). Then it ends the chase and tells you to check Kraken Pro.
+- If a cancel is rejected and the order is still open, the tool tries again (3 tries in total, within the rate counter). A reject for the rate limit sets the counter to 60, so the next try waits for it to fall. After 3 tries the chase ends. A live chase then tells you to check Kraken Pro; a dry run has nothing to check there.
+- The price feed counts as lost after 10 s with no message (Kraken sends a heartbeat each second). The tool never amends and never sends the IOC on a book older than 10 s. Start also needs a book at most 10 s old.
 - If the timeout comes while the price feed is lost, the tool cancels and sends no IOC: there is no valid price.
 - A post-only place or amend at or above the best ask is rejected (sell: at or below the best bid).
 - The IOC fills against the public book up to the cap.

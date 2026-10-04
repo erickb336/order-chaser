@@ -626,3 +626,13 @@ def test_recorded_kraken_feed_a_sell_print_lowers_the_bid_at_its_price_not_an_as
         [{"price": 85311.5, "qty": 0.00043957}], [{"price": 85311.5, "qty": 0.0}]]
     assert [(i, a["qty"]) for i, m in enumerate(lines) if m["channel"] == "book"
             for a in m["data"][0].get("asks", []) if a["price"] == 85311.5] == [(151, 0.11364277), (157, 0.0)]
+
+
+def test_one_name_for_the_dry_run_venue_in_every_page_and_log():
+    # UX-WORD-SIMULATION: "the simulated exchange", never "the simulation".
+    from pathlib import Path
+    src = Path(core.__file__).parent
+    files = [*sorted((src / "static").glob("*.*")), src / "core.py", src / "server.py"]
+    assert [f.name for f in files if "the simulation" in f.read_text()] == []
+    assert core.SIM_VENUE == "the simulated exchange"
+    assert [f.name for f in files if "simulated exchange" in f.read_text()] == ["app.js", "chase.html", "result.html", "core.py"]

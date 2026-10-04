@@ -94,7 +94,7 @@ function actions(st, c) {
   if (canFill) a.push('<button class="btn" style="white-space:nowrap" id="fillnow">Fill the rest now</button>');
   if (OC.DONE.includes(st)) a.push(`<a class="btn primary" href="/result?id=${encodeURIComponent(c.id)}">See the result</a>`);
   if (['filled', 'refused', 'belowmin', 'cancelfail'].includes(st)) a.push('<a class="btn" href="/new">New chase</a>');
-  else if (OC.DONE.includes(st) && rest > 0) a.push(`<a class="btn" href="/new?rest=${encodeURIComponent(c.id)}">Chase the rest (${OC.qty(rest)} ${c.pair.base}), new ${OC.words(c).limitWord}</a>`);
+  else if (OC.DONE.includes(st) && rest > 0) a.push(`<a class="btn" href="/new?rest=${encodeURIComponent(c.id)}">${OC.againText(c)}, new ${OC.words(c).limitWord}</a>`);
   if (st === 'fallback' || st === 'stopping') a.push('<span class="small muted">No action during the fallback. It ends in 1 to 2 s.</span>');
   if (st === 'pageoffline') a.push('<button class="btn" disabled>Stop</button><span class="small muted">Stop works again when the page reaches the tool.</span>');
   else if (OC.DONE.includes(st)) a.push('<span class="spacer"></span><span class="small muted">The chase ended. The form is open again.</span>');

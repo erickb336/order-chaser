@@ -30,21 +30,21 @@ function render(c) {
         : `${pctM}% filled as maker. ${c.exit === 'fillnow' ? 'After you pressed "Fill the rest now"' : `After the ${OC.mmss(c.timeout)} timeout`}, one IOC at the ${w.limitWord} filled the rest as taker.`;
       break;
     case 'notfilled':
-      badge = ['bad', filled ? 'Part filled' : 'Not filled'];
-      line = end == null ? `The ${OC.mmss(c.timeout)} timeout passed while the public Kraken price feed was lost. With no valid price, the tool sent no IOC.`
+      badge = ['bad', OC.fillWord(filled, total)];
+      line = end == null ? `${c.feed_ok ? 'The order book was not valid at the end' : `The ${OC.mmss(c.timeout)} timeout passed while the public Kraken price feed was lost`}. With no valid price, the tool sent no IOC.`
         : (OC.beyond(c) ? `The price ${w.buy ? 'rose above your cap' : 'fell below your floor'} before the rest could fill.` : `The book had too little at the ${w.limitWord} for the rest.`) +
           ` The IOC at the ${w.limitWord} filled ${c.fills.some(f => f.order === 'ioc') ? 'only part of the rest' : 'nothing'}.`;
       restText = `Not filled (simulated): ${OC.qty(rest)} ${B}.` + (end == null ? '' : Number(end) === Number(c.limit) ? ` The ${w.other} at the end was ${P(end)}, at your ${w.limitWord}.`
         : ` The ${w.other} at the end was ${P(end)}, which is ${P(Math.abs(Number(end) - Number(c.limit)))} ${Number(end) > Number(c.limit) ? 'above' : 'below'} your ${w.limitWord}.`) + ' A dry run sends no orders to Kraken.';
       break;
     case 'belowmin':
-      badge = ['bad', 'Part filled'];
+      badge = ['bad', OC.fillWord(filled, total)];
       line = `The rest was below the Kraken minimum for ${c.pair.symbol}, so the tool did not send the IOC. The rest counts as "not filled".`;
       restText = `Not filled (simulated): ${OC.qty(rest)} ${B}, below the Kraken minimum (${OC.qty(c.pair.ordermin)} ${B} or ${c.pair.costmin} ${Q}). A dry run sends no orders to Kraken.`;
       break;
     case 'stopped':
       badge = ['plain', 'Stopped'];
-      line = `You stopped the chase at ${dur}. The simulation confirmed the cancel.`;
+      line = `You stopped the chase at ${dur}. The simulated exchange confirmed the cancel.`;
       restText = `Not filled (simulated): ${OC.qty(rest)} ${B}, because you stopped the chase. A dry run sends no orders to Kraken.`;
       break;
     case 'ended': {
@@ -59,7 +59,7 @@ function render(c) {
       badge = ['bad', 'Cancel failed'];
       line = 'The simulated exchange rejected the cancel 3 times and still showed the order as open. The tool stopped the chase and sent no IOC.';
       restText = `Not filled (simulated): ${OC.qty(rest)} ${B}, because the cancel did not go through. A dry run sends no orders to Kraken.`;
-      todo = ['Check Kraken Pro for an open order and cancel it there.', 'This was a dry run: the order was simulated, so Kraken Pro shows no order of this chase.'];
+      todo = [c.mode === 'live' ? OC.LIVE_CANCEL_TODO : OC.DRY_TODO];
       break;
     case 'refused':
       badge = ['bad', 'Not filled'];
@@ -87,7 +87,7 @@ function render(c) {
     </div>
     ${restText ? `<div class="note ${['notfilled', 'ended', 'belowmin', 'cancelfail'].includes(c.outcome) ? 'bad' : 'warn'}" style="margin-top:16px"><b>${restText}</b>${c.outcome === 'notfilled' ? ` To ${w.buy ? 'buy' : 'sell'} the rest, start a new chase. It records a new ${w.limitWord}.` : ''}</div>` : ''}
     ${todo ? `<div class="note info small" style="margin-top:12px"><b>What to do now</b><ul style="margin:4px 0 0;padding-left:18px">${todo.map(x => `<li>${x}</li>`).join('')}</ul></div>` : ''}
-    <div class="row" style="margin-top:18px">${rest > 0 && !['refused', 'belowmin', 'cancelfail'].includes(c.outcome) ? `<a class="btn primary" href="/new?rest=${encodeURIComponent(c.id)}">Chase the rest (${OC.qty(rest)} ${B})</a>` : '<a class="btn primary" href="/new">New chase</a>'}<a class="btn" href="/history">History</a></div>
+    <div class="row" style="margin-top:18px">${rest > 0 && !['refused', 'belowmin', 'cancelfail'].includes(c.outcome) ? `<a class="btn primary" href="/new?rest=${encodeURIComponent(c.id)}">${OC.againText(c)}</a>` : '<a class="btn primary" href="/new">New chase</a>'}<a class="btn" href="/history">History</a></div>
   </div>
   <div class="grid2" style="margin-top:16px">
     <div class="card"><h2>Fills (simulated)</h2>

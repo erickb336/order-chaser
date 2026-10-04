@@ -1,0 +1,8 @@
+{
+  "name": "order-chaser-page-tests",
+  "private": true,
+  "description": "Page checks for tests/test_pages.py. Uses the installed Google Chrome; downloads no browser.",
+  "dependencies": {
+    "playwright-core": "1.56.1"
+  }
+}

@@ -84,10 +84,19 @@ const $ = OC.$;
 const params = new URLSearchParams(location.search);
 let side = 'buy', snap = null, override = false, restOf = null, busy = false;
 
-async function watch(pair) { await OC.post('/api/watch', { pair }); }
+// The server watches one pair for all tabs. A tab whose snapshots show another pair asks again for its own,
+// at most every 3 s, while it has the focus and no chase runs. (Two tabs that both ask would swap the pair.)
+let watchAt = 0;
+function watch(pair) { watchAt = Date.now(); return OC.post('/api/watch', { pair }); }
+function keepWatching() {
+  if (snap && !busy && snap.watched !== $('pairsel').value && document.hasFocus() && Date.now() - watchAt > 3000)
+    watch($('pairsel').value);
+}
+window.addEventListener('focus', keepWatching);
 // The tick accepts the cost shown for one limit, amount, side and pair. A change of any of them clears it.
 const changed = () => { $('ovok').checked = false; draw(); };
-$('pairsel').onchange = () => { watch($('pairsel').value); changed(); };
+// A limit belongs to one pair: a pair change clears it.
+$('pairsel').onchange = () => { watch($('pairsel').value); $('ovp').value = ''; changed(); };
 $('side').onclick = e => { const b = e.target.closest('button'); if (b && b.dataset.s !== side) { side = b.dataset.s; changed(); } };
 $('ovbtn').onclick = () => { override = true; const s = snap; if (s && s.feed.ask) { const p = pairInfo(); $('ovp').value = (side === 'buy' ? Number(s.feed.ask) : Number(s.feed.bid)).toFixed(p ? p.price_decimals : 2); } changed(); };
 $('ovoff').onclick = () => { override = false; changed(); };
@@ -119,7 +128,7 @@ function draw() {
 
   let startOk = true, note = '', amtOk = false;
   // prices
-  const fresh = s && s.watched === pair && s.feed.ok && s.feed.bid && s.feed.age != null && s.feed.age < 15;
+  const fresh = s && s.watched === pair && s.feed.fresh && s.feed.bid;
   const bid = fresh ? Number(s.feed.bid) : null, ask = fresh ? Number(s.feed.ask) : null;
   $('bid').textContent = bid ? P(bid) : '…'; $('ask').textContent = ask ? P(ask) : '…';
   $('prices').style.opacity = fresh || !s ? 1 : .5;
@@ -153,7 +162,7 @@ function draw() {
   $('est').textContent = ref && q > 0 ? `≈ ${OC.usd(q * ref)} ${Q} at the ${buy ? 'ask' : 'bid'} now` : `≈ … ${Q}`;
   $('amt').classList.remove('err'); $('amthelp').className = 'help'; $('amthelp').textContent = 'Dry run: no balance check. A live chase reads your balance from Kraken.';
   if (p) {
-    const what = restOf ? 'Rest' : 'Amount';
+    const what = restOf && Number(restOf.filled) > 0 ? 'Rest' : 'Amount';
     const aOk = q >= Number(p.ordermin), cOk = ref ? q * ref >= Number(p.costmin) : true;
     $('mins').innerHTML = `<span class="tone-${aOk ? 'fill' : 'bad'}">${aOk ? '✓' : '✗'} ${what} at least ${OC.qty(p.ordermin)} ${B}</span> <span class="tone-${cOk ? 'fill' : 'bad'}">${cOk ? '✓' : '✗'} Value at least ${OC.usd(p.costmin)} ${Q}</span> <span class="tiny muted">Kraken minimums for ${pair} (ordermin, costmin)</span>`;
     const decOk = !raw.includes('.') || raw.split('.')[1].length <= p.qty_decimals;
@@ -242,15 +251,16 @@ async function init() {
       $('pairsel').value = restOf.pair.symbol; side = restOf.side;
       $('amt').value = rest.toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
       $('restnote').classList.remove('hidden');
-      $('restnote').textContent = `You chase the rest of your last order: ${OC.qty(rest)} ${restOf.pair.base}. The ${side === 'buy' ? 'cap is the ask' : 'floor is the bid'} at the new start, not the old ${side === 'buy' ? 'cap' : 'floor'}.`;
+      $('restnote').textContent = (Number(restOf.filled) > 0 ? `You chase the rest of your last order: ${OC.qty(rest)} ${restOf.pair.base}.` : `You chase your last order again: ${OC.qty(rest)} ${restOf.pair.base}. Nothing filled.`) +
+        ` The ${side === 'buy' ? 'cap is the ask' : 'floor is the bid'} at the new start, not the old ${side === 'buy' ? 'cap' : 'floor'}.`;
     }
   }
   OC.stream(s => {
     const first = !snap;
     snap = s;
     busy = !!(s.chase && s.chase.phase !== 'done');
-    if (first && !busy && s.watched !== $('pairsel').value) watch($('pairsel').value);
-    else if (first && busy) $('pairsel').value = s.watched;
+    if (first && busy) $('pairsel').value = s.watched;
+    keepWatching();
     draw();
   });
   draw();

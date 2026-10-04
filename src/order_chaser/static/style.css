@@ -154,7 +154,10 @@ table.t tr.click:hover td { background: #faf9f6; }
 .rail .mk .pin { width: 2px; height: 22px; margin: 2px auto 0; background: currentColor; }
 .rail .mk.below { top: 48px; }
 .rail .mk.below .pin { margin: 0 auto 2px; }
+.rail.stale { opacity: .45; }
 .rail .mk.l { transform: translateX(calc(-100% + 1px)); text-align: right; }
+.rail .mk.l .val, .rail .mk.l .lab { padding-right: 6px; }
+.rail .mk.r .val, .rail .mk.r .lab { padding-left: 6px; }
 .rail .mk.l .pin { margin-left: auto; margin-right: 0; }
 .rail .mk.r { transform: translateX(-1px); text-align: left; }
 .rail .mk.r .pin { margin-left: 0; }

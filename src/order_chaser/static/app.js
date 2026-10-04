@@ -14,6 +14,11 @@ const mmss = s => { s = Math.max(0, Math.floor(s)); return Math.floor(s / 60) + 
 const timeoutWords = s => s % 60 === 0 ? (s / 60) + ' min' : s + ' s';
 // Whole percent, rounded down, without the float error of 0.018 / 0.05 * 100 = 35.999…
 const pct = (a, b) => Math.floor(Number(a) / Number(b) * 100 + 1e-9);
+// One rule for the words of a fill: "Not filled" with 0, "Part filled" below the amount.
+const fillWord = (filled, total) => Number(filled) <= 0 ? 'Not filled' : Number(filled) < Number(total) ? 'Part filled' : 'Filled';
+// The button after a chase that did not fill all: the rest, or the whole amount again when nothing filled.
+const againText = c => { const rest = Number(c.qty) - Number(c.filled); return `${Number(c.filled) > 0 ? 'Chase the rest' : 'Chase again'} (${qty(rest)} ${c.pair.base})`; };
+const clock = t => new Date(t * 1000).toLocaleTimeString('en-GB');
 
 // ---------- Server calls ----------
 async function post(url, body) {
@@ -23,10 +28,10 @@ async function post(url, body) {
   return { ok: r.ok, data };
 }
 
-let lastSnap = null, lastAt = 0, offline = false;
+let lastSnap = null, lastAt = 0, lastNow = 0, offline = false;
 function stream(onSnap, onOffline) {
   const es = new EventSource('/api/stream');
-  es.onmessage = e => { lastSnap = JSON.parse(e.data); lastAt = Date.now(); offline = false; conn(lastSnap); onSnap(lastSnap); };
+  es.onmessage = e => { lastSnap = JSON.parse(e.data); lastAt = Date.now(); lastNow = lastSnap.now; offline = false; conn(lastSnap); onSnap(lastSnap); };
   es.onerror = () => { offline = true; conn(null); if (onOffline) onOffline(lastSnap, (Date.now() - lastAt) / 1000); };
   setInterval(() => { if (offline && onOffline) onOffline(lastSnap, (Date.now() - lastAt) / 1000); }, 1000);
 }
@@ -74,7 +79,7 @@ function stateOf(c, now) {
 
 const LABEL = {
   placing: 'Placing', resting: 'Resting', amending: 'Amending', partial: 'Partial fill', filled: 'Filled', fallback: 'Timeout fallback',
-  notfilled: 'Rest not filled (above cap)', belowmin: 'Rest below the minimum', rejected: 'Amend rejected', disconnected: 'Disconnected',
+  notfilled: 'Rest not filled', belowmin: 'Rest below the minimum', rejected: 'Amend rejected', disconnected: 'Disconnected',
   ratenear: 'Rate limit near', ended: 'Ended: tool stopped or restarted', stopped: 'Stopped by you', stopping: 'Stopping', refused: 'Order rejected',
   pageoffline: 'Page lost the tool', cancelfail: 'Cancel failed',
 };
@@ -84,6 +89,8 @@ const TONE = {
 };
 const DONE = ['filled', 'notfilled', 'belowmin', 'stopped', 'ended', 'refused', 'cancelfail'];
 const SIM = ' (Simulated. No order goes to Kraken.)';
+const DRY_TODO = 'Nothing to check in Kraken Pro: a dry run sends no orders.';
+const LIVE_CANCEL_TODO = 'Check Kraken Pro for an open order and cancel it there.';
 
 function words(c) {
   const buy = c.side === 'buy', pd = c.pair.price_decimals, B = c.pair.base;
@@ -108,6 +115,11 @@ function copy(st, c, snap, ageOff) {
       t.sub = `The tool simulates a post-only ${c.side} for ${qty(c.qty)} ${B} at the ${w.best}, ${p(c.pending)}. Post-only means the order never takes liquidity, so you pay the maker fee.` + SIM;
       break;
     case 'resting':
+      if (n(c.price) === n(c.limit)) {
+        t.title = `Resting at the ${w.limitWord}`;
+        t.sub = `Your order waits at the ${w.limitWord}, ${p(c.limit)}. The order never goes ${w.above} the ${w.limitWord}, so the tool does not move it when the ${w.best} ${w.rises} further.` + SIM;
+        break;
+      }
       t.title = `Resting at the ${w.best}`;
       t.sub = `Your order waits at ${p(c.price)}. When the ${w.best} ${w.rises}, the tool moves the order ${w.up}, at most once every 5 s. The order never goes ${w.above} the ${w.limitWord}, ${p(c.limit)}.` + SIM;
       break;
@@ -157,10 +169,10 @@ function copy(st, c, snap, ageOff) {
       const end = c.end_ask;
       const iocGot = c.fills.filter(f => f.order === 'ioc').reduce((a, f) => a + Number(f.qty), 0);
       const diff = end == null ? null : Math.abs(Number(end) - Number(c.limit));
-      t.title = 'Stopped: the rest did not fill';
-      const done = `You ${w.bought} ${qty(filled)} of ${qty(c.qty)} ${B}. No order of yours rests in the simulation.`;
-      if (end == null) {   // the chase ended with no valid price: the feed was lost
-        t.sub = `The ${timeout} timeout passed while the public Kraken price feed was lost. With no valid price, the tool sent no IOC. It cancelled the order. ` + done;
+      t.title = filled > 0 ? 'Stopped: the rest did not fill' : 'Stopped: nothing filled';
+      const done = `You ${w.bought} ${qty(filled)} of ${qty(c.qty)} ${B}. No order of yours rests on the simulated exchange.`;
+      if (end == null) {   // the chase ended with no valid price: the feed was lost or the book was not valid
+        t.sub = `${c.feed_ok ? 'The order book was not valid at the end' : `The ${timeout} timeout passed while the public Kraken price feed was lost`}. With no valid price, the tool sent no IOC. It cancelled the order. ` + done;
         break;
       }
       const at = diff === 0 ? `at the ${w.limitWord}` : `${p(diff)} ${w.buy ? 'below' : 'above'} the ${w.limitWord} of ${p(c.limit)}`;
@@ -172,7 +184,7 @@ function copy(st, c, snap, ageOff) {
     }
     case 'belowmin':
       t.title = 'Stopped: the rest is below the Kraken minimum';
-      t.sub = `The rest, ${qty(rest)} ${B}, is below the Kraken minimum for ${c.pair.symbol} (${qty(c.pair.ordermin)} ${B} or ${c.pair.costmin} ${c.pair.quote}). An IOC that small is not possible, so the rest counts as "not filled". You ${w.bought} ${qty(filled)} of ${qty(c.qty)} ${B}. No order of yours rests in the simulation.`;
+      t.sub = `The rest, ${qty(rest)} ${B}, is below the Kraken minimum for ${c.pair.symbol} (${qty(c.pair.ordermin)} ${B} or ${c.pair.costmin} ${c.pair.quote}). An IOC that small is not possible, so the rest counts as "not filled". You ${w.bought} ${qty(filled)} of ${qty(c.qty)} ${B}. No order of yours rests on the simulated exchange.`;
       break;
     case 'rejected': {
       const reconciling = c.phase === 'reconcile';
@@ -193,7 +205,7 @@ function copy(st, c, snap, ageOff) {
       t.title = 'Connection to Kraken lost: reconnecting';
       t.sub = c.phase === 'reconcile'
         ? 'The public Kraken price feed is back. The tool reads the simulated order again before it continues.'
-        : `The tool lost the public Kraken price feed ${lost} s ago. The simulation pauses until the feed is back.` + (f && f.attempt ? ` Attempt ${f.attempt}: next try in ${f.next_in} s.` : '');
+        : `The tool lost the public Kraken price feed ${lost} s ago. The simulated exchange pauses until the feed is back.` + (f && f.attempt ? ` Attempt ${f.attempt}: next try in ${f.next_in} s.` : '');
       t.steps = [[c.phase === 'reconcile' ? 'done' : 'now', 'Reconnect to the Kraken feed' + (f && f.attempt ? ` (attempt ${f.attempt}).` : '.')],
         [c.phase === 'reconcile' ? 'now' : 'todo', 'Read the order and the fills again.'], ['todo', 'Continue the chase from that state.']];
       break;
@@ -209,23 +221,23 @@ function copy(st, c, snap, ageOff) {
       t.title = 'Ended: the tool stopped or restarted';
       t.sub = (off == null ? 'The tool stopped and started again.' : `The tool stopped at ${mmss(off)} and started again at ${mmss(on)}.`) + ' After a restart the tool does not continue a dry run. It did these steps:';
       t.steps = [['done', 'Ended the simulated order. No order was on Kraken.'], ['done', `Recorded the simulated fills: ${qty(filled)} of ${qty(c.qty)} ${B}.`], ['done', 'Did not continue the dry run.']];
-      t.todo = ['Nothing to check in Kraken Pro: a dry run sends no orders.', 'To test again, start a new dry run.'];
+      t.todo = [DRY_TODO, 'To test again, start a new dry run.'];
       break;
     }
     case 'stopped':
       t.title = 'Stopped by you';
-      t.sub = `You stopped the chase. The tool cancelled the order and the simulated exchange confirmed the cancel. ${qty(filled)} ${B} filled before the stop. No order of yours rests in the simulation.`;
+      t.sub = `You stopped the chase. The tool cancelled the order and the simulated exchange confirmed the cancel. ${qty(filled)} ${B} filled before the stop. No order of yours rests on the simulated exchange.`;
       break;
     case 'refused': {
       const last = c.events.filter(e => e.kind === 'bad').pop();
       t.title = 'Stopped: the order was rejected';
-      t.sub = (last ? last.text + ' ' : '') + 'Nothing filled. No order of yours rests in the simulation.';
+      t.sub = (last ? last.text + ' ' : '') + 'Nothing filled. No order of yours rests on the simulated exchange.';
       break;
     }
     case 'cancelfail':
       t.title = 'Stopped: the cancel did not go through';
       t.sub = `The simulated exchange rejected the cancel 3 times and still showed the order as open. The tool stopped the chase and sent no IOC. You ${w.bought} ${qty(filled)} of ${qty(c.qty)} ${B}.`;
-      t.todo = ['Check Kraken Pro for an open order and cancel it there.', 'This was a dry run: the order was simulated, so Kraken Pro shows no order of this chase.'];
+      t.todo = [c.mode === 'live' ? LIVE_CANCEL_TODO : DRY_TODO];
       break;
     case 'pageoffline':
       t.title = 'This page lost the tool';
@@ -236,7 +248,7 @@ function copy(st, c, snap, ageOff) {
 }
 
 // ---------- The price rail (from the approved prototype) ----------
-function rail(c, bid, ask) {
+function rail(c, bid, ask, stale) {
   const w = words(c);
   const sb = n(c.start_bid), sa = n(c.start_ask), lim = n(c.limit);
   const you = n(c.price), pend = n(c.pending);
@@ -258,7 +270,7 @@ function rail(c, bid, ask) {
   };
   const mk = (cls, lab, v, below) => `<div class="mk ${cls} ${below ? 'below' : ''} ${side(cls)}" style="left:${x(v)}">${below ? '<div class="pin"></div>' : ''}<div class="val">${w.p(v)}</div><div class="lab">${lab}</div>${below ? '' : '<div class="pin"></div>'}</div>`;
   const z0 = Math.min(sb, lim), z1 = Math.max(sa, lim);
-  let h = `<div class="rail"><div class="axis"></div><div class="zone" style="left:${x(z0)};width:calc(${x(z1)} - ${x(z0)})" title="Chase range"></div>`;
+  let h = `<div class="rail${stale ? ' stale' : ''}"><div class="axis"></div><div class="zone" style="left:${x(z0)};width:calc(${x(z1)} - ${x(z0)})" title="Chase range"></div>`;
   if (bid != null) h += mk('bid', 'best bid', n(bid), true);
   if (ask != null) h += mk('ask', 'best ask', n(ask), true);
   let capLab = w.limitName;
@@ -281,11 +293,18 @@ function card(st, c, snap, ageOff) {
   const elapsed = (done ? c.ended_at : (snap ? snap.now : Date.now() / 1000)) - c.started;
   const steps = t.steps ? `<ol class="small" style="margin:10px 0 0;padding-left:20px">${t.steps.map(s => `<li style="padding:2px 0" class="${s[0] === 'now' ? 'tone-' + tone : s[0] === 'todo' ? 'muted' : ''}">${s[0] === 'done' ? '✓ ' : s[0] === 'now' ? '→ ' : ''}${s[1]}</li>`).join('')}</ol>` : '';
   const nf = ['notfilled', 'belowmin', 'ended', 'stopped'].includes(st) ? `<i class="nf" style="width:${100 - pct}%"></i>` : '';
-  const stale = st === 'pageoffline' || st === 'disconnected';
-  const bid = st === 'pageoffline' ? c.bid : (snap && snap.feed.ok ? snap.feed.bid : c.bid);
-  const ask = st === 'pageoffline' ? c.ask : (snap && snap.feed.ok ? snap.feed.ask : c.ask);
+  // The chase's own prices, never the feed of another pair. Their age shows when they are not current.
+  const now = done ? c.ended_at : st === 'pageoffline' ? lastNow + ageOff : snap ? snap.now : c.book_at;
+  const age = c.book_at == null ? null : Math.max(0, Math.round(now - c.book_at));
+  const stale = st === 'pageoffline' || st === 'disconnected' || (done && c.end_ask == null);
+  const ageText = age == null ? 'no valid values' : done ? `values from ${age} s before the end` : `values from ${age} s ago`;
+  let label = LABEL[st];
+  if (st === 'notfilled') label = (filled > 0 ? 'Rest not filled' : 'Nothing filled') + (!beyond(c) ? '' : c.side === 'buy' ? ' (above cap)' : ' (below floor)');
+  if (st === 'disconnected') label += ' · ' + ageText;
+  const railNote = !done ? '' : stale ? `Prices: ${ageText}. There was no valid price at the end.`
+    : c.book_at != null ? `Prices at the end of the chase, ${clock(c.book_at)}.` : '';
   return `<div class="status" id="statuscard" data-state="${st}" style="${stale ? 'opacity:.92' : ''}">
-    <div class="state tone-${tone} ${done ? '' : 'pulse'}"><i></i>${st === 'notfilled' ? (!beyond(c) ? 'Rest not filled' : c.side === 'buy' ? 'Rest not filled (above cap)' : 'Rest not filled (below floor)') : LABEL[st]}</div>
+    <div class="state tone-${tone} ${done ? '' : 'pulse'}"><i></i>${label}</div>
     <div class="head">${t.title}</div>
     <div class="sub">${t.sub}</div>${steps}
     ${t.todo ? `<div class="note info small" style="margin-top:12px"><b>What to do now</b><ul style="margin:4px 0 0;padding-left:18px">${t.todo.map(x => `<li>${x}</li>`).join('')}</ul></div>` : ''}
@@ -295,7 +314,7 @@ function card(st, c, snap, ageOff) {
       ${done ? '' : `<div class="timer" style="white-space:nowrap"><span class="num">${mmss(elapsed)} / ${mmss(c.timeout)}</span><div class="bar"><i style="width:${Math.min(100, elapsed / c.timeout * 100)}%"></i></div></div>`}
     </div>
     <div class="bar" style="margin-top:8px"><i class="m" style="width:${makerPct}%"></i><i class="tk" style="width:${pct - makerPct}%"></i>${nf}</div>
-    ${rail(c, bid, ask)}
+    ${rail(c, c.bid, c.ask, stale)}${railNote ? `<div class="tiny muted" id="railnote">${railNote}</div>` : ''}
   </div>`;
 }
 
@@ -304,5 +323,5 @@ function eventLog(c) {
   return `<ul class="log">${c.events.slice().reverse().map(e => `<li><span class="ts">${mmss(e.t)}</span><span class="${kind[e.kind] || ''}">${esc(e.text)}</span></li>`).join('')}</ul>`;
 }
 
-return { TOKEN, $, esc, beyond, pct, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
+return { TOKEN, $, esc, beyond, pct, fillWord, againText, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
 })();
