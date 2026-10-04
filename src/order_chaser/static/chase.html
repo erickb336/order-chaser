@@ -107,7 +107,8 @@ function margin(c, w, snap) {
   $('poscard').classList.remove('hidden');
   $('mgstrip').classList.remove('hidden');
   $('mgstrip').textContent = `MARGIN: this chase ${m.close ? `closes a ${c.dir} position, reduce-only` : `opens a ${m.leverage}x ${c.dir} position`}. A position stays open when the tool stops.`;
-  $('lev').textContent = m.close ? `average ${m.leverage}x` : m.leverage + 'x';
+  // A close: each position keeps its own leverage (the close plan says which ones the close takes).
+  $('lev').textContent = m.close ? [...new Set(m.positions.map(p => p.leverage + 'x'))].join(', ') + (m.positions.length > 1 ? ` (${m.positions.length} positions)` : '') : m.leverage + 'x';
   $('ro').textContent = m.close ? `Yes: can only reduce the ${c.dir}` : 'No: this order opens';
   let ps;
   if (c.outcome === 'liquidated') ps = ['bad', 'Liquidated', 'The simulated exchange closed the position at the mark.'];
@@ -115,10 +116,10 @@ function margin(c, w, snap) {
     : !done ? ['fill', `Opened: ${OC.qty(f)} of ${OC.qty(c.qty)} ${B}`, `${c.dir === 'long' ? 'Long' : 'Short'}, ${m.leverage}x. This part is a position now.`]
     : ['fill', `Opened: ${OC.qty(f)} ${B} ${c.dir}, ${m.leverage}x`, 'Open until you close it, also when the tool stops.'];
   else {
-    const rest = Number(m.pos_qty) - f;
-    ps = rest <= 0 ? ['fill', 'Closed', `The ${c.pair.symbol} ${c.dir} is closed. No rollover from now on.`]
-      : f <= 0 ? [done ? 'warn' : 'you', `Open: ${OC.qty(m.pos_qty)} ${B} ${c.dir}, ${m.leverage}x`, done ? 'Nothing closed.' : 'Closing. Nothing closed yet.']
-      : [done ? 'warn' : 'fill', `Partly closed: ${OC.qty(f)} of ${OC.qty(m.pos_qty)} ${B}`, `Still open: ${OC.qty(rest)} ${B} ${c.dir}, ${m.leverage}x.`];
+    const e = c.margin_est, rest = Number(e.rest), start = Number(rest) + f;
+    ps = rest <= 0 ? ['fill', 'Closed', `The ${c.pair.symbol} ${c.dir} is closed. No rollover from now on. ${OC.planLine(c)}`]
+      : f <= 0 ? [done ? 'warn' : 'you', `Open: ${OC.qty(start)} ${B} ${c.dir}`, `${done ? 'Nothing closed.' : 'Closing. Nothing closed yet.'} At the start: ${e.start}. ${OC.planLine(c)}`]
+      : [done ? 'warn' : 'fill', `Partly closed: ${OC.qty(f)} of ${OC.qty(start)} ${B}`, OC.planLine(c)];
   }
   $('pstat').className = 'pstat tone-' + ps[0];
   $('pstat').lastChild.textContent = ps[1];
@@ -133,7 +134,7 @@ function margin(c, w, snap) {
   if (!m.close) {
     $('worsthead').textContent = w.buy ? 'The open never costs more than this in price and fees:' : 'The open never brings less than this in price, less fees:';
     $('worst').textContent = OC.usd(c.worst) + ' ' + Q + (w.buy ? '' : ' received');
-    $('worstwhy').textContent = `${OC.qty(c.qty)} × ${w.p(c.limit)} (${w.limitWord}) ${w.buy ? '+' : '−'} 0.80% taker fee ${w.buy ? '+' : '−'} 0.05% opening fee, the stated maximum (estimate). Not included: rollover, up to ${OC.usd(Number(c.qty) * Number(c.limit) * 0.0005)} ${Q} per started 4 h. The position can also lose value as the price moves. That loss has no limit before liquidation.`;
+    $('worstwhy').textContent = `${OC.qty(c.qty)} × ${w.p(c.limit)} (${w.limitWord}) ${w.buy ? '+' : '−'} 0.80% taker fee ${w.buy ? '+' : '−'} 0.05% opening fee, the stated maximum (estimate). Not included: rollover, up to ${OC.usd(Number(c.qty) * Number(c.limit) * 0.0005)} ${Q} per 4 h. The position can also lose value as the price moves. That loss has no limit before liquidation.`;
   } else {
     $('worsthead').textContent = w.buy ? 'The close never pays more than this in price and fees:' : 'The close never brings less than this in price, less fees:';
     $('worstwhy').textContent = `${OC.qty(c.qty)} × ${w.p(c.limit)} (${w.limitWord}) ${w.buy ? '+' : '−'} 0.80% taker fee. A close has no opening fee. Rollover stops for the part that closes.`;

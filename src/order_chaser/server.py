@@ -103,6 +103,8 @@ class Engine:
         if ok:
             self.book_at = self.clock()
             fills = self.gw.on_book(book.top_bids(), book.top_asks(), self.clock(), self.watched)
+            if self.account and self.watched in self.account["unpriced"]:
+                self.read_account(force=True)     # the first price of a pair with positions: the pages show its P/L now
         if self.active:
             for ev in fills:
                 self.handle(ev)
@@ -186,10 +188,9 @@ class Engine:
             errors += core.validate_margin(pair, what, qty, leverage, self.ask if side == "buy" else self.bid,
                                            self.gw.account.list(), Decimal(acc["free_orders"]))
             if not errors and close:
-                # The close takes the oldest positions first: its entry is the average entry of that part.
-                p = next(x for x in acc["positions"] if x["pair"] == symbol and x["dir"] == what[6:])
-                margin = core.Margin(p["leverage"], True, Decimal(p["qty"]), self.gw.account.close_entry(symbol, what[6:], qty),
-                                     Decimal(p["rollover"]))
+                # The positions at the start, oldest first: the close plan (core.close_plan) takes them in this order.
+                parts = self.gw.account.parts(symbol, what[6:])
+                margin = core.Margin(core.average(parts)[2], True, parts)
             elif not errors:
                 margin = core.Margin(leverage)
         if errors:
@@ -199,6 +200,16 @@ class Engine:
                              self.clock(), core.SIM_VENUE, limit, self.rate_for(symbol), margin)
         self._apply(c, cmds)
         return []
+
+    def close_preview(self, symbol: str, d: str, qty: Decimal) -> dict | None:
+        """The close form: the close plan of qty in words, and the account margin level after it (estimate)."""
+        acc, now = self.gw.account, self.clock()
+        parts, pair = acc.parts(symbol, d), self.pairs.get(symbol)
+        if not parts or pair is None:
+            return None
+        mark = acc.marks.get(symbol)
+        return {**core.plan_words(parts, qty, pair, now), "level_now": acc.level(now),
+                "level_after": core.close_preview(parts, qty, acc.equity(now), acc.used(), mark and mark[0])}
 
     def user(self, action: str) -> bool:
         if not self.active:
@@ -464,6 +475,14 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
     async def account(request: Request):
         return JSONResponse(eng.read_account())
 
+    async def plan(request: Request):
+        q = request.query_params
+        qty, d = number(q.get("qty")), q.get("dir")
+        got = eng.close_preview(q.get("pair"), d, qty) if qty and d in ("long", "short") else None
+        if got is None:
+            return JSONResponse({"error": "No position to close, or no valid size."}, status_code=400)
+        return JSONResponse(json.loads(json.dumps(got, default=_plain)))
+
     async def no_icon(request: Request):
         return PlainTextResponse("", status_code=204)
 
@@ -471,7 +490,7 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         Route("/api/state", state), Route("/api/stream", stream),
         Route("/api/watch", watch, methods=["POST"]), Route("/api/chase", start, methods=["POST"]),
         Route("/api/chase/stop", action, methods=["POST"]), Route("/api/chase/fillnow", action, methods=["POST"]),
-        Route("/api/chase/{id:str}", one), Route("/api/history", history), Route("/api/account", account),
+        Route("/api/chase/{id:str}", one), Route("/api/history", history), Route("/api/account", account), Route("/api/plan", plan),
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)

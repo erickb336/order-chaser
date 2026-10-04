@@ -2,7 +2,7 @@
 // Usage: node look.mjs '<spec>'. Spec: {"base": "http://127.0.0.1:port", "tabs": n, "steps": [step, ...]}. Each step acts on tab "tab" (default 0):
 //   {"goto": "/path"} {"click": sel} {"select": [sel, value]} {"fill": [sel, text]}
 //   {"waitFor": "js predicate"} {"text": sel, "as": name} {"eval": "js expression", "as": name}
-//   {"shot": path} {"sleep": ms} {"front": true} (the tab gets the focus)
+//   {"shot": path} {"sleep": ms} {"front": true} (the tab gets the focus) {"press": key} (a key, such as "Tab")
 import { chromium } from 'playwright-core';
 
 const spec = JSON.parse(process.argv[2]);
@@ -26,6 +26,7 @@ try {
     else if (s.shot) await p.screenshot({ path: s.shot, fullPage: true });
     else if (s.sleep) await p.waitForTimeout(s.sleep);
     else if (s.front) await p.bringToFront();
+    else if (s.press) await p.keyboard.press(s.press);
   }
 } finally {
   await browser.close();

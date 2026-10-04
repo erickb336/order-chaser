@@ -623,9 +623,15 @@ def test_a_margin_open_and_its_close_through_the_api_and_the_account_stays_after
     assert post({"what": "short", "leverage": 2}).json() == {"errors": ["Close the long first. You have an open long position on BTC/USD."]}
     assert post({"what": "close-long", "qty": "0.06"}).json()["errors"] == [
         "A close cannot be larger than the position, 0.0500 BTC. Reduce-only orders never grow or flip a position. Enter 0.0500 or less."]
+    # The form's close plan (the account's FIFO rule): which positions a size takes, what stays, the level after.
+    plan = client.get("/api/plan", params={"pair": "BTC/USD", "dir": "long", "qty": "0.02"}).json()
+    assert (plan["takes"].split(" opened ")[0], plan["stays"]) == ("0.0200 BTC of the 3x position", "0.0300 BTC at 3x")
+    assert float(plan["level_after"]) > float(plan["level_now"])
+    assert [client.get("/api/plan", params=q).status_code for q in ({"pair": "BTC/USD", "dir": "long", "qty": "1e3"},
+            {"pair": "BTC/USD", "dir": "short", "qty": "0.02"}, {"pair": "X", "dir": "long", "qty": "0.02"})] == [400, 400, 400]
     r = post({"what": "close-long", "qty": "0.02"})
     c = client.get(f"/api/chase/{r.json()['id']}").json()
-    assert (c["side"], c["dir"], c["margin"]["close"], c["margin"]["pos_qty"]) == ("sell", "long", True, "0.05")
+    assert (c["side"], c["dir"], c["margin"]["close"], [p["qty"] for p in c["margin"]["positions"]]) == ("sell", "long", True, ["0.05"])
     call(f._handle, trade_msg("buy", "62419.0", "0.02"))                  # the reduce-only sell at the ask fills
     assert client.get(f"/api/chase/{c['id']}").json()["outcome"] == "filled"
     # The simulated account is in the SQLite file: a new start of the tool shows the same position.

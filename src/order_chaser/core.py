@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import time
 from dataclasses import dataclass, replace
 from decimal import Decimal
 
@@ -38,7 +39,7 @@ AMEND_EVERY = 5
 AMEND_EVERY_SLOW = 15
 TIMEOUTS = (30, 60, 120, 300, 600, 900)
 OPEN_FEE = Decimal("0.0005")     # Kraken margin opening fee: 0.01% to 0.05% of the cost; the tool counts the maximum
-ROLLOVER = Decimal("0.0005")     # rollover for each started 4 h: 0.01% to 0.05%; the tool counts the maximum
+ROLLOVER = Decimal("0.0005")     # rollover for each full 4 h after the open: 0.01% to 0.05%; the tool counts the maximum
 ROLL_EVERY = 4 * 3600
 LEVERAGE = (2, 3, 4, 5)          # the owner's range; the pair's AssetPairs lists limit it further
 ID_MAX = 18                      # Kraken: a free-text cl_ord_id has at most 18 characters
@@ -85,13 +86,27 @@ class Fill:
 
 
 @dataclass(frozen=True)
-class Margin:
-    """A margin chase: an open (long = buy, short = sell) or a reduce-only close of a position."""
+class Part:
+    """One open margin position (Kraken: one row of OpenPositions). Each open is its own position.
+    In a close plan: the part of a position that a close takes, or what stays of it."""
+    id: str
+    opened: float
     leverage: int
+    entry: Decimal
+    qty: Decimal
+    margin: Decimal      # its collateral
+
+
+@dataclass(frozen=True)
+class Margin:
+    """A margin chase: an open (long = buy, short = sell) or a reduce-only close of positions."""
+    leverage: int        # open: its leverage; close: the average leverage of the positions (the order's field)
     close: bool = False
-    pos_qty: Decimal = ZERO      # close: the size of the position at the start
-    entry: Decimal = ZERO        # close: the average entry price of the position
-    rollover: Decimal = ZERO     # close: rollover so far at the start (estimate)
+    positions: tuple[Part, ...] = ()   # close: the positions of the pair and direction at the start, oldest first
+
+    @property
+    def pos_qty(self) -> Decimal:
+        return sum((p.qty for p in self.positions), ZERO)
 
 
 @dataclass(frozen=True)
@@ -432,7 +447,9 @@ def begin(id: str, pair: Pair, side: str, qty: Decimal, bid: Decimal, ask: Decim
     word = "cap" if buy else "floor"
     out = []
     if margin is not None and margin.close:
-        out.append(Log(0, f"Read the position: {fmt_qty(margin.pos_qty)} {pair.base} {c.dir}, {margin.leverage}x."))
+        w = plan_words(margin.positions, qty, pair, now)
+        stays = f" Stays open: {w['stays']}." if w["stays"] else ""
+        out.append(Log(0, f"Read the positions: {w['start']}. The close takes the oldest first: {w['takes']}.{stays}"))
     if limit is None:
         out.append(Log(0, f"Recorded the start {'ask' if buy else 'bid'}, {fmt_price(pair, cap)}, as the {word}."))
     else:
@@ -488,8 +505,8 @@ def _position_text(c: Chase) -> str:
     m, base = c.margin, c.pair.base
     if not m.close:
         return f" Position opened: {fmt_qty(c.filled)} {base} {c.dir}, {m.leverage}x."
-    rest = m.pos_qty - c.filled
-    return f" Position partly closed: {fmt_qty(rest)} {base} {c.dir} stays open." if rest > 0 else " Position closed."
+    stays = plan_words(m.positions, c.filled, c.pair, c.started)["stays"]
+    return f" Stays open: {stays}." if stays else " Position closed."
 
 
 def step(c: Chase, ev) -> tuple[Chase, list]:
@@ -907,25 +924,109 @@ def worst_case(side: str, qty: Decimal, limit: Decimal, margin: Margin | None = 
     return qty * limit * (1 + fee) if side == "buy" else qty * limit * (1 - fee)
 
 
-def rollover_periods(seconds: float) -> int:
-    """The started 4 h periods of a position open for this time."""
-    return int(max(seconds, 0) // ROLL_EVERY) + 1
+def rollover(qty: Decimal, entry: Decimal, seconds: float) -> Decimal:
+    """The rollover of qty of a position open for this time: each full 4 h after the open (as Kraken)."""
+    return qty * entry * ROLLOVER * int(max(seconds, 0) // ROLL_EVERY)
+
+
+# ---------- The close plan: oldest position first (FIFO) ----------
+
+def close_plan(positions, qty: Decimal) -> tuple[list[Part], list[Part]]:
+    """The one rule of a close: it takes the oldest position first, partly if needed (as Kraken).
+    Returns what it takes from each position (qty taken, the collateral that it releases) and what stays."""
+    takes, stays, left = [], [], qty
+    for p in positions:
+        take = min(left, p.qty)
+        left -= take
+        if take == p.qty:
+            takes.append(p)
+        elif take == 0:
+            stays.append(p)
+        else:
+            released = p.margin * take / p.qty
+            takes.append(replace(p, qty=take, margin=released))
+            stays.append(replace(p, qty=p.qty - take, margin=p.margin - released))
+    return takes, stays
+
+
+def average(positions) -> tuple[Decimal, Decimal, int]:
+    """Positions together: qty, average entry, average leverage (cost / collateral, rounded)."""
+    qty = sum((p.qty for p in positions), ZERO)
+    cost = sum((p.qty * p.entry for p in positions), ZERO)
+    margin = sum((p.margin for p in positions), ZERO)
+    return qty, cost / qty, int((cost / margin).quantize(Decimal(1), "ROUND_HALF_UP"))
+
+
+def _at(t: float, ref: float) -> str:
+    """The open time of a position: "12:59", or "3 Oct 12:59" on another day than ref."""
+    lt = time.localtime(t)
+    return time.strftime("%H:%M", lt) if lt[:3] == time.localtime(ref)[:3] else f"{lt.tm_mday} " + time.strftime("%b %H:%M", lt)
+
+
+def _and(xs: list[str]) -> str:
+    return xs[0] if len(xs) == 1 else ", ".join(xs[:-1]) + " and " + xs[-1]
+
+
+def plan_words(positions, qty: Decimal, pair: Pair, ref: float) -> dict:
+    """The close plan in words. start: "0.0300 BTC in 2 positions · average 3x · average entry 61,000.00";
+    takes: "the 2x position opened 12:59 (0.0100 BTC) and 0.0050 BTC of the 4x position opened 13:00";
+    stays: "0.0150 BTC at 4x" ("" when nothing stays)."""
+    takes, stays = close_plan(positions, qty)
+    whole = {p.id: p.qty for p in positions}
+    b = pair.base
+    q, entry, lev = average(positions)
+    n = len(positions)
+    start = (f"{fmt_qty(q)} {b} in 1 position · {lev}x · entry {fmt_price(pair, entry)}" if n == 1 else
+             f"{fmt_qty(q)} {b} in {n} positions · average {lev}x · average entry {fmt_price(pair, entry)}")
+
+    def one(p: Part) -> str:
+        name = f"the {p.leverage}x position opened {_at(p.opened, ref)}"
+        return f"{name} ({fmt_qty(p.qty)} {b})" if p.qty == whole[p.id] else f"{fmt_qty(p.qty)} {b} of {name}"
+    return {"start": start, "takes": _and([one(p) for p in takes]) if takes else "",
+            "stays": _and([f"{fmt_qty(p.qty)} {b} at {p.leverage}x" for p in stays]) if stays else ""}
+
+
+def close_preview(positions, qty: Decimal, equity: Decimal, used: Decimal, mark: Decimal | None) -> Decimal | None:
+    """The account margin level after a close of qty that fills at the mark as maker: the close releases the
+    collateral of each part it takes, and pays the maker fee. None when no position stays in the account."""
+    takes, _ = close_plan(positions, qty)
+    left = used - sum((p.margin for p in takes), ZERO)
+    fee = qty * mark * MAKER_FEE if mark is not None else ZERO
+    return (equity - fee) / left * 100 if left > 0 else None
 
 
 def margin_summary(c: Chase) -> dict | None:
     """Margin estimates for the pages. Open: collateral, opening fee and rollover per 4 h of the part that
-    filled. Close: the P/L of the part that closed, from the chase fills and the entry price, less the
-    trading fees of the close."""
+    filled. Close: the close plan of what filled, each filled unit priced against its own position (FIFO):
+    the P/L of each part less its trading fees, the rollover that each part pays, and what stays."""
     m = c.margin
     if m is None:
         return None
     gross = sum((f.qty * f.price for f in c.fills), ZERO)
-    fee = sum((f.qty * f.price * (MAKER_FEE if f.maker else TAKER_FEE) for f in c.fills), ZERO)
     if not m.close:
         return {"collateral": gross / m.leverage, "open_fee": gross * OPEN_FEE, "rollover_4h": gross * ROLLOVER}
     sign = 1 if c.dir == "long" else -1
-    pl = sum((sign * (f.price - m.entry) * f.qty for f in c.fills), ZERO) - fee
-    return {"pl": pl, "close_fee": fee, "rest": max(m.pos_qty - c.filled, ZERO)}
+    takes, stays = close_plan(m.positions, c.filled)
+    rows = [{"qty": ZERO, "value": ZERO, "pl": ZERO, "fee": ZERO, "rollover": ZERO} for _ in takes]
+    i, left = 0, [p.qty for p in takes]
+    for f in c.fills:                       # the fills in order, each against the oldest part that is left
+        q = f.qty
+        while q > 0:
+            p, r, take = takes[i], rows[i], min(q, left[i])
+            r["qty"] += take
+            r["value"] += take * f.price
+            r["pl"] += sign * (f.price - p.entry) * take
+            r["fee"] += take * f.price * (MAKER_FEE if f.maker else TAKER_FEE)
+            r["rollover"] += rollover(take, p.entry, c.started + f.t - p.opened)
+            q, left[i] = q - take, left[i] - take
+            i += left[i] == 0
+    words = plan_words(m.positions, c.filled, c.pair, c.started)
+    parts = [{"leverage": p.leverage, "entry": p.entry, "qty": p.qty, "avg": r["value"] / r["qty"], "pl": r["pl"] - r["fee"],
+              "name": f"{p.leverage}x opened {_at(p.opened, c.started)}"} for p, r in zip(takes, rows)]
+    return {"pl": sum((r["pl"] - r["fee"] for r in rows), ZERO), "close_fee": sum((r["fee"] for r in rows), ZERO),
+            "rollover": sum((r["rollover"] for r in rows), ZERO), "rest": sum((p.qty for p in stays), ZERO), "parts": parts,
+            "start": words["start"], "takes": words["takes"], "stays": words["stays"],
+            "plan": plan_words(m.positions, c.qty, c.pair, c.started)["takes"]}
 
 
 # ---------- Serialisation (SQLite keeps the chase as JSON) ----------
@@ -956,8 +1057,14 @@ def from_json(s: str) -> Chase:
     fills = tuple(Fill(Decimal(f["qty"]), Decimal(f["price"]), f["maker"], f["t"], f["order"],
                        f.get("leg") or (ioc_id if f["order"] == "ioc" else d["id"])) for f in d.pop("fills"))
     m = d.pop("margin", None)
+    if m is not None and "pos_qty" in m:   # the earlier build: one averaged position
+        q, e = Decimal(m["pos_qty"]), Decimal(m["entry"])
+        m["positions"] = [{"id": "start", "opened": d["started"], "leverage": m["leverage"], "entry": e, "qty": q,
+                           "margin": q * e / m["leverage"]}] if m["close"] else []
     if m is not None:
-        d["margin"] = Margin(m["leverage"], m["close"], Decimal(m["pos_qty"]), Decimal(m["entry"]), Decimal(m["rollover"]))
+        d["margin"] = Margin(m["leverage"], m["close"], tuple(
+            Part(p["id"], p["opened"], p["leverage"], Decimal(p["entry"]), Decimal(p["qty"]), Decimal(p["margin"]))
+            for p in m["positions"]))
     d.pop("order_cum", None)   # a field of the first build; the fills hold the venue's qty now
     for k in ("qty", "limit", "start_bid", "start_ask"):
         d[k] = Decimal(d[k])

@@ -42,6 +42,7 @@
         <div class="help err" id="amterr" aria-live="polite"></div>
         <div class="help" id="amthelp"></div>
         <div class="mins small" id="mins"></div>
+        <p class="small hidden" id="plan" style="margin:8px 0 0"></p>
       </div>
 
       <div class="field hidden" id="mgbox"></div>
@@ -101,7 +102,7 @@ const params = new URLSearchParams(location.search);
 // what: buy or sell (spot); long, short or close (margin). lev: the leverage of an open (the form starts at 2x).
 let what = 'buy', lev = 2, posKey = null, sizeFor = null, snap = null, account = null, override = false, restOf = null, busy = false;
 const MARGIN = ['long', 'short', 'close'];
-const FEE_LO = 0.0001, FEE_HI = 0.0005;   // Kraken US margin fees: 0.01% to 0.05% of the cost (opening fee, and rollover per 4 h)
+const FEE_LO = 0.0001, FEE_HI = 0.0005;   // Kraken US margin fees: 0.01% to 0.05% of the cost (opening fee, and rollover per full 4 h)
 
 // The server watches one pair for all tabs. A tab whose snapshots show another pair asks again for its own,
 // at most every 3 s, while it has the focus and no chase runs. (Two tabs that both ask would swap the pair.)
@@ -160,6 +161,53 @@ const nf = (v, d) => Number(v).toLocaleString('en-US', { minimumFractionDigits: 
 const when = t => new Date(t * 1000).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 const readAt = a => new Date(a.at * 1000).toLocaleTimeString('en-GB');
 const level = v => v == null ? 'no position' : Math.round(v) + '%';
+
+// Write HTML into el only when it changes: a focused control inside it keeps the focus.
+function put(el, html) { if (el._h !== html) { el._h = html; el.innerHTML = html; } }
+function text(el, t) { if (el.textContent !== t) el.textContent = t; }
+
+// The close plan of a size, from the server (core.close_plan, the rule of the account): read again when the
+// position, the size or the account read changes. null while it is being read.
+let plan = null, planFor = null;
+function closePlan(pos, size) {
+  const key = [pos.pair, pos.dir, size, account.at].join('|');
+  if (key !== planFor) {
+    planFor = key;
+    fetch(`/api/plan?pair=${encodeURIComponent(pos.pair)}&dir=${pos.dir}&qty=${encodeURIComponent(size)}`)
+      .then(r => r.ok ? r.json() : null).then(p => { if (planFor === key) { plan = p && { ...p, key }; draw(); } });
+  }
+  return plan && plan.key === key ? plan : null;
+}
+
+// The close list: one row for each pair and direction. The rows are built once for a set of positions; each
+// redraw changes only their text, so the radio keeps the focus and the selection while prices update.
+function drawPositions(s) {
+  const list = $('poslist'), all = positions();
+  const keys = !account ? '…' : all.map(x => x.pair + '|' + x.dir).join(' ');
+  if (list.dataset.keys !== keys) {
+    list.dataset.keys = keys;
+    list.innerHTML = !account ? '<div class="tiny muted">Reading your positions (simulated account)…</div>'
+      : !all.length ? '<div class="note info small">You have no open margin positions in the simulated account. To open one, pick Open long or Open short.</div>'
+      : all.map((x, i) => `<label data-k="${OC.esc(x.pair + '|' + x.dir)}"><input type="radio" name="pos" aria-labelledby="pos${i}t" aria-describedby="pos${i}d pos${i}r pos${i}p"><div><b id="pos${i}t"></b> <span class="muted small" id="pos${i}d"></span><div class="tiny muted" id="pos${i}r"></div></div><div id="pos${i}p"></div></label>`).join('')
+        + '<div class="tiny muted" id="posfoot"></div>';
+  }
+  all.forEach((x, i) => {
+    const on = x.pair + '|' + x.dir === posKey, xb = x.pair.split('/')[0], pd = (s && s.pairs[x.pair] || {}).price_decimals || 2, upl = Number(x.upl);
+    const row = list.children[i], radio = row.querySelector('input');
+    row.classList.toggle('on', on);
+    if (radio.checked !== on) radio.checked = on;
+    // Each open of a pair and direction is its own position with its own leverage (as Kraken).
+    put($(`pos${i}t`), `${OC.esc(x.pair)} <span class="badge ${x.dir}">${x.dir === 'long' ? 'Long' : 'Short'}</span> ${OC.qty(x.qty)} ${xb}`);
+    text($(`pos${i}d`), x.count > 1 ? `· ${x.count} positions · average ${x.leverage}x · average entry ${OC.px(x.entry, pd)} · oldest opened ${when(x.opened)}`
+      : `· ${x.leverage}x · opened ${when(x.opened)} at ${OC.px(x.entry, pd)}`);
+    text($(`pos${i}r`), `Rollover so far: ${OC.usd(x.rollover)} USD (estimate)`);
+    const pl = $(`pos${i}p`);
+    pl.className = x.upl == null ? 'r small muted' : `r small num ${upl >= 0 ? 'tone-fill' : 'tone-bad'}`;
+    put(pl, x.upl == null ? `no price yet<div class="tiny" style="font-family:var(--sans)">profit or loss shows when ${OC.esc(x.pair)} prices arrive</div>`
+      : `${upl >= 0 ? '+' : '−'}${OC.usd(Math.abs(upl))} USD<div class="tiny muted" style="font-family:var(--sans)">${s && x.pair === s.watched ? 'profit or loss now, at the mark' : `at the last price seen, ${OC.clock(x.mark_at)}`} (estimate)</div>`);
+  });
+  if (account && all.length) text($('posfoot'), `Read from the simulated account at ${readAt(account)}. One row for each pair and direction. A close takes the oldest position first.`);
+}
 
 function draw() {
   const s = snap, pair = $('pairsel').value, p = pairInfo();
@@ -251,18 +299,7 @@ function draw() {
     }
   }
   if (close) {
-    const all = positions();
-    $('poslist').innerHTML = !account ? '<div class="tiny muted">Reading your positions (simulated account)…</div>'
-      : !all.length ? '<div class="note info small">You have no open margin positions in the simulated account. To open one, pick Open long or Open short.</div>'
-      : all.map(x => {
-          const k = x.pair + '|' + x.dir, on = k === posKey, xb = x.pair.split('/')[0], pd = (s && s.pairs[x.pair] || {}).price_decimals || 2, upl = Number(x.upl);
-          // One row for each pair and direction; each open of it is its own position with its own leverage (as Kraken).
-          const how = x.count > 1 ? `· ${x.count} positions · average ${x.leverage}x · average entry ${OC.px(x.entry, pd)} · oldest opened ${when(x.opened)}`
-            : `· ${x.leverage}x · opened ${when(x.opened)} at ${OC.px(x.entry, pd)}`;
-          const pl = x.upl == null ? `<div class="r small muted">no price yet<div class="tiny" style="font-family:var(--sans)">profit or loss shows when ${OC.esc(x.pair)} prices arrive</div></div>`
-            : `<div class="r small num ${upl >= 0 ? 'tone-fill' : 'tone-bad'}">${upl >= 0 ? '+' : '−'}${OC.usd(Math.abs(upl))} USD<div class="tiny muted" style="font-family:var(--sans)">${s && x.pair === s.watched ? 'profit or loss now, at the mark' : `at the last price seen, ${OC.clock(x.mark_at)}`} (estimate)</div></div>`;
-          return `<label class="${on ? 'on' : ''}" data-k="${OC.esc(k)}"><input type="radio" name="pos" ${on ? 'checked' : ''} aria-label="${OC.esc(x.pair)} ${x.dir}"><div><b>${OC.esc(x.pair)} <span class="badge ${x.dir}">${x.dir === 'long' ? 'Long' : 'Short'}</span> ${OC.qty(x.qty)} ${xb}</b> <span class="muted small">${how}</span><div class="tiny muted">Rollover so far: ${OC.usd(x.rollover)} USD (estimate)</div></div>${pl}</label>`;
-        }).join('') + `<div class="tiny muted">Read from the simulated account at ${readAt(account)}. One row for each pair and direction. A close takes the oldest position first.</div>`;
+    drawPositions(s);
     if (!pos) block(account ? 'Nothing to close.' : 'Start is possible when the positions arrive.');
   }
   $('amtfield').classList.toggle('hidden', close && !pos);
@@ -272,8 +309,9 @@ function draw() {
   const raw = $('amt').value.trim();
   const q = Number(raw);
   const ref = buy ? ask : bid;
-  $('est').textContent = ref && q > 0 ? (open ? `≈ ${OC.usd(q * ref)} ${Q} position cost` : `≈ ${OC.usd(q * ref)} ${Q} at the ${buy ? 'ask' : 'bid'} now`) : `≈ … ${Q}`;
-  if (close && pos) $('est').innerHTML = q === Number(pos.qty) ? '<span class="badge ok">Whole position</span>' : `<button class="btn sm" id="whole" type="button">Close all: ${OC.qty(pos.qty)} ${B}</button>`;
+  let est = ref && q > 0 ? (open ? `≈ ${OC.usd(q * ref)} ${Q} position cost` : `≈ ${OC.usd(q * ref)} ${Q} at the ${buy ? 'ask' : 'bid'} now`) : `≈ … ${Q}`;
+  const closeAll = close && pos ? `<button class="btn sm" id="whole" type="button">Close all: ${OC.qty(pos.qty)} ${B}</button>` : '';
+  if (close && pos) est = q === Number(pos.qty) ? '<span class="badge ok">Whole position</span>' : closeAll;
   let amtErr = '';
   $('amthelp').innerHTML = !margin ? 'Dry run: no balance check. A live chase reads your balance from Kraken.'
     : open ? (account ? `Free margin: ${OC.usd(account.free)} ${Q} (simulated account, read at ${readAt(account)}).` : 'Reading the simulated account…')
@@ -288,7 +326,7 @@ function draw() {
     else if (!aOk || !cOk) errAmt(`The ${close ? 'size' : 'amount'} is below ${!aOk && !cOk ? 'both Kraken minimums' : 'a Kraken minimum'} for ${pair}. Enter ${OC.qty(Math.max(Number(p.ordermin), ref ? Number(p.costmin) / ref : 0))} ${B} or more.`);
     else if (close && pos && q > Number(pos.qty)) {
       errAmt(`A close cannot be larger than the position, ${OC.qty(pos.qty)} ${B}. Reduce-only orders never grow or flip a position. Enter ${OC.qty(pos.qty)} or less.`);
-      $('est').innerHTML = `<button class="btn sm" id="whole" type="button">Close all: ${OC.qty(pos.qty)} ${B}</button>`;
+      est = closeAll;
     } else amtOk = true;
     if (amtOk && close && pos) {   // a part close that leaves a rest below the minimum: a warning, not a block
       const left = Number(pos.qty) - q;
@@ -298,6 +336,13 @@ function draw() {
       }
     }
   }
+  // The price stream redraws the form each second: a control is replaced only when it changes, so it keeps the focus.
+  put($('est'), est);
+  // The close plan of this size (the server's FIFO rule): which positions it takes and what stays.
+  const plan = close && pos && amtOk ? closePlan(pos, raw.replace(/\.$/, '')) : null;
+  $('plan').classList.toggle('hidden', !(close && pos && amtOk));
+  put($('plan'), !plan ? 'Reading which positions this close takes…'
+    : `<b>Closes, oldest first:</b> ${OC.esc(plan.takes)}. <b>Stays open:</b> ${plan.stays ? OC.esc(plan.stays) : `nothing, the ${pos.dir} is closed`}.`);
   // cap or floor, and the override
   $('ov').classList.toggle('hidden', !override);
   $('ovbtn').classList.toggle('hidden', override);
@@ -350,7 +395,7 @@ function draw() {
           <tr><td>Position cost</td><td class="r num">${OC.usd(cost)} ${Q}</td><td class="tiny muted">${OC.qty(q)} × ${P(L)} (the ${buy ? 'cap' : 'floor'})</td></tr>
           <tr><td>Collateral it uses</td><td class="r num ${lack ? 'tone-bad' : ''}"><b>${OC.usd(collat)} ${Q}</b></td><td class="tiny muted">position cost ÷ ${lev}. Free margin for new orders: ${OC.usd(freeOrders)} ${Q}</td></tr>
           <tr><td>Opening fee</td><td class="r num">${OC.usd(cost * FEE_LO)} to ${OC.usd(cost * FEE_HI)} ${Q}</td><td class="tiny muted">0.01% to 0.05% of the cost, charged at the open</td></tr>
-          <tr><td>Rollover, each started 4 h</td><td class="r num">${OC.usd(cost * FEE_LO)} to ${OC.usd(cost * FEE_HI)} ${Q}</td><td class="tiny muted">for 1 day (6 × 4 h): up to ${OC.usd(cost * FEE_HI * 6)} ${Q}</td></tr>
+          <tr><td>Rollover, every 4 h</td><td class="r num">${OC.usd(cost * FEE_LO)} to ${OC.usd(cost * FEE_HI)} ${Q}</td><td class="tiny muted">after each full 4 h open; for 1 day (6 × 4 h): up to ${OC.usd(cost * FEE_HI * 6)} ${Q}</td></tr>
         </table>
         <p class="tiny muted" style="margin:6px 0 0">${OC.MARGIN_FEES}</p>
         ${gaugeHead}${OC.gauge(lvlNow, after, p.margin_call, p.margin_stop)}
@@ -361,11 +406,13 @@ function draw() {
       }
     } else if (open) {
       $('mgbox').innerHTML = `<label class="f">Margin: what this open uses and costs</label>${head}<p class="small muted" style="margin:0">Shown when prices arrive and the amount is valid.</p>`;
+    } else if (plan) {
+      // From the close plan: the close releases the collateral of each position it takes, at that position's leverage.
+      const now = plan.level_now == null ? null : Number(plan.level_now), after = plan.level_after == null ? null : Number(plan.level_after);
+      $('mgbox').innerHTML = head + gaugeHead + OC.gauge(now, after, p.margin_call, p.margin_stop, 'after the close') +
+        `<p class="small" style="margin:14px 0 0" id="lvlline">Now ${level(now)}. After the close: <b>${after == null ? 'no open position' : level(after)}</b> (estimate: the close fills at the mark as maker, and releases the collateral of each position it takes). A close has no opening fee. Rollover stops for the part that closes.</p>`;
     } else {
-      const frac = amtOk ? Math.min(1, q / Number(pos.qty)) : 0, u1 = used - Number(pos.margin) * frac;
-      const after = u1 > 1e-9 ? eq / u1 * 100 : null;
-      $('mgbox').innerHTML = head + gaugeHead + OC.gauge(lvlNow, after, p.margin_call, p.margin_stop, 'after the close') +
-        `<p class="small" style="margin:14px 0 0" id="lvlline">Now ${level(lvlNow)}. After the close: <b>${after == null ? 'no open position' : level(after)}</b>. A close has no opening fee. Rollover stops for the part that closes.</p>`;
+      $('mgbox').innerHTML = head + gaugeHead + `<p class="small muted" style="margin:0" id="lvlline">The level after the close shows when the size is valid.</p>`;
     }
   }
   // The amount error: on the field (aria-invalid, aria-describedby) and in a live region, written only when it changes.
@@ -380,7 +427,7 @@ function draw() {
       $('worst').innerHTML = (buy
         ? `The open never costs more than <b class="num">${OC.usd(cost + tf + of)} ${Q}</b> in price and fees: ${OC.qty(q)} × ${P(L)} (cap) + ${OC.usd(tf)} taker fee (0.80%) + ${OC.usd(of)} opening fee (0.05%, the maximum; an estimate).`
         : `The short sells at no less than the floor, ${P(L)}, and pays at most <b class="num">${OC.usd(tf + of)} ${Q}</b> in fees at the open: ${OC.usd(tf)} taker (0.80%) + ${OC.usd(of)} opening fee (0.05%, the maximum; an estimate).`) +
-        `<br><span class="tiny muted">Not included: rollover, up to ${OC.usd(of)} ${Q} per started 4 h. A ${buy ? 'position can also lose value as the price moves' : 'short loses value when the price rises'}. That loss has no limit before liquidation.</span>`;
+        `<br><span class="tiny muted">Not included: rollover, up to ${OC.usd(of)} ${Q} per 4 h. A ${buy ? 'position can also lose value as the price moves' : 'short loses value when the price rises'}. That loss has no limit before liquidation.</span>`;
     } else if (close) {
       const fee = q * L * 0.008;
       $('worst').innerHTML = buy
@@ -445,7 +492,7 @@ async function init() {
     snap = s;
     busy = !!(s.chase && s.chase.phase !== 'done');
     if (first && busy) $('pairsel').value = s.watched;
-    if (s.account && account && s.account.at > account.at) account = s.account;
+    if (s.account && account && s.account.at >= account.at) account = s.account;   // also a new price of a pair
     keepWatching();
     draw();
   });

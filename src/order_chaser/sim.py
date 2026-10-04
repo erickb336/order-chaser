@@ -19,14 +19,15 @@ Margin (the simulated account: 5,000 USD at the start, labelled "simulated accou
 does with mixed leverage:
 - Each open is its own position: qty, entry, collateral (cost / leverage), leverage, opened at. The fills of one
   chase (its legs and its IOC) build one position. Long and short on one pair are never open together.
-- A close (a reduce-only order) takes the oldest position of the pair and direction first (FIFO), partly if needed.
+- A close (a reduce-only order) takes the oldest position of the pair and direction first (FIFO), partly if needed:
+  core.close_plan, the one rule that the pages use too.
 - The mark of a pair = the mid of the last valid public book of that pair, with its time. The tool watches one pair,
   so the mark of another pair is the last price seen; after a restart a pair has no mark until its book arrives.
   Unrealized P/L at the mark (none without a mark: equity counts it as 0). Equity = cash + P/L - rollover so far.
   Margin level = equity / used margin x 100. At or below the pair's margin_stop the account is liquidated when a
   book arrives: every position closes at the mark of its own pair (at its entry if its pair has no mark).
 - An open fill pays the trading fee and the opening fee (0.05% of the cost). Rollover: 0.05% of the cost of each
-  position for each started 4 h since that position opened, paid when the position (or a part of it) closes.
+  position for each full 4 h since that position opened, paid when the position (or a part of it) closes.
 - A reduce-only order fills at most the positions (it never grows or flips them). With no position it is
   refused; when the positions are gone while it is open, the gateway reports PositionGone("nopos").
 - Refusals, with Kraken's texts: a leverage that the pair does not allow, a position against an open
@@ -39,6 +40,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from decimal import ROUND_HALF_UP, Decimal
 
 from . import core
@@ -54,7 +56,8 @@ class SimAccount:
 
     def __init__(self, cash: Decimal = START_CASH, allowance: Decimal = ALLOWANCE) -> None:
         self.cash, self.allowance = cash, allowance
-        # Oldest first. Each: {pair, dir, ref, qty, entry, margin, leverage, opened, stop}; ref: the chase id, or None.
+        # Oldest first. Each: {pair, dir, ref, qty, entry, margin, leverage, opened, stop}; ref: the chase that opened it,
+        # also the id of the position.
         self.positions: list[dict] = []
         self.marks: dict[str, tuple[Decimal, float]] = {}  # pair -> (mid of its last valid book, time)
         self.changed = False                               # cash or positions changed since the last save
@@ -64,17 +67,19 @@ class SimAccount:
         """The positions of one pair and direction, oldest first (the order of a close)."""
         return [p for p in self.positions if p["pair"] == pair and p["dir"] == d]
 
+    def parts(self, pair: str, d: str) -> tuple[core.Part, ...]:
+        """The positions of one pair and direction, oldest first, as the core's close plan takes them."""
+        return tuple(core.Part(p["ref"], p["opened"], p["leverage"], p["entry"], p["qty"], p["margin"]) for p in self.of(pair, d))
+
     def position(self, pair: str, d: str) -> dict | None:
         """The positions of one pair and direction together: qty, average entry, collateral, average leverage
         (cost / collateral, rounded), count. None when there is none."""
-        ps = self.of(pair, d)
+        ps = self.parts(pair, d)
         if not ps:
             return None
-        qty = sum((p["qty"] for p in ps), ZERO)
-        cost = sum((p["qty"] * p["entry"] for p in ps), ZERO)
-        margin = sum((p["margin"] for p in ps), ZERO)
-        return {"qty": qty, "entry": cost / qty, "margin": margin, "count": len(ps),
-                "leverage": int((cost / margin).quantize(Decimal(1), ROUND_HALF_UP)), "opened": ps[0]["opened"]}
+        qty, entry, lev = core.average(ps)
+        return {"qty": qty, "entry": entry, "margin": sum((p.margin for p in ps), ZERO), "count": len(ps),
+                "leverage": lev, "opened": ps[0].opened}
 
     def used(self) -> Decimal:
         return sum((p["margin"] for p in self.positions), ZERO)
@@ -89,7 +94,7 @@ class SimAccount:
 
     @staticmethod
     def _roll(p, now: float) -> Decimal:
-        return p["qty"] * p["entry"] * core.ROLLOVER * core.rollover_periods(now - p["opened"])
+        return core.rollover(p["qty"], p["entry"], now - p["opened"])
 
     def equity(self, now: float) -> Decimal:
         return self.cash + sum(((self._upl(p) or ZERO) - self._roll(p, now) for p in self.positions), ZERO)
@@ -110,8 +115,7 @@ class SimAccount:
             rows.append({"pair": pair, "dir": d, **g, "mark": mark and mark[0], "mark_at": mark and mark[1],
                          "upl": None if mark is None else sum(upls, ZERO),
                          "rollover": sum((self._roll(p, now) for p in ps), ZERO),
-                         "parts": [{"qty": p["qty"], "entry": p["entry"], "leverage": p["leverage"], "opened": p["opened"]}
-                                   for p in ps]})
+                         "parts": self.parts(pair, d)})
         return {"simulated": True, "cash": self.cash, "equity": self.equity(now), "used": self.used(), "free": free,
                 "free_orders": free - reserved, "level": self.level(now), "at": now,
                 "unpriced": sorted({p["pair"] for p in self.positions if p["pair"] not in self.marks}),
@@ -121,14 +125,6 @@ class SimAccount:
         groups = dict.fromkeys((p["pair"], p["dir"]) for p in self.positions)
         return [core.Position(k[0], k[1], g["qty"], g["entry"], g["leverage"]) for k in groups if (g := self.position(*k))]
 
-    def close_entry(self, pair: str, d: str, qty: Decimal) -> Decimal:
-        """The average entry of the part that a close of qty takes, oldest first (FIFO)."""
-        left, cost = qty, ZERO
-        for p in self.of(pair, d):
-            take = min(left, p["qty"])
-            cost, left = cost + take * p["entry"], left - take
-        return cost / (qty - left) if qty > left else ZERO
-
     # ----- changes -----
     def fill(self, pair: core.Pair, side: str, leverage: int, reduce_only: bool, qty: Decimal, price: Decimal,
              maker: bool, now: float, ref: str | None = None) -> Decimal:
@@ -137,24 +133,21 @@ class SimAccount:
         fee = core.MAKER_FEE if maker else core.TAKER_FEE
         if reduce_only:
             d = "short" if side == "buy" else "long"
-            left = qty
-            for p in self.of(pair.symbol, d):               # the oldest position first
-                take = min(left, p["qty"])
-                part = take / p["qty"]
-                pl = (price - p["entry"]) * take * (1 if d == "long" else -1)
-                self.cash += pl - take * price * fee - self._roll(p, now) * part
-                p["margin"] -= p["margin"] * part
-                p["qty"] -= take
-                left -= take
-                if left == 0:
-                    break
-            self.positions = [p for p in self.positions if p["qty"] > 0]
-            qty -= left
+            takes, stays = core.close_plan(self.parts(pair.symbol, d), qty)   # the oldest position first
+            for t in takes:
+                pl = (price - t.entry) * t.qty * (1 if d == "long" else -1)
+                self.cash += pl - t.qty * price * fee - core.rollover(t.qty, t.entry, now - t.opened)
+            left, mine = {s.id: s for s in stays}, self.of(pair.symbol, d)
+            for p in mine:
+                if p["ref"] in left:
+                    p["qty"], p["margin"] = left[p["ref"]].qty, left[p["ref"]].margin
+            self.positions = [p for p in self.positions if p not in mine or p["ref"] in left]
+            qty = sum((t.qty for t in takes), ZERO)
         else:
             d = "long" if side == "buy" else "short"
             p = next((p for p in self.of(pair.symbol, d) if ref is not None and p["ref"] == ref), None)
             if p is None:
-                p = {"pair": pair.symbol, "dir": d, "ref": ref, "qty": ZERO, "entry": price, "margin": ZERO,
+                p = {"pair": pair.symbol, "dir": d, "ref": ref or "pos" + uuid.uuid4().hex[:8], "qty": ZERO, "entry": price, "margin": ZERO,
                      "leverage": leverage, "opened": now, "stop": pair.margin_stop}
                 self.positions.append(p)
             cost = qty * price
@@ -191,9 +184,10 @@ class SimAccount:
         for p in d["positions"]:
             if isinstance(p, list):       # the earlier build: [pair, dir, {qty, entry, margin, opened, stop}], one per direction
                 pair, dr, p = p
-                p = {**p, "pair": pair, "dir": dr, "ref": None,
+                p = {**p, "pair": pair, "dir": dr,
                      "leverage": int((Decimal(p["qty"]) * Decimal(p["entry"]) / Decimal(p["margin"])).quantize(Decimal(1), ROUND_HALF_UP))}
-            a.positions.append({**p, **{f: Decimal(p[f]) for f in cls.NUMS}})
+            # An earlier build had no id (ref None) for these: each position needs one for the close plan.
+            a.positions.append({**p, "ref": p.get("ref") or f"old{len(a.positions)}", **{f: Decimal(p[f]) for f in cls.NUMS}})
         return a
 
 

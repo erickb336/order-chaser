@@ -400,7 +400,7 @@ def test_page_the_form_offers_five_choices_and_an_open_shows_leverage_cost_colla
     assert min(x["c"] for x in low) >= 4.5, low
     assert got["#lev button:not([disabled])"] == ["2x", "3x"]          # ETH/USD: AssetPairs leverage_buy [2, 3]
     assert got["lev"] == "2x"                                         # the form starts at 2x
-    assert got["#mgbox table td:first-child"] == ["Position cost", "Collateral it uses", "Opening fee", "Rollover, each started 4 h"]
+    assert got["#mgbox table td:first-child"] == ["Position cost", "Collateral it uses", "Opening fee", "Rollover, every 4 h"]
     assert got["gauge"] == "Margin level now no position, after 320%. Margin call at 80%, liquidation at 40%."
     assert got["line"] == ("Now no position. After this open: 320%. The tool does not stop an open for its margin level. "
                            "It shows the level so that you decide.")
@@ -421,6 +421,7 @@ def test_page_close_lists_the_simulated_positions_with_the_whole_size_reduce_onl
         {"goto": "/new"}, {"waitFor": "OC.$('ask').textContent === '62,418.50'"},
         {"click": "#what button[data-w=close]"}, {"waitFor": "document.querySelector('#poslist label') && " + whole},
         TEXTS("#poslist label b"), {"text": "#est", "as": "est"}, {"text": "#amthelp", "as": "help"},
+        {"waitFor": "OC.$('mgbox').querySelector('.gauge')"},          # the level after comes with the close plan
         {"eval": "OC.$('mgbox').querySelector('.gauge').getAttribute('aria-label')", "as": "gauge"},
         {"text": "#start", "as": "start"}, {"text": "#worst", "as": "worst"}, ALL_TEXT, {"shot": "m-new-close.png"},
         {"fill": ["#amt", "0.04999"]}, {"waitFor": "!OC.$('mnote').classList.contains('hidden')"},
@@ -538,7 +539,8 @@ def test_page_the_close_list_shows_one_row_for_each_pair_and_direction_with_the_
                      {"shot": "r1-close-list-after-restart.png"}])
     assert [r[2] for r in got["rows"]] == ["no price yetprofit or loss shows when BTC/USD prices arrive",
                                            "no price yetprofit or loss shows when ETH/USD prices arrive"]
-    assert got["marks"] == "The level uses no price yet for ETH/USD (its profit or loss counts as 0)."
+    # UX-MARKNOTE-COPY
+    assert got["marks"] == "No price yet for ETH/USD. The level counts its profit or loss as 0."
 
 
 def test_page_close_with_no_position_shows_nothing_to_close_and_no_figures(tool):
@@ -612,3 +614,155 @@ def test_page_an_amount_error_is_linked_to_the_field_and_said_in_a_live_region(t
     assert got["ok"] == ["false", "amterr amthelp", "polite", ""]
     assert got["spot"] == ["true", "amterr amthelp", "polite", "Enter an amount in BTC, above 0, with at most 8 decimals."]
     assert got["margin"][:3] == ["true", "amterr amthelp", "polite"] and "free margin for new orders" in got["margin"][3]
+
+
+# ---------- repair round 2: every screen of a close follows the FIFO close plan ----------
+
+def two_longs(tool):
+    """A 2x long of 0.01 at 62,417.90, then a 4x long of 0.02 at 61,000.00; the book is back at 62,000.00 / 62,000.60."""
+    opened_long(tool, "0.01", 2)
+    t1 = tool.clock.t
+    tool.beat(60)
+    tool.book("BTC/USD", [("62417.9", "0"), ("61000.0", "1")], [("62418.5", "0"), ("62419.5", "0"), ("61000.6", "3")])
+    tool.start("long", "0.02", leverage=4)
+    tool.trade("sell", "60999.0", "0.02")
+    assert tool.eng.chase.outcome == "filled"
+    t2 = tool.clock.t
+    tool.beat(60)
+    tool.book("BTC/USD", [("61000.0", "0"), ("62000.0", "1")], [("61000.6", "0"), ("62000.6", "3")])
+    return clock_text(t1)[:5], clock_text(t2)[:5]
+
+
+def test_page_a_part_close_says_which_positions_it_takes_and_what_stays_at_their_own_leverage(tool):
+    # UX-CLOSE-WHICH-POSITION-UNSAID, UX-CLOSE-REMAINDER-WRONG-LEVERAGE, UX-CLOSE-AFTER-LEVEL-NOT-FIFO, CLOSE-PL-PARTIAL-FIFO
+    t1, t2 = two_longs(tool)
+    tool.eng.account = None
+    acc = tool.eng.gw.account
+    plan = f"the 2x position opened {t1} (0.0100 BTC) and 0.0050 BTC of the 4x position opened {t2}"
+    got = tool.look([{"goto": "/new?what=close&pair=BTC/USD&dir=long"}, {"waitFor": "OC.$('ask').textContent === '62,000.60'"},
+                     {"fill": ["#amt", "0.015"]}, {"waitFor": "OC.$('plan').textContent.startsWith('Closes')"},
+                     {"waitFor": "OC.$('lvlline').textContent.startsWith('Now')"},
+                     {"text": "#plan", "as": "plan"}, {"text": "#lvlline", "as": "level"}, ALL_TEXT, {"shot": "r2-close-form-plan.png"}])
+    assert got.pop("all")["c"] >= 4.5
+    assert got["plan"] == f"Closes, oldest first: {plan}. Stays open: 0.0150 BTC at 4x."
+    # FIFO releases the 2x collateral (312.0895) and a quarter of the 4x collateral (76.25), not half of all at 3x.
+    mark = D("62000.3")
+    after = (acc.equity(tool.clock.t) - D("0.015") * mark * core.MAKER_FEE) / (acc.used() - D("312.0895") - D("76.25")) * 100
+    assert f"After the close: {round(after)}%" in got["level"], (got["level"], after)
+    assert round(after) != round(acc.equity(tool.clock.t) / (acc.used() / 2) * 100)
+    cash = acc.cash
+    cid = tool.start("close-long", "0.015")
+    tool.trade("buy", "62001.0", "0.012")                           # a part fill at 62,000.60
+    got = tool.look([{"goto": "/chase"}, card_shown("partial"), {"text": "#pstat", "as": "pstat"}, {"text": "#pdet", "as": "pdet"},
+                     {"text": "#lev", "as": "lev"}, TEXTS("#log li"), ALL_TEXT, {"shot": "r2-chase-part-fill.png"}])
+    assert got.pop("all")["c"] >= 4.5
+    assert got["pstat"] == "Partly closed: 0.0120 of 0.0300 BTC" and got["lev"] == "2x, 4x (2 positions)"
+    assert got["pdet"] == (f"Closed so far: the 2x position opened {t1} (0.0100 BTC) and 0.0020 BTC of the 4x position opened {t2}. "
+                           "Stays open: 0.0180 BTC at 4x. (simulated)")
+    log = got["#log li"]
+    assert log[-1].endswith(f"Read the positions: 0.0300 BTC in 2 positions · average 3x · average entry 61,472.63. The close takes "
+                            f"the oldest first: {plan}. Stays open: 0.0150 BTC at 4x.")
+    assert log[0].endswith("Filled 0.0120 BTC at 62,000.60 (maker). Stays open: 0.0180 BTC at 4x.")
+    tool.call(tool.eng.user, "stop")
+    got = tool.look([{"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"},
+                     {"text": "#out .badge", "as": "badge"}, {"text": "#out .pstat", "as": "pstat"}, {"text": "#pstart", "as": "start"},
+                     {"text": "#plan", "as": "plan"}, {"text": "#pl", "as": "pl"}, TEXTS("tr.plpart"), ALL_TEXT, {"shot": "r2-result-part-close.png"}])
+    assert got.pop("all")["c"] >= 4.5
+    assert (got["badge"], got["pstat"]) == ("Part closed: rest open", "Open: 0.0180 BTC at 4x")
+    assert got["start"] == "0.0300 BTC in 2 positions · average 3x · average entry 61,472.63"
+    assert got["plan"] == f"Closed: the 2x position opened {t1} (0.0100 BTC) and 0.0020 BTC of the 4x position opened {t2}. Stays open: 0.0180 BTC at 4x."
+    # (62,000.60 - 62,417.90) x 0.01 + (62,000.60 - 61,000.00) x 0.002 - 2.98 fee = -5.15; the account books the same.
+    assert got["pl"] == "−5.15 USD" and round(acc.cash - cash, 2) == D("-5.15")
+    assert got["tr.plpart"] == [f"2x opened {t1}: (62,000.60 − 62,417.90) × 0.0100 − fee−6.65", f"4x opened {t2}: (62,000.60 − 61,000.00) × 0.0020 − fee+1.51"]
+
+
+FOCUS = ("(() => { const e = document.activeElement; return [e.tagName, e.id || e.name || '', "
+         "e.type === 'radio' ? e.checked : null]; })()")
+
+
+def test_page_the_close_list_keeps_the_focus_and_the_selection_while_prices_update(tool):
+    # UX-POSLIST-FOCUS-LOST, also the "Close all" button
+    two_longs(tool)
+    stop = threading.Event()
+
+    def prices():                                    # new prices and a new account read about 6 times a second
+        k = 0
+        while not stop.is_set():
+            k += 1
+            tool.book("BTC/USD", [("62000.0", "0"), (f"{62000 + k % 5}.0", "1")], [])
+            tool.call(tool.eng.read_account, True)
+            time.sleep(0.15)
+    th = threading.Thread(target=prices, daemon=True)
+    th.start()
+    try:
+        got = tool.look([{"goto": "/new?what=close&pair=BTC/USD&dir=long"}, {"waitFor": "document.querySelector('#poslist input')"},
+                         {"eval": "OC.$('pairsel').focus()", "as": "_"}, {"press": "Tab"}, {"eval": FOCUS, "as": "radio_before"},
+                         {"eval": "document.querySelector('#poslist label .r').textContent", "as": "pl_before"}, {"shot": "r2-focus-radio-before.png"},
+                         {"sleep": 2500}, {"eval": FOCUS, "as": "radio_after"}, {"eval": "document.querySelector('#poslist label .r').textContent", "as": "pl_after"},
+                         {"shot": "r2-focus-radio-after.png"},
+                         {"fill": ["#amt", "0.01"]}, {"waitFor": "OC.$('whole')"}, {"eval": "OC.$('whole').focus()", "as": "_"},
+                         {"eval": FOCUS, "as": "whole_before"}, {"sleep": 2500}, {"eval": FOCUS, "as": "whole_after"},
+                         {"shot": "r2-focus-close-all-after.png"}])
+    finally:
+        stop.set()
+        th.join(5)
+    assert got["radio_before"] == got["radio_after"] == ["INPUT", "pos", True]
+    assert got["pl_before"] != got["pl_after"]       # the row's profit or loss changed while the radio kept the focus
+    assert got["whole_before"] == got["whole_after"] == ["BUTTON", "whole", None]
+
+
+NAMES = ("Array.from(document.querySelectorAll('#poslist input')).map(r => [r.getAttribute('aria-labelledby'), r.getAttribute('aria-describedby')]"
+         ".map(ids => ids.split(' ').map(id => OC.$(id).textContent.trim()).join(' ')).join(' | '))")
+
+
+def test_page_each_close_radio_names_its_row_with_the_size_count_leverage_and_profit(tool):
+    # UX-POSLIST-ARIA-LABEL-HIDES-DETAIL
+    opened_long(tool, "0.02", 3)
+    tool.beat(1)
+    opened_long(tool, "0.02", 5)
+    tool.eng.account = None
+    got = tool.look([{"goto": "/new?what=close&pair=BTC/USD&dir=long"}, {"waitFor": "document.querySelector('#poslist input')"},
+                     {"eval": NAMES, "as": "names"}, {"eval": "document.querySelector('#poslist input').getAttribute('aria-label')", "as": "label"}])
+    name, = got["names"]
+    assert got["label"] is None
+    assert name.startswith("BTC/USD Long 0.0400 BTC | · 2 positions · average 4x · average entry 62,417.90 · oldest opened ")
+    assert "Rollover so far: 0.00 USD (estimate)" in name and name.endswith("USDprofit or loss now, at the mark (estimate)")
+    from order_chaser.sim import SimAccount
+    tool.eng.gw.account = SimAccount.from_json(tool.eng.gw.account.to_json())   # a restart: no price yet
+    tool.eng.account = None
+    got = tool.look([{"goto": "/new?what=close&pair=BTC/USD&dir=long"}, {"waitFor": "document.querySelector('#poslist input')"},
+                     {"eval": NAMES, "as": "names"}])
+    assert got["names"][0].endswith("no price yetprofit or loss shows when BTC/USD prices arrive")
+
+
+def test_page_the_close_list_shows_the_profit_when_the_first_price_of_a_pair_arrives(tool):
+    # POSLIST-MARK-NOT-REFRESHED: after a restart the pair has no price; its first book updates the open form.
+    opened_long(tool, "0.02", 3)
+    from order_chaser.sim import SimAccount
+    tool.eng.gw.account = SimAccount.from_json(tool.eng.gw.account.to_json())
+    tool.eng.account = None
+    pl = "document.querySelector('#poslist label .r').textContent"
+    got = tool.look([{"goto": "/new?what=close&pair=BTC/USD&dir=long"}, {"waitFor": "document.querySelector('#poslist input')"},
+                     {"eval": pl, "as": "before"}, {"shot": "r2-close-list-no-price.png"}])
+    assert got["before"].startswith("no price yet")
+    th = threading.Timer(2.0, tool.beat, (1,))      # the first book of BTC/USD after the restart, while the form is open
+    th.start()
+    got = tool.look([{"goto": "/new?what=close&pair=BTC/USD&dir=long"}, {"waitFor": "document.querySelector('#poslist input')"},
+                     {"eval": pl, "as": "before"}, {"waitFor": f"!{pl}.startsWith('no price yet')", "timeout": 8000}, {"eval": pl, "as": "after"},
+                     {"shot": "r2-close-list-first-price.png"}])
+    th.join()
+    assert got["before"].startswith("no price yet")
+    assert got["after"] == "+0.01 USDprofit or loss now, at the mark (estimate)"      # (62,418.20 - 62,417.90) x 0.02
+
+
+def test_page_a_close_that_closed_nothing_before_a_restart_says_not_closed_on_its_result(tool):
+    # BADGE-KILLED-CLOSE
+    opened_long(tool, "0.02", 3)
+    tool.beat(1)
+    cid = tool.start("close-long", "0.02")
+    tool.call(tool.eng.handle, core.Restarted(tool.clock.t + 30, tool.clock.t))
+    got = tool.look([{"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"}, {"text": "#out .badge", "as": "badge"},
+                     {"shot": "r2-killed-close-result.png"},
+                     {"goto": "/history"}, {"waitFor": "document.querySelectorAll('tr.click').length === 2"},
+                     {"eval": "document.querySelector('tr.click td:last-child .badge').textContent", "as": "history"}])
+    assert got["badge"] == got["history"] == "Not closed: position open"

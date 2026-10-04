@@ -1,5 +1,6 @@
 """Margin in the dry run: the core and the simulated exchange and account, with no network."""
 import random
+import time
 from dataclasses import replace
 from decimal import Decimal as D
 
@@ -71,6 +72,12 @@ def opened(qty="0.05", lev=3):
     r = Run().start("buy", qty, Margin(lev)).trade("sell", "62417.0", qty, T0 + 1)
     assert r.c.outcome == "filled"
     return r.gw.account
+
+
+def closing(acc, pair="BTC/USD", d="long"):
+    """The Margin of a close of the account's positions, as the server builds it at the start."""
+    parts = acc.parts(pair, d)
+    return Margin(core.average(parts)[2], True, parts)
 
 
 def sim_with(account):
@@ -203,7 +210,7 @@ def test_no_order_price_after_the_order_is_gone():
 def test_liquidation_ends_the_chase_and_cancels_its_order():
     acc = opened("0.05", 5)                         # 3,120.9 USD long at 5x: 624 USD collateral
     acc.cash = D("700")                             # a small account: the level is near 110%
-    r = Run(SimGateway(acc)).start("sell", "0.05", Margin(5, True, D("0.05"), D("62417.9")))
+    r = Run(SimGateway(acc)).start("sell", "0.05", closing(acc))
     r.book("52000.0", "52000.6", T0 + 10)           # the price falls 10,400: the level goes below 40%
     assert r.c.outcome == "liquidated"
     assert isinstance(r.sent[-1], core.Cancel) and not r.gw.orders["oc0123456789ab"]["open"]
@@ -214,7 +221,7 @@ def test_liquidation_ends_the_chase_and_cancels_its_order():
 def test_a_reduce_only_close_never_grows_or_flips_the_position():
     acc = opened("0.03")
     # A close of 0.05 against a 0.03 long (the form refuses it; the venue must hold too).
-    r = Run(SimGateway(acc)).start("sell", "0.05", Margin(3, True, D("0.03"), D("62417.9")))
+    r = Run(SimGateway(acc)).start("sell", "0.05", closing(acc))
     r.trade("buy", "62419.0", "1", T0 + 3)
     assert acc.positions == []                      # closed, and no short opened
     assert r.c.filled == D("0.03") and r.c.outcome == "nopos"
@@ -222,7 +229,8 @@ def test_a_reduce_only_close_never_grows_or_flips_the_position():
 
 
 def test_a_reduce_only_order_with_no_position_is_refused():
-    r = Run().start("sell", "0.01", Margin(3, True, D("0.01"), D("62417.9")))
+    gone = core.Part("oc1", T0, 3, D("62417.9"), D("0.01"), D("208.06"))     # read at the start, closed since
+    r = Run().start("sell", "0.01", Margin(3, True, (gone,)))
     assert r.c.outcome == "refused"
     assert "The simulated exchange rejected the order: EOrder:Reduce only:No position exists." in r.logs
 
@@ -275,14 +283,16 @@ def test_the_account_counts_fees_rollover_and_the_margin_level():
     assert acc.cash == D(5000) - cost * (core.MAKER_FEE + core.OPEN_FEE)
     acc.mark("BTC/USD", D("62417.8"), D("62418.0"), T0 + 2)          # mark = entry: no P/L
     eq = acc.equity(T0 + 2)
-    assert eq == acc.cash - cost * core.ROLLOVER                    # one started 4 h of rollover
+    assert eq == acc.cash                                           # no rollover before 4 h
     assert acc.level(T0 + 2) == eq / (cost / 5) * 100
-    assert acc.equity(T0 + 4 * 3600 + 2) == acc.cash - cost * core.ROLLOVER * 2
+    assert acc.equity(T0 + 1 + 4 * 3600 - 1) == acc.cash             # 1 s before 4 h after the open: none yet
+    assert acc.equity(T0 + 1 + 4 * 3600) == acc.cash - cost * core.ROLLOVER    # each full 4 h after the open
+    assert acc.equity(T0 + 1 + 8 * 3600) == acc.cash - cost * core.ROLLOVER * 2
 
 
 def test_a_close_reports_its_estimated_profit_less_the_close_fee():
     acc = opened("0.03")
-    r = Run(SimGateway(acc), bid="62500.0", ask="62500.6").start("sell", "0.03", Margin(3, True, D("0.03"), D("62417.9")))
+    r = Run(SimGateway(acc), bid="62500.0", ask="62500.6").start("sell", "0.03", closing(acc))
     r.trade("buy", "62501.0", "0.03", T0 + 3)       # sold at 62,500.6 as maker
     m = core.margin_summary(r.c)
     assert m["pl"] == (D("62500.6") - D("62417.9")) * D("0.03") - D("0.03") * D("62500.6") * core.MAKER_FEE
@@ -322,15 +332,129 @@ def test_a_close_takes_the_oldest_position_first_partly_if_needed():
     acc.fill(BTC, "buy", 2, False, D("0.01"), D("60000"), True, 0.0, "oc1")
     acc.fill(BTC, "buy", 5, False, D("0.02"), D("61000"), True, 10.0, "oc2")
     cash = acc.cash
-    assert acc.close_entry("BTC/USD", "long", D("0.015")) == (D("0.01") * 60000 + D("0.005") * 61000) / D("0.015")
-    assert acc.fill(BTC, "sell", 2, True, D("0.015"), D("62000"), True, 20.0) == D("0.015")
+    assert acc.fill(BTC, "sell", 2, True, D("0.015"), D("62000"), True, 4 * 3600.0) == D("0.015")
     # The 2x position (the oldest) closes whole; the 5x position closes 0.005 of its 0.02.
     assert [(p["qty"], p["entry"], p["leverage"], p["margin"]) for p in acc.positions] == [
         (D("0.015"), D("61000"), 5, D("0.015") * 61000 / 5)]
     pl = D("0.01") * 2000 + D("0.005") * 1000
     fee = D("0.015") * 62000 * core.MAKER_FEE
-    roll = D("0.01") * 60000 * core.ROLLOVER + D("0.005") * 61000 * core.ROLLOVER
+    roll = D("0.01") * 60000 * core.ROLLOVER        # 4 h after the first open; the second: 10 s short of 4 h
     assert acc.cash - cash == pl - fee - roll
+
+
+# ---------- the close plan (repair round 2): every number of a close follows the FIFO plan ----------
+
+H = 3600.0
+hm = lambda t: time.strftime("%H:%M", time.localtime(t))
+
+
+def account_with(*opens, d="long"):
+    """A simulated account with these positions, oldest first: (qty, entry, leverage, opened)."""
+    acc = SimAccount()
+    for k, (qty, entry, lev, at) in enumerate(opens):
+        acc.fill(BTC, "buy" if d == "long" else "sell", lev, False, D(qty), D(entry), True, at, f"oc{k}")
+    return acc
+
+
+def cents(a, b):
+    return abs(D(a) - D(b)) < D("0.005")
+
+
+def test_a_part_fill_of_a_close_prices_its_profit_against_the_oldest_position():
+    # CLOSE-PL-PARTIAL-FIFO: a close of 0.2 over entries 60,000 then 50,000 fills 0.1 at 55,000.
+    acc = account_with(("0.1", "60000", 2, T0 - 60), ("0.1", "50000", 2, T0 - 30))
+    cash = acc.cash
+    r = Run(SimGateway(acc), bid="54999.4", ask="55000.0").start("sell", "0.2", closing(acc))
+    r.trade("buy", "55001", "0.1", T0 + 2).ev(UserStop(T0 + 3))
+    e = core.margin_summary(r.c)
+    assert e["pl"] == D("-522.000")                  # (55,000 - 60,000) x 0.1 - 22.00 maker fee
+    assert acc.cash - cash == e["pl"] - e["rollover"] == D("-522.000")
+    assert (e["takes"], e["stays"]) == (f"the 2x position opened {hm(T0 - 60)} (0.1000 BTC)", "0.1000 BTC at 2x")
+
+
+def test_the_rest_of_a_close_keeps_the_leverage_of_each_position_that_stays():
+    # UX-CLOSE-REMAINDER-WRONG-LEVERAGE: close 0.015 of [0.01 at 2x, 0.02 at 4x]: one 4x position stays.
+    acc = account_with(("0.01", "60000", 2, T0 - 60), ("0.02", "61000", 4, T0 - 30))
+    r = Run(SimGateway(acc)).start("sell", "0.015", closing(acc))
+    r.trade("buy", "62419.0", "0.015", T0 + 2)
+    e = core.margin_summary(r.c)
+    assert r.c.outcome == "filled" and [(p.qty, p.leverage) for p in acc.parts("BTC/USD", "long")] == [(D("0.015"), 4)]
+    assert e["stays"] == "0.0150 BTC at 4x" and e["rest"] == D("0.015")
+    assert r.logs[-1] == "Filled 0.0150 BTC at 62,418.50 (maker). Order complete. Stays open: 0.0150 BTC at 4x."
+
+
+def test_the_level_after_a_close_releases_the_collateral_of_each_part_it_takes():
+    # UX-CLOSE-AFTER-LEVEL-NOT-FIFO: the oldest position has the higher leverage, so FIFO releases less collateral
+    # than a pro-rata close at the average leverage: the level after is lower (the risky direction).
+    acc = account_with(("0.01", "60000", 5, T0 - 60), ("0.02", "60000", 2, T0 - 30))
+    mark, now = D("60000"), T0
+    acc.marks["BTC/USD"] = (mark, now)
+    after = core.close_preview(acc.parts("BTC/USD", "long"), D("0.015"), acc.equity(now), acc.used(), mark)
+    pro_rata = acc.equity(now) / (acc.used() * (1 - D("0.015") / D("0.03"))) * 100
+    acc.fill(BTC, "sell", 2, True, D("0.015"), mark, True, now)     # the close fills at the mark as maker
+    # FIFO releases 120 + 150 of 720 USD of collateral; pro rata would release 360.
+    assert cents(after, acc.level(now)) and round(after, 2) == D("1108.51")       # 4,988.30 / 450
+    assert round(pro_rata, 2) == D("1386.64")                                     # 4,991.90 / 360: too high
+
+
+def test_the_close_names_the_positions_it_takes_and_what_stays_with_the_true_average_entry():
+    # UX-CLOSE-WHICH-POSITION-UNSAID: the start line and the log say which positions the close takes.
+    acc = account_with(("0.01", "60000", 2, T0 - 60), ("0.02", "61000", 4, T0 - 30))
+    r = Run(SimGateway(acc)).start("sell", "0.015", closing(acc))
+    assert r.logs[0] == (f"Read the positions: 0.0300 BTC in 2 positions · average 3x · average entry 60,666.67. The close takes "
+                         f"the oldest first: the 2x position opened {hm(T0 - 60)} (0.0100 BTC) and 0.0050 BTC of the 4x position "
+                         f"opened {hm(T0 - 30)}. Stays open: 0.0150 BTC at 4x.")
+    assert core.margin_summary(r.c)["plan"] == f"the 2x position opened {hm(T0 - 60)} (0.0100 BTC) and 0.0050 BTC of the 4x position opened {hm(T0 - 30)}"
+
+
+def agreement(before: SimAccount, acc: SimAccount, c, d, price, t_end) -> None:
+    """The page numbers of a close (core.margin_summary, core.close_preview, core.plan_words) and the account agree
+    to the cent: the P/L less the rollover is the cash change; what stays is the account's positions; the level
+    that the form predicts (at a mark of the fill price) is the account's level."""
+    e = core.margin_summary(c)
+    assert cents(acc.cash - before.cash, e["pl"] - e["rollover"]), (acc.cash - before.cash, e["pl"], e["rollover"])
+    _, stays = core.close_plan(before.parts("BTC/USD", d), c.filled)
+    now = acc.parts("BTC/USD", d)
+    assert [(p.id, p.leverage, p.entry) for p in stays] == [(p.id, p.leverage, p.entry) for p in now]
+    assert all(cents(a.qty * 10**8, b.qty * 10**8) and cents(a.margin, b.margin) for a, b in zip(stays, now))
+    assert e["stays"] == (core.plan_words(now, D(0), BTC, c.started)["stays"] if now else "")
+    if c.filled:
+        before.marks["BTC/USD"] = acc.marks["BTC/USD"] = (price, t_end)
+        after = core.close_preview(before.parts("BTC/USD", d), c.filled, before.equity(t_end), before.used(), price)
+        assert (after is None and acc.level(t_end) is None) or cents(after, acc.level(t_end)), (after, acc.level(t_end))
+
+
+CASES = {   # positions (qty, entry, leverage, opened), the close, and how it fills
+    "part fill over 2 positions": ([("0.01", "60000", 2, T0 - 5 * H), ("0.02", "61000", 4, T0 - 60)], "long", "0.02", "part"),
+    "full fill": ([("0.01", "60000", 2, T0 - 9 * H), ("0.02", "61000", 4, T0 - 60)], "long", "0.03", "full"),
+    "fill after a replace": ([("0.01", "60000", 5, T0 - 5 * H), ("0.02", "61000", 2, T0 - 60), ("0.03", "59000", 3, T0 - 30)],
+                             "long", "0.05", "replace"),
+    "short, part fill": ([("0.02", "63000", 3, T0 - 13 * H), ("0.01", "64000", 5, T0 - 60)], "short", "0.025", "part"),
+}
+
+
+def run_case(opens, d, qty, how):
+    acc = account_with(*opens, d=d)
+    before = SimAccount.from_json(acc.to_json())
+    gw = SimGateway(acc)
+    gw.refuse_margin_amends = how == "replace"
+    r = Run(gw).start("sell" if d == "long" else "buy", qty, closing(acc, d=d))
+    if how == "replace":                             # the ask falls: the amend is refused, the new leg fills
+        r.book("62300.0", "62300.6", T0 + 6)
+        assert len(r.c.legs) == 2 and r.c.price == D("62417.9")     # the new leg rests at the floor
+    price = r.c.price
+    fill = D(qty) if how != "part" else D(qty) * 3 / 4
+    r.trade("buy" if d == "long" else "sell", price + (1 if d == "long" else -1), fill, T0 + 8)
+    if how == "part":
+        r.ev(UserStop(T0 + 9))
+    return before, acc, r, price
+
+
+def test_close_plan_numbers_and_the_account_agree_to_the_cent():
+    for name, (opens, d, qty, how) in CASES.items():
+        before, acc, r, price = run_case(opens, d, qty, how)
+        assert r.c.filled == (D(qty) if how != "part" else D(qty) * 3 / 4), name
+        agreement(before, acc, r.c, d, price, T0 + 8)
 
 
 def test_rollover_runs_from_the_open_of_each_position():
@@ -339,7 +463,9 @@ def test_rollover_runs_from_the_open_of_each_position():
     acc.fill(BTC, "buy", 2, False, D("0.01"), D("60000"), True, 0.0, "oc1")
     acc.fill(BTC, "buy", 2, False, D("1"), D("60000"), True, 4 * 3600 * 5 + 1, "oc2")
     roll = acc.read(4 * 3600 * 5 + 2)["positions"][0]["rollover"]
-    assert roll == D("31.80")            # 0.01 BTC: 6 started 4 h (1.80); 1 BTC: 1 started 4 h (30.00)
+    assert roll == D("1.50")             # 0.01 BTC: 5 full 4 h (1.50); 1 BTC: open 1 s, no full 4 h (0)
+    roll = acc.read(4 * 3600 * 6 + 1)["positions"][0]["rollover"]
+    assert roll == D("31.80")            # 0.01 BTC: 6 full 4 h (1.80); 1 BTC: 1 full 4 h (30.00)
 
 
 def test_each_pair_has_its_own_mark_with_its_time_and_no_price_after_a_restart():
@@ -428,8 +554,7 @@ def probe(seed: int) -> dict:
     if close:   # close all or part of the positions, or more (the venue must cut it)
         side = "sell" if d == "long" else "buy"
         qty = rnd.choice([pos0, D("5"), D("9"), pos0 + 1])
-        g = acc.position("X/USD", d)
-        margin = Margin(g["leverage"], True, pos0, acc.close_entry("X/USD", d, qty))
+        margin = closing(acc, "X/USD", d)
     else:
         side, qty, margin = "buy" if d == "long" else "sell", D(rnd.choice(["1", "5", "20"])), Margin(lev)
     limit = rnd.choice([None, bid + D("3") if side == "buy" else bid - D("3")])    # a limit away from the start price
@@ -490,9 +615,8 @@ def probe(seed: int) -> dict:
     gaps = [round(b - a, 6) for a, b in zip(legs_at, legs_at[1:])]
     assert all(g >= core.AMEND_EVERY for g in gaps), (seed, gaps)                  # new legs: at most one each 5 s
     stats["legs_min_gap"] = min(gaps) if gaps else None
-    if not stats["liquidated"]:
-        mixed_checks(seed, acc, before, cash0, c, d, close)
-    return {**stats, "outcome": c.outcome, "close": close, "refuse": gw.refuse_margin_amends, "positions": len(before)}
+    agreed = not stats["liquidated"] and mixed_checks(seed, acc, before, cash0, c, d, close)
+    return {**stats, "agreed": agreed, "part": close and 0 < c.filled < c.qty, "outcome": c.outcome, "close": close, "refuse": gw.refuse_margin_amends, "positions": len(before)}
 
 
 def mixed_checks(seed, acc, before, cash0, c, d, close):
@@ -508,7 +632,7 @@ def mixed_checks(seed, acc, before, cash0, c, d, close):
                 if take == 0:
                     continue
                 sign = 1 if d == "long" else -1
-                roll = take * p["entry"] * core.ROLLOVER * core.rollover_periods(f.t - p["opened"])
+                roll = core.rollover(take, p["entry"], f.t - p["opened"])
                 expect += sign * (f.price - p["entry"]) * take - take * f.price * (core.MAKER_FEE if f.maker else core.TAKER_FEE) - roll
                 p["margin"] -= p["margin"] * take / p["qty"]
                 p["qty"] -= take
@@ -517,18 +641,30 @@ def mixed_checks(seed, acc, before, cash0, c, d, close):
         assert [(p["qty"], p["entry"], p["leverage"], p["opened"]) for p in acc.positions] == \
             [(p["qty"], p["entry"], p["leverage"], p["opened"]) for p in left], seed     # FIFO, partly if needed
         assert abs(acc.cash - cash0 - expect) < D("1e-12"), (seed, acc.cash - cash0, expect)   # rollover of each part
+        # The pages' numbers (the close plan of what filled) agree with the account to the cent.
+        e = core.margin_summary(c)
+        assert cents(acc.cash - cash0, e["pl"] - e["rollover"]), (seed, acc.cash - cash0, e["pl"], e["rollover"])
+        takes, stays = core.close_plan(c.margin.positions, c.filled)
+        now = acc.parts("X/USD", d)
+        assert [(p.id, p.leverage) for p in stays] == [(p.id, p.leverage) for p in now], seed
+        assert all(abs(a.qty - b.qty) < D("1e-12") and cents(a.margin, b.margin) for a, b in zip(stays, now)), seed
+        assert cents(sum((p["margin"] for p in before), D(0)) - acc.used(), sum((p.margin for p in takes), D(0))), seed
+        assert e["stays"] == (core.plan_words(now, D(0), c.pair, c.started)["stays"] if now else ""), seed
+        return True
     else:
         old = [(p["qty"], p["entry"], p["leverage"], p["opened"]) for p in acc.positions if p["ref"] != c.id]
         assert old == [(p["qty"], p["entry"], p["leverage"], p["opened"]) for p in before], seed
         new = [p for p in acc.positions if p["ref"] == c.id]
         assert (sum((p["qty"] for p in new), D(0)), [p["leverage"] for p in new]) == (
             c.filled, [c.margin.leverage] if c.filled else []), seed
+        return False
 
 
 def probe_counts(n: int, first: int = 0) -> dict:
     counts: dict = {"runs": 0, "new_legs": 0, "runs_with_replace": 0, "would_cross_refusals": 0, "runs_with_would_cross": 0,
                     "legs_min_gap_s": None, "rate_max": 0.0, "id_max": 0, "close_runs_over_2_or_more_positions": 0,
-                    "open_runs_beside_other_positions": 0, "liquidated_runs": 0, "outcomes": {}}
+                    "open_runs_beside_other_positions": 0, "liquidated_runs": 0, "close_runs_pages_agree_with_the_account": 0,
+                    "of_which_part_closes": 0, "outcomes": {}}
     for seed in range(first, first + n):
         r = probe(seed)
         counts["runs"] += 1
@@ -543,6 +679,8 @@ def probe_counts(n: int, first: int = 0) -> dict:
         counts["close_runs_over_2_or_more_positions"] += r["close"] and r["positions"] >= 2
         counts["open_runs_beside_other_positions"] += not r["close"] and r["positions"] >= 1
         counts["liquidated_runs"] += r["liquidated"]
+        counts["close_runs_pages_agree_with_the_account"] += r["agreed"]
+        counts["of_which_part_closes"] += r["agreed"] and r["part"]
         key = ("close " if r["close"] else "open ") + r["outcome"]
         counts["outcomes"][key] = counts["outcomes"].get(key, 0) + 1
     return counts
@@ -553,6 +691,7 @@ def test_random_margin_runs_keep_every_rule():
     assert counts["runs"] == 400 and counts["runs_with_replace"] > 20 and counts["runs_with_would_cross"] > 10
     assert counts["close_runs_over_2_or_more_positions"] > 50 and counts["open_runs_beside_other_positions"] > 50
     assert any(k.endswith("liquidated") for k in counts["outcomes"])
+    assert counts["close_runs_pages_agree_with_the_account"] > 100 and counts["of_which_part_closes"] > 20
 
 
 if __name__ == "__main__":   # uv run python tests/test_margin.py 5000: the counts of a larger probe

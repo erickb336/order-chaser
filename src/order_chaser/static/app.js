@@ -50,15 +50,23 @@ function gauge(now, after, call, stop, afterWord) {
 // of it, and after a restart a pair has no price until the tool watches it again. '' when every price is live.
 function markNote(a, watched) {
   const rows = a ? a.positions.filter(p => p.pair !== watched) : [];
-  return rows.length ? 'The level uses ' + rows.map(p => p.mark == null ? `no price yet for ${esc(p.pair)} (its profit or loss counts as 0)`
-    : `${esc(p.pair)} at the last price seen, ${clock(p.mark_at)}`).join('; ') + '.' : '';
+  return rows.map(p => p.mark == null ? `No price yet for ${esc(p.pair)}. The level counts its profit or loss as 0.`
+    : `The level uses ${esc(p.pair)} at the last price seen, ${clock(p.mark_at)}.`).join(' ');
 }
 
 // After a margin chase: is a position of this chase still open, and the link to close it.
+// A close: what stays comes from its close plan (c.margin_est, the core's FIFO plan of what filled).
 const positionOpen = c => !['liquidated', 'nopos'].includes(c.outcome) &&
-  (c.margin.close ? Number(c.margin.pos_qty) - Number(c.filled) > 0 : Number(c.filled) > 0);
+  (c.margin.close ? Number(c.margin_est.rest) > 0 : Number(c.filled) > 0);
 const closeLink = c => `/new?what=close&pair=${encodeURIComponent(c.pair.symbol)}&dir=${c.dir}`;
-const closeText = c => c.margin.close ? `Close the rest (${qty(Number(c.margin.pos_qty) - Number(c.filled))} ${c.pair.base}), new ${c.side === 'buy' ? 'cap' : 'floor'}` : 'Close this position';
+const closeText = c => c.margin.close ? `Close the rest (${qty(c.margin_est.rest)} ${c.pair.base}), new ${c.side === 'buy' ? 'cap' : 'floor'}` : 'Close this position';
+// A close in plain words, from its close plan: which positions it takes and what stays.
+// Before a fill: the plan for the whole close. Then: what the fills took so far, or at the end.
+function planLine(c) {
+  const e = c.margin_est, f = Number(c.filled);
+  if (!f) return c.phase === 'done' ? `Closed nothing. The plan was: ${e.plan}.` : `Closes, oldest first: ${e.plan}.`;
+  return `${c.phase === 'done' ? 'Closed' : 'Closed so far'}: ${e.takes}. ${e.stays ? `Stays open: ${e.stays}.` : `Nothing stays open: the ${c.dir} is closed.`}`;
+}
 
 // ---------- Server calls ----------
 async function post(url, body) {
@@ -156,8 +164,7 @@ function positionLine(c) {
   if (!c.margin) return '';
   const B = c.pair.base, f = Number(c.filled);
   if (!c.margin.close) return f > 0 ? ` That part is an open ${c.margin.leverage}x ${c.dir} position now${c.mode === 'live' ? '' : ' (simulated)'}.` : ' Nothing filled, so no position opened.';
-  const rest = Number(c.margin.pos_qty) - f;
-  return rest > 0 ? ` ${qty(rest)} ${B} of the ${c.dir} stays open.` : ` The ${c.dir} position is closed.`;
+  return c.margin_est.stays ? ` Stays open: ${c.margin_est.stays}.` : ` The ${c.dir} position is closed.`;
 }
 
 function copy(st, c, snap, ageOff) {
@@ -215,13 +222,13 @@ function copy(st, c, snap, ageOff) {
       if (w.m) {
         const how = taker > 0 ? `${qty(s.maker_qty)} as maker and ${qty(taker)} as taker (IOC)` : 'as maker';
         if (w.close) {
-          const left = Number(w.m.pos_qty) - filled;
+          const left = Number(c.margin_est.rest);
           t.title = left > 0 ? `Closed ${qty(filled)} ${B} of the ${w.dir}` : 'Position closed';
           t.sub = `All ${qty(c.qty)} ${B} of the close filled ${how}, at an average of ${p(s.avg)}.` + positionLine(c) + ' (Simulated.)';
         } else {
           t.title = 'Position opened';
           t.sub = `All ${qty(c.qty)} ${B} filled ${how}, at an average of ${p(s.avg)}. Your ${w.lev}x ${w.dir} position is open (simulated). It stays open until you close it.`;
-          t.todo = [`Rollover: up to ${usd(c.margin_est.rollover_4h)} ${c.pair.quote} for each started 4 h while the position is open (estimate at the 0.05% maximum).`, 'To close it, use "Close this position".'];
+          t.todo = [`Rollover: up to ${usd(c.margin_est.rollover_4h)} ${c.pair.quote} for each 4 h that the position is open (estimate at the 0.05% maximum).`, 'To close it, use "Close this position".'];
         }
         break;
       }
@@ -433,5 +440,5 @@ function eventLog(c) {
   return `<ul class="log">${c.events.slice().reverse().map(e => `<li><span class="ts">${mmss(e.t)}</span><span class="${kind[e.kind] || ''}">${esc(e.text)}</span></li>`).join('')}</ul>`;
 }
 
-return { markNote, clock, positionOpen, closeLink, closeText, gauge, orderName, positionLine, MARGIN_FEES, REPLACE_COST, TOKEN, $, esc, beyond, pct, fillWord, againText, restBelowMin, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
+return { planLine, markNote, clock, positionOpen, closeLink, closeText, gauge, orderName, positionLine, MARGIN_FEES, REPLACE_COST, TOKEN, $, esc, beyond, pct, fillWord, againText, restBelowMin, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
 })();
