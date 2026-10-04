@@ -88,8 +88,7 @@ class PublicFeed:
                     if self.pair:
                         self.book = OrderBook(self.pair.price_decimals, self.pair.qty_decimals)
                         await self._subscribe()
-                    self.attempt = 0
-                    self.on_link(True, 0, 0)
+                    self.on_link(True, self.attempt, 0)
                     try:
                         while True:   # no message (heartbeats count) for STALE_AFTER s: the feed is lost
                             raw = await asyncio.wait_for(ws.recv(), core.STALE_AFTER)
@@ -110,6 +109,10 @@ class PublicFeed:
         return wait
 
     async def _handle(self, m: dict) -> None:
+        if m.get("method") == "subscribe" and m.get("success") is False:
+            # Kraken refused a subscription (for example "Exceeded msg rate"): the pair gets no book on this
+            # link, and heartbeats would keep it "up". The run loop counts the feed as lost and reconnects.
+            raise ConnectionError(f"Kraken refused the subscription: {m.get('error')}")
         ch = m.get("channel")
         if ch == "book" and self.pair and self.book is not None:
             data = m["data"][0]
@@ -118,6 +121,8 @@ class PublicFeed:
                 return
             ok = self.book.apply(data, snapshot)
             self.resync = not ok
+            if ok:
+                self.attempt = 0   # a valid book ends the backoff, not the connection alone
             self.on_book(self.book, ok)
             if not ok:
                 # Stale book: drop it and ask for a new snapshot. Updates are ignored until it comes.

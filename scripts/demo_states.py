@@ -49,7 +49,9 @@ def trade(side, price, qty):
     return {"channel": "trade", "type": "update", "data": [{"symbol": "BTC/USD", "side": side, "price": D(price), "qty": D(qty)}]}
 
 
-async def drive(eng):
+async def drive(eng, speed: float = 1.0):
+    """speed > 1 runs the demo faster; the tests use it with a clock that runs as fast."""
+    wait = lambda s: asyncio.sleep(s / speed)
     f = feed.PublicFeed(eng.on_book, eng.on_trade, eng.on_link)
     f.ws = FakeWs()
     eng.feed, eng.pairs = f, PAIRS
@@ -57,39 +59,48 @@ async def drive(eng):
     eng.on_link(True, 0, 0)
     kb = FakeBook()
     say = lambda m: print(m, flush=True)
-    await f._handle(kb.msg("snapshot", [("62417.9", "1.0"), ("62417.0", "2.0")], [("62418.5", "0.01"), ("62419.5", "3.0")]))
-    await asyncio.sleep(8)                     # time to open the page
+    link_up = [True]
 
-    eng.latency = 3
+    async def heartbeat():   # Kraken sends one each second while the link is up; it keeps the book valid
+        while True:
+            if link_up[0]:
+                await f._handle({"channel": "heartbeat"})
+            await wait(1)
+    beats = asyncio.create_task(heartbeat())  # noqa: F841  (runs until the demo ends)
+
+    await f._handle(kb.msg("snapshot", [("62417.9", "1.0"), ("62417.0", "2.0")], [("62418.5", "0.01"), ("62419.5", "3.0")]))
+    await wait(8)                              # time to open the page
+
+    eng.latency = 3 / speed
     say("start"); eng.start("BTC/USD", "buy", D("0.05"), None, 120)        # placing (3 s), then resting
-    await asyncio.sleep(8)
+    await wait(8)
     say("amend"); await f._handle(kb.msg("update", [("62418.1", "0.4")], []))  # amending (3 s)
-    await asyncio.sleep(5)
+    await wait(5)
     say("fill"); await f._handle(trade("sell", "62418.0", "0.018"))            # partial fill
-    await asyncio.sleep(5)
+    await wait(5)
     say("reject")
     await f._handle(kb.msg("update", [("62418.3", "0.2")], []))               # amend to 62418.3 goes out...
-    await asyncio.sleep(0.5)
+    await wait(0.5)
     await f._handle(kb.msg("update", [("62418.3", "0")], [("62418.3", "0.05")]))  # ...a seller takes that bid, the ask falls to it: rejected
-    await asyncio.sleep(9)
-    say("disconnect"); eng.on_link(False, 3, 4)                                # disconnected
-    await asyncio.sleep(7)
-    say("reconnect"); eng.on_link(True, 0, 0)
+    await wait(9)
+    say("disconnect"); link_up[0] = False; eng.on_link(False, 3, 4)           # disconnected
+    await wait(7)
+    say("reconnect"); link_up[0] = True; eng.on_link(True, 0, 0)
     await f._handle(kb.msg("snapshot", [("62418.1", "1.0")], [("62418.4", "0.01"), ("62431.0", "3.0")]))
-    await asyncio.sleep(7)
-    eng.latency = 2.5
+    await wait(7)
+    eng.latency = 2.5 / speed
     say("fallback"); eng.user("fillnow")                                       # cancel, re-read, IOC: about 8 s
-    await asyncio.sleep(12)
+    await wait(12)
 
-    eng.latency = 0.15
+    eng.latency = 0.15 / speed
     eng.rates["BTC/USD"] = (60.0, eng.clock())                                  # second chase: counter near the maximum
     await f._handle(kb.msg("snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")]))
     say("start 2"); eng.start("BTC/USD", "buy", D("0.05"), None, 60)            # rate limit near
-    await asyncio.sleep(8)
+    await wait(8)
     say("fill 2"); await f._handle(trade("sell", "62417.0", "0.04996"))        # the rest, 0.00004, is below ordermin
-    await asyncio.sleep(4)
-    say("fill now 2"); eng.user("fillnow")                                     # rest below the minimum
-    await asyncio.sleep(600)
+    await wait(4)
+    say("fill now 2"); eng.user("fillnow")                                     # rest below the minimum (the heartbeats keep the book valid)
+    await wait(600)
 
 
 async def main(data_dir: Path):

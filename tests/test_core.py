@@ -612,20 +612,39 @@ def test_sim_a_sell_print_takes_bid_liquidity_so_the_ask_side_never_fills_it_aga
     assert gw.on_book([], [(D("99.9"), D("0.2")), (D("100.1"), D("1"))], T0 + 3) == []
 
 
-def test_recorded_kraken_feed_a_sell_print_lowers_the_bid_at_its_price_not_an_ask():
-    # From tests/fixtures/kraken-btcusd.jsonl (line 142, 143): two sell prints at 85311.5 of 0.0173111 and
-    # 0.00043957; the bid at 85311.5 falls 0.01775067 -> 0.00043957 -> 0. The only ask at 85311.5 comes later
-    # (line 152), with another size: new liquidity of a seller, not the printed quantity again.
+def replay_recorded_feed(price, qty):
+    """Replay tests/fixtures/kraken-btcusd.jsonl (public Kraken BTC/USD) through the dry-run gateway, with a
+    resting buy placed after the snapshot. Return the fills as (line index, qty, price, maker)."""
     import json
     from pathlib import Path
-    lines = [json.loads(x) for x in (Path(__file__).parent / "fixtures" / "kraken-btcusd.jsonl").open()]
-    prints = [t for t in lines[141]["data"]]
-    assert [(t["side"], t["price"], t["qty"]) for t in prints] == [("sell", 85311.5, 0.0173111), ("sell", 85311.5, 0.00043957)]
-    after = [m["data"][0] for m in lines[142:144]]
-    assert [[b for b in d["bids"] if b["price"] == 85311.5] for d in after] == [
-        [{"price": 85311.5, "qty": 0.00043957}], [{"price": 85311.5, "qty": 0.0}]]
-    assert [(i, a["qty"]) for i, m in enumerate(lines) if m["channel"] == "book"
-            for a in m["data"][0].get("asks", []) if a["price"] == 85311.5] == [(151, 0.11364277), (157, 0.0)]
+
+    from order_chaser.book import OrderBook
+    gw, book, fills = SimGateway(), OrderBook(1, 8), []
+    for i, raw in enumerate((Path(__file__).parent / "fixtures" / "kraken-btcusd.jsonl").open()):
+        m = json.loads(raw, parse_float=D)
+        if m["channel"] == "book":
+            assert book.apply(m["data"][0], m["type"] == "snapshot")
+            if i == 0:
+                assert gw.send(core.Place("oc-1", "buy", D(price), D(qty)), 0) == [core.Placed(0)]
+            got = gw.on_book(book.top_bids(), book.top_asks(), i)
+        elif m["channel"] == "trade":
+            got = [f for t in m["data"] for f in gw.on_trade(t["side"], D(str(t["price"])), D(str(t["qty"])), i)]
+        else:
+            got = []
+        fills += [(i, str(f.qty), str(f.price), f.maker) for f in got]
+    return fills
+
+
+def test_recorded_kraken_feed_a_sell_print_at_the_order_price_does_not_fill_it():
+    # Lines 132 and 141 of the recording print sells at 85311.5: at the price of the buy, not through it, so
+    # they lower the bid and fill nothing. The order fills only when the ask comes down to it (line 146).
+    assert replay_recorded_feed("85311.5", "0.05") == [(146, "0.05", "85311.5", True)]
+
+
+def test_recorded_kraken_feed_fills_a_buy_above_the_bid_level_by_level_up_to_its_amount():
+    assert replay_recorded_feed("85311.6", "1") == [
+        (90, "0.18295300", "85311.6", True), (94, "0.12228273", "85311.6", True), (98, "0.11364277", "85311.6", True),
+        (103, "0.03722318", "85311.6", True), (104, "0.12556389", "85311.6", True), (107, "0.41833443", "85311.6", True)]
 
 
 def test_one_name_for_the_dry_run_venue_in_every_page_and_log():
@@ -634,5 +653,4 @@ def test_one_name_for_the_dry_run_venue_in_every_page_and_log():
     src = Path(core.__file__).parent
     files = [*sorted((src / "static").glob("*.*")), src / "core.py", src / "server.py"]
     assert [f.name for f in files if "the simulation" in f.read_text()] == []
-    assert core.SIM_VENUE == "the simulated exchange"
     assert [f.name for f in files if "simulated exchange" in f.read_text()] == ["app.js", "chase.html", "result.html", "core.py"]

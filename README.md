@@ -12,13 +12,14 @@ You need [uv](https://docs.astral.sh/uv/). uv installs Python 3.12 and the pinne
 uv run order-chaser
 ```
 
-Then open <http://127.0.0.1:5180>. The server listens on 127.0.0.1:5180 only.
+Then open <http://127.0.0.1:5180>. The server listens on 127.0.0.1 only.
 
 Options:
 
 | Option | What it does |
 | --- | --- |
 | `--data-dir PATH` | Folder for the SQLite file. Default: `~/Library/Application Support/order-chaser`. The variable `ORDER_CHASER_DATA` does the same. The tool makes a missing folder with mode 0700. It never changes an existing folder, and warns if others can read it. |
+| `--port N` | The port on 127.0.0.1. Default: 5180. |
 | `--rate-start N` | Demo only: the estimated rate counter at start, to show the "rate limit near" state (for example 60). |
 
 ## Run the tests
@@ -29,7 +30,7 @@ uv run pytest -q
 
 To see the rare chase states (amend rejected, disconnected, fallback, rest below the minimum, rate limit near) without waiting for the market, run `uv run python scripts/demo_states.py /tmp/oc-demo` and open <http://127.0.0.1:5180/chase>. It drives the real app with a fake feed and sample prices.
 
-The page tests (`tests/test_pages.py`) drive the real pages in Google Chrome on 127.0.0.1:5180 with a fake feed. They need node and a one-time `npm install` in `tests/pages` (playwright-core, pinned; it downloads no browser). Without them, they skip. Set `OC_SHOTS=/some/folder` to keep their screenshots.
+The page tests (`tests/test_pages.py`) drive the real pages in Google Chrome with a fake feed. Each test starts the app on a free port, so the tests also run while the tool runs on 5180. They need node and a one-time `npm install` in `tests/pages` (playwright-core, pinned; it downloads no browser). Without them, they skip. Set `OC_SHOTS=/some/folder` to keep their screenshots.
 
 The tests need no network. A recorded sample of the public Kraken feed (`tests/fixtures/kraken-btcusd.jsonl`) checks the book checksum. A fake feed drives one dry run end to end.
 
@@ -57,7 +58,8 @@ Dry-run rules:
 
 Safety:
 
-- The server refuses a request whose Host is not `127.0.0.1:5180` or `localhost:5180`.
+- The server refuses a request whose Host is not `127.0.0.1:<port>` or `localhost:<port>`.
+- The tool changes the watched pair at most once each second. A faster change gets 429, so that Kraken does not refuse the subscriptions. If Kraken refuses a subscription, the tool counts the feed as lost and connects again.
 - No page shows inside a frame of another site (`X-Frame-Options: DENY`, CSP `frame-ancestors 'none'`).
 - A request that changes state needs the tool's own Origin and a session token. Only the pages that the server sends get the token.
 - If the tool stops during a chase, the chase ends at the next start. The tool does not continue it.

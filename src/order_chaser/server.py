@@ -28,8 +28,7 @@ from .db import DEFAULT_DIR, Db, lock_folder
 from .sim import SimGateway
 
 HOST, PORT = "127.0.0.1", 5180
-ALLOWED_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
-ALLOWED_ORIGINS = {f"http://{h}" for h in ALLOWED_HOSTS}
+WATCH_EVERY = 1.0   # s: at most one pair change each second, so that Kraken does not refuse the subscriptions
 STATIC = Path(__file__).parent / "static"
 PAGES = ("new", "chase", "result", "history", "setup")
 MODE = "dry"   # T2 has only dry runs. No code path sends a private request to Kraken.
@@ -169,7 +168,8 @@ class Engine:
     def _apply(self, c: core.Chase, cmds: list) -> None:
         self.chase = c
         now = self.clock()
-        key = core.to_json(dataclasses.replace(c, bid=None, ask=None, rate=0.0, rate_at=0.0, book_ok=True))
+        # Leave out what each book message changes: a book message alone does not write the chase.
+        key = core.to_json(dataclasses.replace(c, bid=None, ask=None, book_at=None, rate=0.0, rate_at=0.0, book_ok=True))
         if key != self.saved_key:
             self.db.save(c, MODE, now)
             self.saved_key = key
@@ -208,6 +208,7 @@ class Engine:
         d["mode"] = mode
         d["filled"] = str(c.filled)
         d["remainder"] = str(c.qty - c.filled)
+        d["rest_below_min"] = c.rest_below_min
         d["worst"] = str(core.worst_case(c.side, c.qty, c.limit))
         if c.phase != "done":
             d["rate"] = max(0.0, c.rate - (self.clock() - c.rate_at))
@@ -235,18 +236,20 @@ class Guard:
     """Refuse a foreign Host, and a state-changing request (any method but GET and HEAD, and any WebSocket)
     without our Origin and session token. Every HTTP response forbids framing."""
 
-    def __init__(self, app, token: str) -> None:
+    def __init__(self, app, token: str, port: int = PORT) -> None:
         self.app, self.token = app, token
+        self.hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        self.origins = {f"http://{h}" for h in self.hosts}
 
     def refusal(self, scope) -> str | None:
         if scope["type"] not in ("http", "websocket"):
             return "Refused: unknown connection type."
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
         token = next((v for k, v in scope["headers"] if k.lower() == b"x-session-token"), b"")
-        if headers.get("host") not in ALLOWED_HOSTS:
+        if headers.get("host") not in self.hosts:
             return "Refused: unknown Host."
         if scope["type"] == "websocket" or scope["method"] not in ("GET", "HEAD"):
-            if headers.get("origin") not in ALLOWED_ORIGINS:
+            if headers.get("origin") not in self.origins:
                 return "Refused: the Origin is not this tool."
             if not secrets.compare_digest(token, self.token.encode()):   # bytes: a non-ASCII header is a mismatch
                 return "Refused: no valid session token."
@@ -274,12 +277,14 @@ class Guard:
 
 # ---------- App ----------
 
-def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, clock=time.time, latency: float = 0.15):
+def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, clock=time.time, latency: float = 0.15,
+               port: int = PORT):
     """connect=False leaves out the Kraken feed and the pair list: tests drive the engine."""
     token = secrets.token_urlsafe(32)
     db = Db(data_dir)
     eng = Engine(db, clock=clock, latency=latency, rate_start=rate_start)
     page_cache: dict[str, str] = {}
+    watched_at = [float("-inf")]
 
     def page(name: str) -> str:
         if name not in page_cache:
@@ -324,6 +329,9 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         if eng.active and symbol != eng.chase.pair.symbol:
             return JSONResponse({"errors": ["A chase runs now."]}, status_code=409)
         if symbol != eng.watched:
+            if time.monotonic() - watched_at[0] < WATCH_EVERY:   # real time: it limits messages to Kraken
+                return JSONResponse({"errors": ["Too many pair changes. Wait 1 s and try again."]}, status_code=429)
+            watched_at[0] = time.monotonic()
             eng.watched = symbol
             eng.bid = eng.ask = eng.book_at = None
             eng.book_ok = False
@@ -400,7 +408,7 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
     app.state.engine, app.state.token = eng, token
-    return Guard(app, token)
+    return Guard(app, token, port)
 
 
 async def _tick_loop(eng: Engine) -> None:
@@ -426,6 +434,7 @@ async def _pairs_loop(eng: Engine) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(prog="order-chaser", description="Kraken order chaser (dry run only) on http://127.0.0.1:5180")
+    ap.add_argument("--port", type=int, default=PORT, help="port on 127.0.0.1 (default: 5180)")
     ap.add_argument("--data-dir", type=Path, default=Path(os.environ.get("ORDER_CHASER_DATA", DEFAULT_DIR)),
                     help="folder for the SQLite file (default: ~/Library/Application Support/order-chaser)")
     ap.add_argument("--rate-start", type=float, default=0.0,
@@ -437,7 +446,7 @@ def main() -> None:
         lock = lock_folder(a.data_dir)  # noqa: F841  (held until the process ends)
     except BlockingIOError:
         raise SystemExit(f"Another order chaser runs on {a.data_dir}. Stop it first.")
-    print(f"Order chaser (DRY RUN: no real orders) on http://{HOST}:{PORT}  data: {a.data_dir}")
+    print(f"Order chaser (DRY RUN: no real orders) on http://{HOST}:{a.port}  data: {a.data_dir}")
     # A short graceful shutdown: an open page (SSE) must not keep a stopped tool alive.
-    uvicorn.run(create_app(a.data_dir, rate_start=a.rate_start), host=HOST, port=PORT, log_level="warning",
+    uvicorn.run(create_app(a.data_dir, rate_start=a.rate_start, port=a.port), host=HOST, port=a.port, log_level="warning",
                 timeout_graceful_shutdown=2)

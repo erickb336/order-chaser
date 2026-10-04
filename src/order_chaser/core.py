@@ -114,6 +114,12 @@ class Chase:
         return max(self.qty - self.filled, ZERO)
 
     @property
+    def rest_below_min(self) -> bool:
+        """The rest is below a Kraken minimum: no order for it is possible."""
+        rest = self.remainder
+        return rest > 0 and (rest < self.pair.ordermin or rest * self.limit < self.pair.costmin)
+
+    @property
     def dry(self) -> bool:
         return self.venue != LIVE_VENUE
 
@@ -581,7 +587,7 @@ def _order_state(c: Chase, ev: OrderState, t: float) -> tuple[Chase, list]:
             out.append(Log(t, f"No IOC: {why}, so there is no valid price. The rest counts as not filled.", "bad"))
             c, more = _end(c, ev.now, "notfilled")
             return c, out + more
-        if rest < c.pair.ordermin or rest * c.limit < c.pair.costmin:
+        if c.rest_below_min:
             out.append(Log(t, f"The rest, {fmt_qty(rest)} {base}, is below the Kraken minimum for {c.pair.symbol} "
                               f"({fmt_qty(c.pair.ordermin)} {base} or {c.pair.costmin} {c.pair.quote}). It counts as not filled.", "bad"))
             c, more = _end(c, ev.now, "belowmin")

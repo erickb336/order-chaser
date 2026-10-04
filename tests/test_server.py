@@ -1,8 +1,10 @@
 """Tests of the shell: security guard, restart rule, book checksum on recorded Kraken data, and one
 end-to-end dry run driven by a fake public feed. No network."""
 import asyncio
+import contextlib
 import json
 import re
+import time
 import zlib
 from decimal import Decimal as D
 from pathlib import Path
@@ -490,3 +492,107 @@ def test_a_stalled_feed_is_lost_10_s_after_its_last_message_not_after_the_close(
     lost_after = asyncio.run(asyncio.wait_for(scenario(), 15))
     assert events[0][0] is True and events[1][0] is False
     assert 0.4 < lost_after < 0.9          # 0.5 s of silence; the old code added the 10 s close timeout
+
+
+# ---------- cycle 1 at 8e13b1e ----------
+
+ETH = feed.parse_pairs({"ETH/USD": {"tick_size": "0.01", "ordermin": "0.002", "costmin": "0.5",
+                                    "pair_decimals": 2, "lot_decimals": 8, "status": "online"}})
+
+
+def test_watch_allows_one_pair_change_each_second_and_answers_429_to_more(setup):
+    # WATCH-BURST-STUCK-FEED: 40 fast switches made Kraken answer "Exceeded msg rate".
+    client, app, eng, f, clock, call = setup
+    H = started_book(setup)
+    eng.pairs = {**PAIRS, **ETH}
+    sent = len(f.ws.sent)
+    codes = [client.post("/api/watch", headers=H, json={"pair": p}).status_code for p in ("ETH/USD", "BTC/USD", "ETH/USD")]
+    assert codes == [200, 429, 200]                       # the third asks for the pair it watches: no change
+    assert client.post("/api/watch", headers=H, json={"pair": "BTC/USD"}).json() == {
+        "errors": ["Too many pair changes. Wait 1 s and try again."]}
+    assert [m["params"]["symbol"][0] for m in f.ws.sent[sent:] if m["method"] == "subscribe"] == ["ETH/USD", "ETH/USD"]
+    time.sleep(1)
+    assert client.post("/api/watch", headers=H, json={"pair": "BTC/USD"}).status_code == 200
+    assert eng.watched == "BTC/USD"
+
+
+def test_a_book_message_alone_does_not_write_the_chase(setup):
+    # BOOK-AT-SAVES-EVERY-MESSAGE
+    client, app, eng, f, clock, call = setup
+    kb = FakeBook()
+    call(f._handle, kb.msg("snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")]))
+    H = {**ORIGIN, "X-Session-Token": token_of(client)}
+    assert client.post("/api/chase", headers=H, json={"pair": "BTC/USD", "side": "buy", "qty": "0.05", "timeout": 600}).status_code == 200
+    saves = []
+    save = eng.db.save
+    eng.db.save = lambda *a: (saves.append(a[0].phase), save(*a))
+    for i in range(20):
+        clock.t += 0.05
+        call(f._handle, kb.msg("update", [], [("62419.0", str(3 + i))]))     # a deeper ask changes: no amend
+    call(f._handle, {"channel": "heartbeat"})
+    assert (eng.chase.book_at, saves) == (clock.t, [])                        # valid books, and no write
+    call(f._handle, trade_msg("sell", "62417.0", "0.01"))                      # a fill changes the chase: it writes
+    assert saves == ["resting"]
+
+
+def test_the_guard_takes_the_port_the_tool_runs_on(tmp_path):
+    # TEST-PORT-CONTENTION: the page tests run the app on a free port.
+    guard = create_app(tmp_path, connect=False, port=5199)
+    with TestClient(guard, base_url="http://127.0.0.1:5199") as client:
+        assert client.get("/api/state").status_code == 200
+        assert client.get("/api/state", headers={"Host": "localhost:5199"}).status_code == 200
+        assert client.get("/api/state", headers={"Host": "127.0.0.1:5180"}).text == "Refused: unknown Host."
+
+
+def test_a_refused_subscription_counts_as_feed_lost_and_the_feed_subscribes_again():
+    # WATCH-BURST-STUCK-FEED: before, the error reply was ignored and heartbeats kept the link "up" with no book.
+    import websockets
+    links, subs, conns = [], [], []
+
+    async def scenario():
+        async def handler(ws):
+            conn = len(conns)
+            conns.append(conn)
+            with contextlib.suppress(websockets.ConnectionClosed):
+                async for raw in ws:
+                    m = json.loads(raw)
+                    subs.append((conn, m["params"]["channel"]))
+                    if conn == 0 and m["params"]["channel"] == "book":
+                        await ws.send(json.dumps({"method": "subscribe", "success": False, "error": "Exceeded msg rate"}))
+                        for _ in range(100):
+                            await ws.send(json.dumps({"channel": "heartbeat"}))
+                            await asyncio.sleep(0.05)
+
+        async with websockets.serve(handler, "127.0.0.1", 0) as srv:
+            f = feed.PublicFeed(lambda b, ok: None, lambda *a: None, lambda up, attempt, wait: links.append((up, attempt, wait)),
+                                f"ws://127.0.0.1:{srv.sockets[0].getsockname()[1]}")
+            await f.watch(PAIRS["BTC/USD"])
+            task = asyncio.create_task(f.run())
+            while len(links) < 3 or len(subs) < 3:
+                await asyncio.sleep(0.01)
+            task.cancel()
+
+    asyncio.run(asyncio.wait_for(scenario(), 10))
+    assert links[:3] == [(True, 0, 0), (False, 1, 2), (True, 1, 0)]     # lost at once, a new link after 2 s
+    assert [s for s in subs if s[0] == 1] == [(1, "book"), (1, "trade")]  # the new link subscribes again
+
+
+def test_the_demo_reaches_the_rest_below_the_minimum(tmp_path):
+    # UX3-DEMO-NO-BELOWMIN: without heartbeats the book was older than 10 s at the end, so the demo ended
+    # "no valid price" and never showed the rest below the minimum. The demo runs 50 times faster here.
+    import importlib.util
+    import time
+    spec = importlib.util.spec_from_file_location("demo_states", Path(__file__).parent.parent / "scripts" / "demo_states.py")
+    demo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(demo)
+    speed, t0 = 50, time.time()
+    eng = create_app(tmp_path, connect=False, clock=lambda: t0 + (time.time() - t0) * speed).app.state.engine
+
+    async def run():
+        task = asyncio.create_task(demo.drive(eng, speed))
+        while not (eng.chase and eng.chase.timeout == 60 and eng.chase.phase == "done"):
+            await asyncio.sleep(0.01)
+        task.cancel()
+
+    asyncio.run(asyncio.wait_for(run(), 15))
+    assert [(c.timeout, c.outcome) for c, _ in eng.db.history()] == [(60, "belowmin"), (120, "notfilled")]
