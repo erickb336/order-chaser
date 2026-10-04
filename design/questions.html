@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Questions for the owner</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main class="app" style="padding-top:22px">
+  <h1>Questions for the owner</h1>
+  <p class="muted" style="max-width:80ch">The brief does not decide these 14 cases. Each one changes what the build does, so I do not decide them silently. The prototype shows the default of each. To answer, reply with the number and the letter, for example "Q3: a, Q6: b". With no answer, the build uses the default.</p>
+  <table class="t card" style="padding:0;margin-bottom:20px" id="sum"></table>
+  <div class="grid2" id="all"></div>
+</main>
+<script src="assets/proto.js"></script>
+<script>
+OC.chrome('questions');
+const SCREEN = { setup: 'Setup', new: 'New chase', chase: 'Live chase', result: 'Result' };
+document.getElementById('sum').innerHTML = '<tr><th>No.</th><th>Question</th><th>Screens</th><th>Recommendation</th><th>Default</th></tr>' +
+  OC.QUESTIONS.map(q => `<tr><td class="mono"><a href="#d-${q.id}">${q.id}</a></td><td>${q.t}</td><td class="small muted">${q.on.map(s => SCREEN[s]).join(', ')}</td><td class="mono">(${q.rec})</td><td class="mono">(${q.def})${q.def !== q.rec ? ' <span class="badge warn">differs</span>' : ''}</td></tr>`).join('');
+document.getElementById('all').innerHTML = OC.QUESTIONS.map(OC.qHTML).join('');
+</script>
+</body></html>

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Chase result</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main class="app">
+  <div class="switcher"><span class="lbl">Prototype: result</span>
+    <div class="opts" id="opts">
+      <button data-id="filled">Filled, all maker</button>
+      <button data-id="mixed">Filled after timeout (maker + IOC)</button>
+      <button data-id="notfilled">Part filled: price above cap</button>
+      <button data-id="stopped">Stopped by you</button>
+      <button data-id="filled-dry">Dry run result</button>
+    </div>
+  </div>
+  <div id="modestrip" style="margin-bottom:16px"></div>
+  <div id="out"></div>
+</main>
+<script src="assets/proto.js"></script>
+<script>
+OC.chrome('result', { top: true });
+const $ = id => document.getElementById(id);
+const F1 = { q: 0.018, p: 62418.1, liq: 'm', t: '0:31' };
+const F2 = { q: 0.032, p: 62418.3, liq: 'm', t: '1:18' };
+const FT = { q: 0.032, p: 62418.5, liq: 't', t: '2:00' };
+const R = {
+  filled: { fills: [F1, F2], head: 'Bought 0.0500 BTC', tone: 'fill', line: 'All of it filled as maker in 1:18. The tool never moved above the cap.' },
+  mixed: { fills: [F1, FT], head: 'Bought 0.0500 BTC', tone: 'fill', line: '36% filled as maker. After the 2:00 timeout, one IOC at the cap filled the rest as taker.' },
+  notfilled: { fills: [F1], head: 'Bought 0.0180 of 0.0500 BTC', tone: 'bad', line: 'The price rose above your cap before the rest could fill. The IOC at the cap filled nothing.',
+    rest: 'Not filled: 0.0320 BTC. The ask at the end was 62,431.00, which is 12.50 above your cap. No order of yours rests on Kraken.' },
+  stopped: { fills: [F1], head: 'Bought 0.0180 of 0.0500 BTC', tone: 'muted', line: 'You stopped the chase at 0:55. Kraken confirmed the cancel.',
+    rest: 'Not filled: 0.0320 BTC, because you stopped the chase. No order of yours rests on Kraken.' },
+};
+let cur = location.hash.slice(1) || 'filled';
+function draw() {
+  const dry = cur.endsWith('-dry');
+  const key = cur.replace(/-dry$/, '');
+  const r = R[key] || R.filled;
+  const sm = OC.summarize(r.fills);
+  const pctM = Math.round(sm.makerShare * 100);
+  const filledPct = sm.q / OC.S.qty * 100;
+  $('modestrip').innerHTML = dry ? '<div class="drystrip">DRY RUN RESULT: simulated. No order went to Kraken. A real chase can fill less. <a class="qlink" data-q="Q12" href="#">Q12</a></div>' : '';
+  const sim = dry ? ' (simulated)' : '';
+  $('out').innerHTML = `
+  <div class="card">
+    <div class="row"><span class="badge ${r.tone === 'fill' ? 'ok' : r.tone === 'bad' ? 'bad' : 'plain'}">${key === 'filled' || key === 'mixed' ? 'Complete' : key === 'stopped' ? 'Stopped' : 'Part filled'}</span><span class="small muted">BTC/USD · buy · ${dry ? 'dry run' : 'live'} · today 09:52 · 0:00 to ${key === 'filled' ? '1:18' : key === 'stopped' ? '0:55' : '2:01'}</span></div>
+    <h1 style="margin-top:10px">${r.head}${sim}</h1>
+    <p class="muted">${r.line}</p>
+    <div class="facts" style="margin-top:14px">
+      <div><div class="k">Filled</div><div class="v">${OC.fq(sm.q)} BTC</div><div class="s">${Math.round(filledPct)}% of 0.0500</div></div>
+      <div><div class="k">Average price</div><div class="v">${OC.f2(sm.avg)}</div><div class="s">cap was 62,418.50</div></div>
+      <div><div class="k">Fees</div><div class="v">${OC.f2(sm.fee)} USD</div><div class="s">${pctM === 100 ? 'all at 0.40% maker' : 'mixed 0.40% / 0.80%'}</div></div>
+      <div style="background:var(--fill-bg)"><div class="k">Saving vs a market order at the start</div><div class="v tone-fill">${OC.f2(sm.saving)} USD</div><div class="s">${(sm.saving / sm.market * 100).toFixed(2)}% of ${OC.f2(sm.market)} USD</div></div>
+    </div>
+    <div style="margin-top:18px">
+      <div class="row small"><b>Maker ${pctM}%</b><span class="muted">Taker ${100 - pctM}%</span>${sm.q < OC.S.qty ? '<span class="muted">· Not filled ' + Math.round(100 - filledPct) + '%</span>' : ''}<span class="spacer"></span><span class="tiny muted">share of 0.0500 BTC</span></div>
+      <div class="bar" style="margin-top:6px;height:14px"><i class="m" style="width:${sm.makerShare * filledPct}%"></i><i class="tk" style="width:${(1 - sm.makerShare) * filledPct}%"></i><i class="nf" style="width:${100 - filledPct}%"></i></div>
+    </div>
+    ${r.rest ? `<div class="note ${key === 'notfilled' ? 'bad' : 'warn'}" style="margin-top:16px"><b>${r.rest}</b>${key === 'notfilled' ? ' To buy the rest, start a new chase. It records a new cap.' : ''}</div>` : ''}
+    <div class="row" style="margin-top:18px">${r.rest ? '<a class="btn primary" href="new.html#rest">Chase the rest (0.0320 BTC)</a>' : '<a class="btn primary" href="new.html">New chase</a>'}<a class="btn" href="history.html">History</a><a class="btn" href="chase.html#${key === 'mixed' ? 'fallback' : key}${dry ? '-dry' : ''}">Back to the chase</a></div>
+  </div>
+  <div class="grid2" style="margin-top:16px">
+    <div class="card"><h2>Fills${sim}</h2>
+      <table class="t"><tr><th>Time</th><th class="r">BTC</th><th class="r">Price</th><th>Type</th><th class="r">Fee USD</th></tr>
+      ${r.fills.map(f => `<tr><td class="mono">${f.t}</td><td class="r num">${OC.fq(f.q)}</td><td class="r num">${OC.f2(f.p)}</td><td>${f.liq === 'm' ? '<span class="badge ok">maker</span>' : '<span class="badge warn">taker (IOC)</span>'}</td><td class="r num">${OC.f2(f.q * f.p * (f.liq === 'm' ? .004 : .008))}</td></tr>`).join('')}
+      </table></div>
+    <div class="card"><h2>How the saving is counted</h2>
+      <table class="t small">
+        <tr><td>Market order at the start, for the ${OC.fq(sm.q)} BTC that filled</td><td class="r num">${OC.f2(sm.market)}</td></tr>
+        <tr><td class="muted" colspan="2" style="padding-top:0">${OC.fq(sm.q)} × 62,418.50 (start ask) + 0.80% taker fee</td></tr>
+        <tr><td>This chase: price + fees</td><td class="r num">${OC.f2(sm.ours)}</td></tr>
+        <tr><td><b>Saving</b></td><td class="r num tone-fill"><b>${OC.f2(sm.saving)}</b></td></tr>
+      </table>
+      <p class="tiny muted" style="margin:10px 0 0">The saving is never below 0: the chase never pays more than the start ask plus the taker fee. A real market order can cost more than this estimate on a thin book, so the true saving can be larger. Fees: Kraken Pro tier 1 (sample).</p>
+    </div>
+  </div>`;
+  document.querySelectorAll('#opts button').forEach(x => x.classList.toggle('on', x.dataset.id === cur));
+}
+$('opts').onclick = e => { const b = e.target.closest('button'); if (b) { cur = b.dataset.id; history.replaceState(null, '', '#' + cur); draw(); } };
+draw();
+</script>
+</body></html>

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>History</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main class="app">
+  <div class="switcher"><span class="lbl">Prototype: history state</span>
+    <div class="opts" id="opts"><button data-id="list">With chases</button><button data-id="empty">Empty</button><button data-id="loading">Loading</button><button data-id="fail">Failure</button></div>
+  </div>
+  <div class="row" style="margin-bottom:12px"><h1 style="margin:0">History</h1><span class="spacer"></span><span class="small muted" id="tot"></span></div>
+  <div class="card" style="padding:6px 10px" id="out"></div>
+</main>
+<script src="assets/proto.js"></script>
+<script>
+OC.chrome('history', { top: true });
+const $ = id => document.getElementById(id);
+// SAMPLE rows: [date, pair, side, asked, filled, avg, saving, mode, outcome, link]
+const ROWS = [
+  ['Today 09:52', 'BTC/USD', 'Buy', '0.0500', '0.0500', '62,418.23', '12.49', 'live', ['ok', 'Filled'], 'filled'],
+  ['Today 09:31', 'BTC/USD', 'Buy', '0.0500', '0.0500', '62,401.75', '12.50', 'dry', ['ok', 'Filled (simulated)'], 'filled-dry'],
+  ['Yesterday 18:04', 'ETH/USD', 'Sell', '1.2000', '1.2000', '2,431.18', '11.72', 'live', ['ok', 'Filled, 40% after timeout'], 'mixed'],
+  ['Yesterday 17:40', 'BTC/USD', 'Buy', '0.0500', '0.0180', '62,418.10', '4.50', 'live', ['bad', 'Part filled: above cap'], 'notfilled'],
+  ['2 Oct 11:12', 'SOL/USD', 'Buy', '25.000', '10.400', '142.31', '5.94', 'live', ['plain', 'Stopped by you'], 'stopped'],
+];
+let st = location.hash.slice(1) || 'list';
+function draw() {
+  let h = '';
+  $('tot').textContent = '';
+  if (st === 'list') {
+    h = '<table class="t"><tr><th>When</th><th>Pair</th><th>Side</th><th class="r">Filled / asked</th><th class="r">Average price</th><th class="r">Saving USD</th><th>Mode</th><th>Outcome</th></tr>' +
+      ROWS.map(r => `<tr class="click" onclick="location.href='result.html#${r[9]}'"><td>${r[0]}</td><td>${r[1]}</td><td class="${r[2] === 'Buy' ? 'tone-fill' : 'tone-bad'}">${r[2]}</td><td class="r num">${r[4]} / ${r[3]}</td><td class="r num">${r[5]}</td><td class="r num tone-fill">${r[6]}</td><td><span class="badge ${r[7]}">${r[7] === 'dry' ? 'Dry run' : 'Live'}</span></td><td><span class="badge ${r[8][0]}">${r[8][1]}</span></td></tr>`).join('') + '</table>';
+    $('tot').innerHTML = 'Live chases: 4 · Total saving: <b class="num tone-fill">34.65 USD</b> (dry runs not counted)';
+  } else if (st === 'empty') {
+    h = '<div style="text-align:center;padding:48px 20px"><h2>No chases yet</h2><p class="muted">Each chase you run, dry or live, shows here with its fill and its saving.</p><a class="btn drybtn" href="new.html#ready">Start a dry run</a></div>';
+  } else if (st === 'loading') {
+    h = '<table class="t"><tr><th>When</th><th>Pair</th><th>Side</th><th class="r">Filled / asked</th><th class="r">Average price</th><th class="r">Saving USD</th><th>Mode</th><th>Outcome</th></tr>' +
+      [1, 2, 3].map(() => '<tr>' + Array(8).fill('<td><span class="skel" style="display:inline-block;width:80%">x</span></td>').join('') + '</tr>').join('') + '</table>';
+  } else {
+    h = '<div class="note bad" style="margin:12px"><b>The tool cannot read the history file.</b> The file is ~/Library/Application Support/order-chaser/history.json. Your Kraken orders are not affected. <button class="btn" style="margin-left:8px;padding:4px 10px;font-size:13px">Try again</button></div>';
+  }
+  $('out').innerHTML = h;
+  document.querySelectorAll('#opts button').forEach(x => x.classList.toggle('on', x.dataset.id === st));
+}
+$('opts').onclick = e => { const b = e.target.closest('button'); if (b) { st = b.dataset.id; history.replaceState(null, '', '#' + st); draw(); } };
+draw();
+</script>
+</body></html>

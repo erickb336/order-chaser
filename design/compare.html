@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Compare: 3 directions for the live chase screen</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main class="app" style="padding-top:22px">
+  <h1>Live chase screen: 3 directions</h1>
+  <p class="muted" style="max-width:80ch">The live chase screen is the core screen: you watch it while the tool moves your order. Each column below shows the same chase in the same state, in a different shape. Pick a state to compare how each shape tells you what is happening.</p>
+
+  <div class="switcher" id="sw"><span class="lbl">Prototype: chase state</span><div class="opts" id="opts"></div></div>
+
+  <div class="cmp">
+    <section class="col">
+      <div class="colh"><span class="qid">A</span><h2 style="margin:0">Price ladder</h2><div class="small muted">The order book as rows of prices. Your order and the cap sit in the book.</div></div>
+      <div class="colb" id="a"></div>
+      <div class="colf"><p><b class="tone-fill">Strength:</b> shows exactly where your order sits in the market, tick by tick.</p><p><b class="tone-bad">Weakness:</b> you must read a book to learn the one thing you care about: is it filling, and what does it cost.</p></div>
+    </section>
+    <section class="col rec">
+      <div class="colh"><span class="qid">B</span> <span class="badge ok">Recommended</span><h2 style="margin:0">Status card</h2><div class="small muted">One sentence of state, one number (filled), one price rail.</div></div>
+      <div class="colb" id="b"></div>
+      <div class="colf"><p><b class="tone-fill">Strength:</b> answers "what is happening, how much filled, what next" in one glance, in plain words.</p><p><b class="tone-bad">Weakness:</b> hides the depth of the book; a trader who wants to see the queue gets less.</p></div>
+    </section>
+    <section class="col">
+      <div class="colh"><span class="qid">C</span><h2 style="margin:0">Timeline</h2><div class="small muted">Every action of the tool as a dated event, newest at the bottom.</div></div>
+      <div class="colb" id="c"></div>
+      <div class="colf"><p><b class="tone-fill">Strength:</b> full audit trail; you can check that the tool did each safe step in order.</p><p><b class="tone-bad">Weakness:</b> the present state is the last line of a list; filled amount and prices are hard to see.</p></div>
+    </section>
+  </div>
+
+  <div class="card" style="margin-top:20px">
+    <h2>Recommendation: B, the status card, with the timeline below it</h2>
+    <p>You start a chase to get a good fill with no effort. While it runs, you need three answers: what the tool does now, how much filled, and the worst it can cost. B gives all three at the top, in words. The price rail still shows your order against the best bid, the best ask and the cap.</p>
+    <p>From C, the full flow keeps the event log, under the card. It is the proof that the tool cancelled, confirmed and re-read before each fallback. From A, it keeps nothing: the book depth is noise for one small order at the top of the book.</p>
+    <p class="small muted">Rejected shapes: a candlestick chart (shows price history, not your order); a pure number dashboard of 8 tiles (no single main point); a full-screen ladder with click-to-trade (that is a trading terminal, not a chaser).</p>
+    <p><a class="btn primary" href="chase.html#partial">Open B in the full flow</a></p>
+  </div>
+</main>
+<script src="assets/proto.js"></script>
+<script>
+OC.chrome('compare');
+let cur = location.hash.slice(1) || 'partial';
+function draw() {
+  const st = OC.STATES.find(s => s.id === cur) || OC.STATES[3];
+  document.getElementById('a').innerHTML = OC.ladder(st);
+  document.getElementById('b').innerHTML = OC.card(st, true);
+  document.getElementById('c').innerHTML = OC.timeline(st);
+  document.querySelectorAll('#opts button').forEach(b => b.classList.toggle('on', b.dataset.id === st.id));
+}
+document.getElementById('opts').innerHTML = OC.STATES.map(s => `<button data-id="${s.id}">${s.label}</button>`).join('');
+document.getElementById('opts').onclick = e => { const b = e.target.closest('button'); if (b) { cur = b.dataset.id; history.replaceState(null, '', '#' + cur); draw(); } };
+window.addEventListener('hashchange', () => { cur = location.hash.slice(1) || 'partial'; draw(); });
+draw();
+</script>
+</body></html>

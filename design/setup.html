@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Setup</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main class="app">
+  <div class="switcher"><span class="lbl">Prototype: setup state</span>
+    <div class="opts" id="opts">
+      <button data-id="empty">First run (no key)</button>
+      <button data-id="checking">Checking the key</button>
+      <button data-id="withdraw">Failure: withdraw is on</button>
+      <button data-id="missing">Failure: permission missing</button>
+      <button data-id="keyok">Key OK, timer not accepted</button>
+      <button data-id="done">Setup complete</button>
+    </div>
+  </div>
+
+  <div style="max-width:820px">
+    <h1>Setup for live chases</h1>
+    <p class="muted">A live chase needs a Kraken API key and your choice about the safety timer. A dry run needs neither.</p>
+    <div class="row" style="margin-bottom:22px"><a class="btn drybtn" href="new.html#ready">Skip setup: start a dry run</a><span class="small muted">You can come back here at any time.</span></div>
+
+    <div class="steps">
+      <div class="step done"><div class="no">✓</div><div class="card" style="padding:16px">
+        <div class="row"><h2 style="margin:0">1. Local tool</h2><span class="spacer"></span><span class="badge ok">Running</span></div>
+        <p class="small muted" style="margin:6px 0 0">The tool runs on this Mac at localhost:5180 and receives public Kraken prices. Only this Mac can open this page.</p>
+      </div></div>
+
+      <div class="step" id="s2"><div class="no" id="n2">2</div><div class="card" style="padding:16px">
+        <div class="row"><h2 style="margin:0">2. Kraken API key</h2><span class="spacer"></span><span id="b2"></span></div>
+        <div id="keybody"></div>
+      </div></div>
+
+      <div class="step" id="s3"><div class="no" id="n3">3</div><div class="card" style="padding:16px">
+        <div class="row"><h2 style="margin:0">3. Safety timer</h2><span class="spacer"></span><span id="b3"></span></div>
+        <div id="dmsbody"></div>
+      </div></div>
+    </div>
+    <div id="finish" style="margin-top:20px"></div>
+  </div>
+</main>
+<script src="assets/proto.js"></script>
+<script>
+OC.chrome('setup', { top: true });
+const $ = id => document.getElementById(id);
+let st = location.hash.slice(1) || 'empty';
+let accept = null;
+const PERMS = [
+  ['Create & Modify Orders', 'Places and amends the chase order.', 'need'],
+  ['Cancel/Close Orders', 'Cancels the order and runs the safety timer.', 'need'],
+  ['Query Open Orders & Trades', 'Reads fills and the order state.', 'need'],
+  ['Withdraw Funds', 'Must be OFF. The tool never needs it.', 'off'],
+  ['IP address lock', 'Recommended: lock the key to the IP address of this Mac.', 'rec'],
+];
+function perms(mode) {
+  return '<div style="margin-top:10px">' + PERMS.map((p, i) => {
+    let ic = '✓', cls = 'tone-fill', badge = '<span class="badge ok">OK</span>';
+    if (mode === 'checking') { ic = '…'; cls = 'muted'; badge = '<span class="badge plain skel">checking</span>'; }
+    if (p[2] === 'off') { badge = '<span class="badge ok">Off</span>'; }
+    if (p[2] === 'rec') { ic = '!'; cls = 'tone-warn'; badge = '<span class="badge warn">Not set</span>'; if (mode === 'checking') { ic = '…'; cls = 'muted'; badge = '<span class="badge plain skel">checking</span>'; } }
+    if (mode === 'withdraw' && p[2] === 'off') { ic = '✗'; cls = 'tone-bad'; badge = '<span class="badge bad">ON: turn it off</span>'; }
+    if (mode === 'missing' && i === 1) { ic = '✗'; cls = 'tone-bad'; badge = '<span class="badge bad">Missing</span>'; }
+    return `<div class="perm"><span class="ic ${cls}">${ic}</span><div><b>${p[0]}</b><div class="tiny muted">${p[1]}</div></div>${badge}</div>`;
+  }).join('') + '</div>';
+}
+function draw() {
+  const s2 = $('s2'), s3 = $('s3');
+  s2.className = 'step'; s3.className = 'step';
+  $('n2').textContent = '2'; $('n3').textContent = '3';
+  let kb = '', b2 = '';
+  if (st === 'empty') {
+    s2.classList.add('cur');
+    b2 = '<span class="badge plain">Not set</span>';
+    kb = `<p class="small" style="margin-top:8px">Create a key in Kraken Pro: Settings, API, Create key. Give it exactly these permissions:</p>
+      <ul class="small" style="margin:0 0 10px"><li>Create & Modify Orders</li><li>Cancel/Close Orders</li><li>Query Open Orders & Trades</li></ul>
+      <div class="note warn small" style="margin-bottom:12px"><b>Warning:</b> do not give the key the Withdraw Funds permission. The tool refuses a key that can withdraw.</div>
+      <div class="grid2"><div class="field"><label class="f" for="k1">API key</label><input class="input mono" id="k1" placeholder="Paste the API key"></div>
+      <div class="field"><label class="f" for="k2">Private key</label><input class="input mono" id="k2" type="password" placeholder="Paste the private key"></div></div>
+      <div class="row"><button class="btn primary" id="save">Save in Keychain and check</button><a class="qlink" data-q="Q11" href="#">Q11</a></div>
+      <p class="tiny muted" style="margin:8px 0 0">The tool stores the key only in the macOS Keychain, never in a file or a log. This page never shows it again.</p>`;
+  } else if (st === 'checking') {
+    s2.classList.add('cur'); b2 = '<span class="badge plain">Checking…</span>';
+    kb = '<p class="small muted" style="margin-top:8px">The key is in the Keychain. The tool checks its permissions with Kraken. This takes a few seconds.</p>' + perms('checking');
+  } else if (st === 'withdraw') {
+    s2.classList.add('bad'); $('n2').textContent = '!'; b2 = '<span class="badge bad">Not usable</span>';
+    kb = '<div class="note bad small" style="margin-top:10px"><b>This key can withdraw funds. The tool does not use it.</b> In Kraken Pro, edit the key and turn off Withdraw Funds. Then press Check again. You do not need to paste the key again.</div>' + perms('withdraw') +
+      '<div class="row" style="margin-top:10px"><button class="btn primary" id="again">Check again</button><button class="btn danger">Remove the key from Keychain</button></div>';
+  } else if (st === 'missing') {
+    s2.classList.add('bad'); $('n2').textContent = '!'; b2 = '<span class="badge bad">Not usable</span>';
+    kb = '<div class="note bad small" style="margin-top:10px"><b>The key cannot cancel orders.</b> Without it the tool cannot stop a chase or run the safety timer. In Kraken Pro, edit the key and turn on Cancel/Close Orders. Then press Check again.</div>' + perms('missing') +
+      '<div class="row" style="margin-top:10px"><button class="btn primary" id="again">Check again</button><button class="btn danger">Remove the key from Keychain</button></div>';
+  } else {
+    s2.classList.add('done'); $('n2').textContent = '✓'; b2 = '<span class="badge ok">Ready</span>';
+    kb = '<p class="small muted" style="margin:6px 0 0">Key in Keychain, ends in <span class="mono">…Q7fX</span> (sample). Checked today at 09:41.</p>' + perms('ok') +
+      '<div class="row" style="margin-top:8px"><button class="btn" style="font-size:13px;padding:6px 12px">Replace the key</button><span class="tiny muted">Query Funds is not needed now. <a class="qlink" data-q="Q10" href="#">Q10</a></span></div>';
+  }
+  $('keybody').innerHTML = kb; $('b2').innerHTML = b2;
+
+  // step 3
+  const keyReady = st === 'keyok' || st === 'done';
+  if (st === 'done' && !accept) accept = 'accept';
+  if (st === 'keyok' && accept === null) {}
+  let db = `<div class="note warn small" style="margin-top:10px"><b>Warning: if the tool stops, Kraken cancels ALL your orders on ALL pairs.</b> This includes stop-losses and other orders you placed by hand.</div>
+    <p class="small" style="margin:12px 0 8px">Why: during a live chase the tool asks Kraken to cancel all orders in 60 s, and renews that request every 20 s. If the tool crashes or your Mac sleeps, the renewals stop. Then Kraken cancels your orders, so no chase order is left without control.</p>
+    <div class="dms" style="margin:12px 0"><div class="box">Tool renews the timer<br><span class="tiny muted">every 20 s</span></div><div class="arr">→</div><div class="box">Tool stops<br><span class="tiny muted">crash, sleep, no internet</span></div><div class="arr">→</div><div class="box" style="border-color:var(--bad);color:var(--bad)"><b>60 s later</b><br><span class="tiny">Kraken cancels all your orders</span></div></div>
+    <p class="small" style="margin:0 0 8px"><b>Choose one:</b> <a class="qlink" data-q="Q5" href="#">Q5</a></p>
+    <label class="check ${accept === 'sub' ? 'on' : ''}"><input type="radio" name="acc" value="sub" ${accept === 'sub' ? 'checked' : ''} ${keyReady ? '' : 'disabled'}><div><b>I use a separate Kraken sub-account for the chaser.</b><div class="tiny muted">Recommended if you keep stop-losses or other open orders. The key above must belong to that sub-account.</div></div></label>
+    <label class="check ${accept === 'accept' ? 'on' : ''}"><input type="radio" name="acc" value="accept" ${accept === 'accept' ? 'checked' : ''} ${keyReady ? '' : 'disabled'}><div><b>I accept that the timer can cancel all my orders.</b><div class="tiny muted">I keep no other open orders on this account, or I accept to place them again.</div></div></label>`;
+  if (!keyReady) db += '<p class="tiny muted" style="margin:8px 0 0">Finish step 2 first.</p>';
+  $('dmsbody').innerHTML = db;
+  if (keyReady) s3.classList.add(accept ? 'done' : 'cur');
+  if (keyReady && accept) $('n3').textContent = '✓';
+  $('b3').innerHTML = accept && keyReady ? '<span class="badge ok">Chosen</span>' : '<span class="badge plain">Not chosen</span>';
+  $('finish').innerHTML = keyReady && accept
+    ? '<div class="note ok"><b>Setup complete.</b> Live chases are possible. Run one dry run first. <a class="qlink" data-q="Q14" href="#">Q14</a></div><div class="row" style="margin-top:12px"><a class="btn drybtn" href="new.html#ready">Start a dry run</a><a class="btn" href="new.html#live">New live chase</a></div>'
+    : '<button class="btn primary" disabled>Finish setup</button> <span class="small muted">Finish steps 2 and 3 to enable live chases.</span>';
+  document.querySelectorAll('#opts button').forEach(x => x.classList.toggle('on', x.dataset.id === (st === 'keyok' && accept ? 'done' : st)));
+  const sv = $('save'); if (sv) sv.onclick = () => { st = 'checking'; draw(); setTimeout(() => { st = 'keyok'; draw(); }, 1200); };
+  const ag = $('again'); if (ag) ag.onclick = () => { st = 'checking'; draw(); setTimeout(() => { st = 'keyok'; draw(); }, 1200); };
+  document.querySelectorAll('input[name=acc]').forEach(r => r.onchange = () => { accept = r.value; draw(); });
+}
+$('opts').onclick = e => { const b = e.target.closest('button'); if (b) { st = b.dataset.id; accept = st === 'done' ? 'accept' : null; history.replaceState(null, '', '#' + st); draw(); } };
+draw();
+</script>
+</body></html>
