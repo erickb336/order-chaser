@@ -197,6 +197,59 @@ def test_a_new_leg_waits_while_the_rate_counter_has_no_room_for_its_cancel():
     assert placed == [10]             # 1 for the leg + 8 for its cancel fit under 60 at 51: T0 + 10
 
 
+def in_flight(*user):
+    """A new leg is in flight (phase placing); the user events come; then the venue refuses the leg with would_cross."""
+    c, _ = replacing()
+    assert (c.phase, c.leg) == ("placing", "oc0123456789ab-1")
+    for ev in user:
+        c, _ = core.step(c, ev)
+    return core.step(c, core.Rejected(T0 + 6.4, "place", "would_cross"))
+
+
+def test_fill_now_while_a_new_leg_is_in_flight_reads_the_fills_then_sends_one_ioc_at_the_cap():
+    # NEW-LEG-CROSS-DROPS-FILL-NOW
+    c, out = in_flight(core.UserFillNow(T0 + 6.2))
+    assert (c.phase, out[-1]) == ("reread", core.Query("oc0123456789ab-1"))
+    c, out = core.step(c, core.OrderState(T0 + 6.5, False, D(0), None, "oc0123456789ab-1"))
+    assert (c.phase, [x for x in out if not isinstance(x, core.Log)]) == (
+        "ioc", [core.MarginIoc("oc0123456789ab-i", "buy", ASK, D("1"), 3, False)])
+
+
+def test_stop_while_a_new_leg_is_in_flight_ends_as_stopped():
+    c, out = in_flight(UserStop(T0 + 6.2))
+    assert (c.phase, c.outcome, [x for x in out if not isinstance(x, core.Log)]) == ("done", "stopped", [])
+
+
+def test_a_timeout_while_a_new_leg_is_in_flight_reads_the_fills_then_sends_the_ioc():
+    c, _ = replacing()
+    c = replace(c, timeout=10)
+    c, _ = core.step(c, Tick(T0 + 10.2))                 # the timeout comes while the leg is in flight
+    c, out = core.step(c, core.Rejected(T0 + 10.3, "place", "would_cross"))
+    c, out = core.step(c, Tick(T0 + 10.4))
+    assert (c.exit, out[-1]) == ("timeout", core.Query("oc0123456789ab-1"))
+    c, out = core.step(c, core.OrderState(T0 + 10.5, False, D(0), None, "oc0123456789ab-1"))
+    assert [type(x).__name__ for x in out if not isinstance(x, core.Log)] == ["MarginIoc"]
+
+
+def test_a_new_leg_refused_for_the_rate_limit_waits_then_goes_out_again():
+    # NEW-LEG-REFUSAL-ENDS-EARLY: the counter goes to 60, so the next leg waits 15 s and for room for its cancel.
+    c, _ = replacing()
+    c, out = core.step(c, core.Rejected(T0 + 6, "place", "rate_limit"))
+    assert (c.phase, c.rate, out[0].text) == ("resting", 60.0, "The simulated exchange rejected the new order: "
+                                              "EOrder:Rate limit exceeded. The tool places it again after the wait.")
+    placed = []
+    for s in range(7, 30):
+        c, out = core.step(c, Book(T0 + s, BID + D("0.1"), ASK + D("0.1"), True))
+        placed += [(s, x.id) for x in out if isinstance(x, core.MarginPlace)]
+    assert placed == [(21, "oc0123456789ab-2")]
+
+
+def test_a_new_leg_refused_with_another_reason_ends_the_chase_with_the_venues_text():
+    c, _ = replacing()
+    c, out = core.step(c, core.Rejected(T0 + 6, "place", "EOrder:Insufficient margin"))
+    assert (c.outcome, out[0].text) == ("notfilled", "The simulated exchange rejected the order: EOrder:Insufficient margin.")
+
+
 def test_no_order_price_after_the_order_is_gone():
     # UX-PRICE-AFTER-ORDER-GONE (its cause): a maker fill ends the order, so the chase has no order price.
     r = Run().start("buy", "0.05", Margin(3)).trade("sell", "62417.0", "0.05", T0 + 1)
@@ -562,14 +615,22 @@ def probe(seed: int) -> dict:
     c, cmds = core.begin("oc" + f"{seed:012x}", pair, side, qty, bid, bid + D("0.1"), rnd.choice([30, 60, 120]), 0.0,
                          core.SIM_VENUE, limit, margin=margin)
     sent, now, queue = [], 0.0, [x for x in cmds if not isinstance(x, core.Log)]
-    stats = {"replaces": 0, "rate_max": 0.0, "id_max": 0, "cross": 0, "legs_min_gap": None, "liquidated": False}
+    stats = {"replaces": 0, "rate_max": 0.0, "id_max": 0, "cross": 0, "legs_min_gap": None, "liquidated": False, "in_flight": 0}
     legs_at: list[float] = []
+    late: list = []          # a refusal of a new leg that arrives after the next event
+    asked = None             # what the user asked first and the chase took: "fillnow" or "stop"
+    gw_refused = False       # the venue refused an order with its own text (no IOC can follow)
 
     def feed(evs):
-        nonlocal c
+        nonlocal c, asked, gw_refused
         for ev in evs:
             stats["liquidated"] |= isinstance(ev, core.PositionGone) and ev.reason == "liquidated"
+            gw_refused |= isinstance(ev, core.Rejected) and ev.op in ("place", "ioc") and ev.reason not in ("would_cross", "rate_limit")
+            exit0 = c.exit
+            stats["in_flight"] += isinstance(ev, (core.UserFillNow, UserStop)) and c.phase == "placing" and len(c.legs) > 1
             c, m = core.step(c, ev)
+            if asked is None and exit0 is None and isinstance(ev, (core.UserFillNow, UserStop)) and c.exit:
+                asked = c.exit
             queue.extend(x for x in m if not isinstance(x, core.Log))
 
     while c.phase != "done" and now < 400:
@@ -583,14 +644,18 @@ def probe(seed: int) -> dict:
                 legs_at.append(now)
                 assert c.rate <= core.RATE_MAX - core.cancel_cost(0), seed                 # room for its cancel
             if new_leg and cross and rnd.random() < 0.6:
+                # The venue refuses the new leg: at once, or after the next event (Fill now or Stop can come first).
                 stats["cross"] += 1
-                feed([core.Rejected(now, "place", "would_cross")])
+                refusal = core.Rejected(now, "place", rnd.choice(["would_cross", "would_cross", "rate_limit"]))
+                feed([refusal]) if rnd.random() < 0.5 else late.append(refusal)
             else:
                 feed(gw.send(cmd, now))
             stats["rate_max"] = max(stats["rate_max"], c.rate)
         now += rnd.choice([0.2, 0.5, 1, 3])
         r = rnd.random()
-        if r < 0.45:
+        if late and rnd.random() < 0.5:     # Fill now or Stop while the new leg is in flight
+            feed([rnd.choice([core.UserFillNow, UserStop])(now)])
+        elif r < 0.45:
             bid = max(D("20"), bid + D(rnd.choice(["-12", "-3", "-0.3", "-0.1", "0.1", "0.2", "0.3", "2", "12"])))
             feed(gw.on_book([(bid, D("1"))], [(bid + D("0.1"), D("0.3")), (bid + D("0.2"), D("5"))], now))
             feed([Book(now, bid, bid + D("0.1"), True)])
@@ -602,6 +667,8 @@ def probe(seed: int) -> dict:
             feed([UserStop(now)])
         else:
             feed([Tick(now)])
+        feed(late)
+        late.clear()
         assert not (acc.of("X/USD", "long") and acc.of("X/USD", "short")), seed       # never long and short at once
         assert sum(o["open"] for o in gw.orders.values()) <= 1, seed                  # one open order per chase at most
         mine = acc.position("X/USD", d)
@@ -615,6 +682,14 @@ def probe(seed: int) -> dict:
     gaps = [round(b - a, 6) for a, b in zip(legs_at, legs_at[1:])]
     assert all(g >= core.AMEND_EVERY for g in gaps), (seed, gaps)                  # new legs: at most one each 5 s
     stats["legs_min_gap"] = min(gaps) if gaps else None
+    # What Fill now, Stop and the timeout lead to: Stop ends as stopped (or filled);
+    # Fill now and the timeout send one IOC for the rest, unless the rest is below the minimum or the venue refused.
+    ioc = any(isinstance(x, core.Ioc) for x in sent)
+    if c.exit == "stop":
+        assert asked == "stop" and c.outcome in ("stopped", "filled"), (seed, c.outcome)
+    elif c.exit in ("fillnow", "timeout") and c.outcome == "notfilled":
+        assert ioc or gw_refused or c.end_ask is None, (seed, c.exit)   # end_ask None: no valid price, no IOC
+    stats["asked"] = asked
     agreed = not stats["liquidated"] and mixed_checks(seed, acc, before, cash0, c, d, close)
     return {**stats, "agreed": agreed, "part": close and 0 < c.filled < c.qty, "outcome": c.outcome, "close": close, "refuse": gw.refuse_margin_amends, "positions": len(before)}
 
@@ -661,17 +736,17 @@ def mixed_checks(seed, acc, before, cash0, c, d, close):
 
 
 def probe_counts(n: int, first: int = 0) -> dict:
-    counts: dict = {"runs": 0, "new_legs": 0, "runs_with_replace": 0, "would_cross_refusals": 0, "runs_with_would_cross": 0,
+    counts: dict = {"runs": 0, "new_legs": 0, "runs_with_replace": 0, "new_leg_refusals": 0, "runs_with_new_leg_refusal": 0,
                     "legs_min_gap_s": None, "rate_max": 0.0, "id_max": 0, "close_runs_over_2_or_more_positions": 0,
                     "open_runs_beside_other_positions": 0, "liquidated_runs": 0, "close_runs_pages_agree_with_the_account": 0,
-                    "of_which_part_closes": 0, "outcomes": {}}
+                    "of_which_part_closes": 0, "fillnow_runs": 0, "stop_runs": 0, "asks_while_a_new_leg_is_in_flight": 0, "outcomes": {}}
     for seed in range(first, first + n):
         r = probe(seed)
         counts["runs"] += 1
         counts["new_legs"] += r["replaces"]
         counts["runs_with_replace"] += r["replaces"] > 0
-        counts["would_cross_refusals"] += r["cross"]
-        counts["runs_with_would_cross"] += r["cross"] > 0
+        counts["new_leg_refusals"] += r["cross"]
+        counts["runs_with_new_leg_refusal"] += r["cross"] > 0
         if r["legs_min_gap"] is not None:
             counts["legs_min_gap_s"] = min(r["legs_min_gap"], counts["legs_min_gap_s"] or 1e9)
         counts["rate_max"] = max(counts["rate_max"], r["rate_max"])
@@ -681,6 +756,9 @@ def probe_counts(n: int, first: int = 0) -> dict:
         counts["liquidated_runs"] += r["liquidated"]
         counts["close_runs_pages_agree_with_the_account"] += r["agreed"]
         counts["of_which_part_closes"] += r["agreed"] and r["part"]
+        counts["fillnow_runs"] += r["asked"] == "fillnow"
+        counts["stop_runs"] += r["asked"] == "stop"
+        counts["asks_while_a_new_leg_is_in_flight"] += r["in_flight"]
         key = ("close " if r["close"] else "open ") + r["outcome"]
         counts["outcomes"][key] = counts["outcomes"].get(key, 0) + 1
     return counts
@@ -688,10 +766,11 @@ def probe_counts(n: int, first: int = 0) -> dict:
 
 def test_random_margin_runs_keep_every_rule():
     counts = probe_counts(400)
-    assert counts["runs"] == 400 and counts["runs_with_replace"] > 20 and counts["runs_with_would_cross"] > 10
+    assert counts["runs"] == 400 and counts["runs_with_replace"] > 20 and counts["runs_with_new_leg_refusal"] > 10
     assert counts["close_runs_over_2_or_more_positions"] > 50 and counts["open_runs_beside_other_positions"] > 50
     assert any(k.endswith("liquidated") for k in counts["outcomes"])
     assert counts["close_runs_pages_agree_with_the_account"] > 100 and counts["of_which_part_closes"] > 20
+    assert counts["fillnow_runs"] > 20 and counts["stop_runs"] > 10 and counts["asks_while_a_new_leg_is_in_flight"] > 0
 
 
 if __name__ == "__main__":   # uv run python tests/test_margin.py 5000: the counts of a larger probe

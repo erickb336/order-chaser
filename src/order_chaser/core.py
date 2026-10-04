@@ -455,7 +455,7 @@ def begin(id: str, pair: Pair, side: str, qty: Decimal, bid: Decimal, ask: Decim
     else:
         out.append(Log(0, f"Recorded your limit, {fmt_price(pair, cap)}, as the {word}."))
     return c, out + [_order(c, id, price, qty),
-                     Log(0, f"Sending a {_order_text(c, qty, price)}…", "you")]
+                     Log(0, f"Placing a {_order_text(c, qty, price)}…", "you")]
 
 
 # ---------- Rate counter (Kraken Starter tier, estimated) ----------
@@ -742,10 +742,15 @@ def _rejected(c: Chase, ev: Rejected, t: float) -> tuple[Chase, list]:
            "rate_limit": "EOrder:Rate limit exceeded",
            "not_open": "the order is not open"}.get(ev.reason, ev.reason)
     if ev.op == "place" and c.phase == "placing":
-        if len(c.legs) > 1 and ev.reason == "would_cross" and c.exit is None:   # a new leg: wait for the book
-            return replace(c, phase="resting", pending=None), [
-                Log(t, f"The new order would cross the {'ask' if c.buy else 'bid'} (post-only). The tool waits for the book.", "warn")]
         c = replace(c, pending=None)
+        if len(c.legs) > 1 and ev.reason in ("would_cross", "rate_limit"):
+            # A new leg of a cancel and replace: no order rests. Place it again after the next wait (5 s, 15 s above 40
+            # on the rate counter, room for its cancel). Fill now and the timeout go to the reread and the IOC; Stop ends.
+            if ev.reason == "rate_limit":
+                c = replace(c, rate=float(RATE_MAX), slow=True)   # as for an amend: trust Kraken
+            again = " The tool places it again after the wait." if c.exit is None else ""
+            c, more = _settle(replace(c, phase="resting"), ev.now)
+            return c, [Log(t, f"{_venue(c)} rejected the new order: {why}.{again}", "warn")] + more
         out = [Log(t, f"{_venue(c)} rejected the order: {why}.", "bad")]
         c, more = _end(c, ev.now, "refused" if len(c.legs) == 1 else "notfilled")
         return c, out + more

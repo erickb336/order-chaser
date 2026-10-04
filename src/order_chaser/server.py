@@ -412,7 +412,6 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
                  else "Enter the amount as a plain number, such as 0.0500." if qty is None
                  else "Enter the limit as a plain number, such as 62480.0." if limit is None and d.get("limit") not in (None, "")
                  else "Pick a timeout from the list: 30 s to 15 min." if type(timeout) is not int or timeout not in core.TIMEOUTS
-                 else "Accept the extra cost to start." if limit is not None and d.get("accept_extra") is not True
                  else None)
         if error:
             return JSONResponse({"errors": [error]}, status_code=400)
@@ -421,6 +420,9 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
                  else "Pick what to do: buy, sell, open long, open short or close a position." if not isinstance(what, str) or what not in WHAT
                  else "Pick a leverage for the open: 2x to 5x." if what in ("long", "short") and type(lev) is not int
                  else "Leverage is only for an open long or an open short. Leave it out." if what not in ("long", "short") and "leverage" in d
+                 # A limit away from the price now (buy: the ask, sell: the bid) can cost more: the tick box accepts it.
+                 else "Accept the extra cost to start." if limit is not None and limit != (eng.ask if WHAT[what] == "buy" else eng.bid)
+                      and d.get("accept_extra") is not True
                  else None)
         if error:
             return JSONResponse({"errors": [error]}, status_code=400)

@@ -240,7 +240,7 @@ def test_one_dry_run_end_to_end_on_a_fake_feed(setup):
     texts = [e["text"] for e in c["events"]]
     assert texts == [
         "Recorded the start ask, 62,418.50, as the cap.",
-        "Sending a post-only buy, 0.0500 BTC at 62,417.90…",
+        "Placing a post-only buy, 0.0500 BTC at 62,417.90…",
         "Placed a post-only buy, 0.0500 BTC at 62,417.90.",
         "Best bid rose to 62,418.10. Amended the order to 62,418.10.",
         "Filled 0.0180 BTC at 62,418.10 (maker).",
@@ -287,6 +287,17 @@ def test_a_higher_limit_needs_the_tick_box(setup):
     r = client.post("/api/chase", headers=H, json={**body, "accept_extra": True})
     assert r.status_code == 200
     assert client.get("/api/state").json()["chase"]["limit"] == "62480.0"
+
+
+def test_a_limit_at_the_price_now_needs_no_tick_box(setup):
+    # UX-ZERO-LOSS-ACCEPT-CHECKBOX: a floor at the bid (a cap at the ask) can lose nothing against a market order now.
+    client, app, eng, f, clock, call = setup
+    tok = token_of(client)
+    call(f._handle, book_msg("snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")]))
+    r = client.post("/api/chase", headers={**ORIGIN, "X-Session-Token": tok},
+                    json={"pair": "BTC/USD", "what": "sell", "qty": "0.05", "timeout": 120, "limit": "62417.9"})
+    assert r.status_code == 200, r.json()
+    assert client.get("/api/state").json()["chase"]["limit"] == "62417.9"
 
 
 # ---------- repair round 1 (R13 code review, R14 security review) ----------
