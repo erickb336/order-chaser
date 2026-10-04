@@ -33,7 +33,7 @@ ALLOWED_ORIGINS = {f"http://{h}" for h in ALLOWED_HOSTS}
 STATIC = Path(__file__).parent / "static"
 PAGES = ("new", "chase", "result", "history", "setup")
 MODE = "dry"   # T2 has only dry runs. No code path sends a private request to Kraken.
-PLAIN_NUMBER = re.compile(r"\d{1,15}(\.\d{1,18})?")
+PLAIN_NUMBER = re.compile(r"[0-9]{1,15}(\.[0-9]{1,18})?")   # ASCII digits only: no "١" or "０"
 NUMBER_MAX = Decimal(10) ** 12
 # No page of the tool may show inside a frame of another site (clickjacking).
 FRAME_HEADERS = [(b"x-frame-options", b"DENY"), (b"content-security-policy", b"frame-ancestors 'none'")]
@@ -132,6 +132,10 @@ class Engine:
     def active(self) -> bool:
         return self.chase is not None and self.chase.phase != "done"
 
+    def fresh(self) -> bool:
+        """Valid prices for Start: a valid book at most core.STALE_AFTER s old (a heartbeat renews it)."""
+        return self.book_ok and self.book_at is not None and self.clock() - self.book_at <= core.STALE_AFTER
+
     def rate_for(self, symbol: str) -> float:
         r, at = self.rates.get(symbol, (self.rate_start, self.clock()))
         return max(0.0, r - (self.clock() - at))
@@ -142,13 +146,13 @@ class Engine:
         pair = self.pairs.get(symbol)
         if pair is None:
             return ["Unknown pair, or the pair list did not load."]
-        if symbol != self.watched or self.book_at is None or self.clock() - self.book_at > 15:
+        if symbol != self.watched or not self.fresh():
             return ["Start needs live prices."]
         errors = core.validate(pair, side, qty, limit, self.bid, self.ask, self.book_ok, timeout)
         if errors:
             return errors
         c, cmds = core.begin("oc-" + uuid.uuid4().hex[:16], pair, side, qty, self.bid, self.ask, timeout,
-                             self.clock(), "the simulation", limit, self.rate_for(symbol))
+                             self.clock(), core.SIM_VENUE, limit, self.rate_for(symbol))
         self._apply(c, cmds)
         return []
 
@@ -216,7 +220,8 @@ class Engine:
             "mode": MODE,
             "watched": self.watched,
             "feed": {"bid": str(self.bid) if self.bid else None, "ask": str(self.ask) if self.ask else None,
-                     "ok": self.book_ok, "age": None if self.book_at is None else now - self.book_at, **self.link},
+                     "ok": self.book_ok, "fresh": self.fresh(), "age": None if self.book_at is None else now - self.book_at,
+                     **self.link},
             "pairs": {k: json.loads(json.dumps(dataclasses.asdict(p), default=_plain)) for k, p in self.pairs.items()},
             "pairs_error": self.pairs_error,
             "rate": self.rate_for(self.watched),
@@ -237,12 +242,13 @@ class Guard:
         if scope["type"] not in ("http", "websocket"):
             return "Refused: unknown connection type."
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
+        token = next((v for k, v in scope["headers"] if k.lower() == b"x-session-token"), b"")
         if headers.get("host") not in ALLOWED_HOSTS:
             return "Refused: unknown Host."
         if scope["type"] == "websocket" or scope["method"] not in ("GET", "HEAD"):
             if headers.get("origin") not in ALLOWED_ORIGINS:
                 return "Refused: the Origin is not this tool."
-            if not secrets.compare_digest(headers.get("x-session-token", ""), self.token):
+            if not secrets.compare_digest(token, self.token.encode()):   # bytes: a non-ASCII header is a mismatch
                 return "Refused: no valid session token."
         return None
 

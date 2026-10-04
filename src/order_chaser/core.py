@@ -29,6 +29,9 @@ AMEND_EVERY = 5
 AMEND_EVERY_SLOW = 15
 TIMEOUTS = (30, 60, 120, 300, 600, 900)
 CANCEL_TRIES = 3
+STALE_AFTER = 10      # seconds: a book older than this is no valid price (the feed sends a heartbeat each second)
+SIM_VENUE = "the simulated exchange"
+LIVE_VENUE = "Kraken"
 ZERO = Decimal(0)
 
 
@@ -67,7 +70,7 @@ class Chase:
     start_ask: Decimal
     timeout: int
     started: float
-    venue: str           # "the simulation" in a dry run, "Kraken" in live
+    venue: str           # SIM_VENUE in a dry run, LIVE_VENUE in live
     phase: str = "placing"
     price: Decimal | None = None      # price of the resting order
     pending: Decimal | None = None    # price of a place or amend in flight
@@ -78,6 +81,7 @@ class Chase:
     bid: Decimal | None = None
     ask: Decimal | None = None
     book_ok: bool = True
+    book_at: float | None = None      # time of the last valid book (a heartbeat re-sends the book)
     feed_ok: bool = True
     rate: float = 0.0                 # estimated Kraken rate counter for this pair
     rate_at: float = 0.0
@@ -108,6 +112,14 @@ class Chase:
     @property
     def remainder(self) -> Decimal:
         return max(self.qty - self.filled, ZERO)
+
+    @property
+    def dry(self) -> bool:
+        return self.venue != LIVE_VENUE
+
+    def fresh(self, now: float) -> bool:
+        """A valid price: the feed is up, the book checksum matched, and the book is at most STALE_AFTER s old."""
+        return self.feed_ok and self.book_ok and self.book_at is not None and now - self.book_at <= STALE_AFTER
 
 
 # ---------- Events (input) ----------
@@ -147,12 +159,20 @@ class Rejected:
 
 @dataclass(frozen=True)
 class Filled:
+    """A fill report of the gateway.
+
+    Gateway contract (the simulator now, the Kraken gateway in T4): a fill of the chase order
+    MUST carry `cum`, the venue's filled qty of that order after the fill (Kraken: cum_qty of the
+    executions channel). The core counts `cum` minus what it already counted, so a report that a
+    reread already counted adds nothing. The core logs and ignores the qty of a chase fill without
+    `cum`: it cannot know whether that qty is already counted. An IOC fill counts its qty.
+    """
     now: float
     qty: Decimal
     price: Decimal
     maker: bool
     order: str = "chase"
-    cum: Decimal | None = None   # the venue's filled qty of the order after this fill, when it reports it
+    cum: Decimal | None = None
 
 @dataclass(frozen=True)
 class Canceled:
@@ -272,7 +292,7 @@ def begin(id: str, pair: Pair, side: str, qty: Decimal, bid: Decimal, ask: Decim
     cap = limit if limit is not None else (ask if buy else bid)
     price = bid if buy else ask
     c = Chase(id=id, pair=pair, side=side, qty=qty, limit=cap, start_bid=bid, start_ask=ask,
-              timeout=timeout, started=now, venue=venue, pending=price, bid=bid, ask=ask,
+              timeout=timeout, started=now, venue=venue, pending=price, bid=bid, ask=ask, book_at=now,
               rate=min(float(RATE_MAX), rate + 1), rate_at=now)
     word = "cap" if buy else "floor"
     if limit is None:
@@ -325,7 +345,7 @@ def step(c: Chase, ev) -> tuple[Chase, list]:
     if isinstance(ev, Book):
         if c.book_ok and not ev.ok:
             out.append(Log(t, "The order book checksum did not match. Reading the book again. No amend until the book is valid.", "warn"))
-        c = replace(c, bid=ev.bid, ask=ev.ask, book_ok=ev.ok)
+        c = replace(c, bid=ev.bid, ask=ev.ask, book_ok=ev.ok, book_at=ev.now if ev.ok else c.book_at)
         if c.phase == "resting":
             c, more = _maybe_amend(c, ev.now)
             out += more
@@ -375,7 +395,11 @@ def step(c: Chase, ev) -> tuple[Chase, list]:
 
     elif isinstance(ev, Filled):
         qty = ev.qty
-        if ev.order == "chase" and ev.cum is not None:
+        if ev.order == "chase" and ev.cum is None:
+            out.append(Log(t, f"{venue} reported a fill of {fmt_qty(ev.qty)} {base} with no filled total. "
+                              "The tool did not count it. It counts the filled total that the venue reports.", "warn"))
+            return c, out
+        if ev.order == "chase":
             qty = ev.cum - c.chase_filled          # a fill that a reread already counted adds nothing
         if qty <= 0:
             return c, out
@@ -461,7 +485,7 @@ def _maybe_amend(c: Chase, now: float) -> tuple[Chase, list]:
         c = replace(c, slow=slow)
         if slow:
             out.append(Log(now - c.started, f"Estimated rate counter at {int(c.rate)} of {RATE_MAX}. Next amend in {AMEND_EVERY_SLOW} s, not {AMEND_EVERY} s.", "warn"))
-    if not (c.book_ok and c.feed_ok) or c.price is None or c.exit:
+    if not c.fresh(now) or c.price is None or c.exit:
         return c, out
     best = c.bid if c.buy else c.ask
     if best is None:
@@ -499,6 +523,9 @@ def _rejected(c: Chase, ev: Rejected, t: float) -> tuple[Chase, list]:
             c = replace(c, rate=float(RATE_MAX), slow=True)
         return c, out
     if ev.op == "cancel" and c.phase == "cancelling":
+        if ev.reason == "rate_limit":
+            # As for an amend: trust Kraken. The next try waits until the counter has room (see _cancel).
+            c = replace(c, rate=float(RATE_MAX), slow=True)
         return c, [Log(t, f"Cancel rejected: {why}. Reading the order again.", "warn"), Query(c.id)]
     if ev.op == "ioc" and c.phase == "ioc":
         out = [Log(t, f"The IOC was rejected: {why}.", "bad")]
@@ -526,8 +553,10 @@ def _order_state(c: Chase, ev: OrderState, t: float) -> tuple[Chase, list]:
         return c, out + more
     if c.phase == "cancelling":            # the cancel was rejected and the order is still open
         if c.cancel_tries >= CANCEL_TRIES:
+            todo = ("Nothing to check in Kraken Pro: a dry run sends no orders." if c.dry
+                    else "Check Kraken Pro for an open order and cancel it there.")
             out.append(Log(t, f"{venue} rejected the cancel {CANCEL_TRIES} times and the order is still open. The tool "
-                              "stopped the chase. Check Kraken Pro for an open order and cancel it there.", "bad"))
+                              f"stopped the chase. {todo}", "bad"))
             c, more = _end(c, ev.now, "cancelfail")
         else:
             c, more = _cancel(c, ev.now)
@@ -547,8 +576,9 @@ def _order_state(c: Chase, ev: OrderState, t: float) -> tuple[Chase, list]:
         if rest == 0:
             c, more = _end(c, ev.now, "filled")
             return c, out + more
-        if not c.feed_ok:
-            out.append(Log(t, "No IOC: the price feed is lost, so there is no valid price. The rest counts as not filled.", "bad"))
+        if not c.fresh(ev.now):
+            why = "the price feed is lost" if not c.feed_ok else "the order book is not valid now"
+            out.append(Log(t, f"No IOC: {why}, so there is no valid price. The rest counts as not filled.", "bad"))
             c, more = _end(c, ev.now, "notfilled")
             return c, out + more
         if rest < c.pair.ordermin or rest * c.limit < c.pair.costmin:
@@ -578,7 +608,7 @@ def _venue_cum(c: Chase, ev: OrderState, t: float) -> tuple[Chase, list]:
 def _restarted(c: Chase, ev: Restarted, t: float) -> tuple[Chase, list]:
     base = c.pair.base
     off = int(ev.now - ev.last_seen)
-    if c.venue == "the simulation":
+    if c.dry:
         lines = [Log(t, f"Tool started again after {off} s off. Ended the simulated order. No order was on Kraken.", "bad"),
                  Log(t, f"Recorded the simulated fills: {fmt_qty(c.filled)} of {fmt_qty(c.qty)} {base}."),
                  Log(t, "Did not continue the dry run.")]
@@ -589,7 +619,7 @@ def _restarted(c: Chase, ev: Restarted, t: float) -> tuple[Chase, list]:
 
 
 def _end(c: Chase, now: float, outcome: str) -> tuple[Chase, list]:
-    end_px = (c.ask if c.buy else c.bid) if c.feed_ok else None   # no valid price while the feed is lost
+    end_px = (c.ask if c.buy else c.bid) if c.fresh(now) else None   # no valid price: feed lost or book stale
     return replace(c, phase="done", outcome=outcome, ended_at=now, pending=None, end_ask=end_px), []
 
 

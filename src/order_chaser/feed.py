@@ -11,13 +11,13 @@ from decimal import Decimal
 import httpx
 import websockets
 
+from . import core
 from .book import OrderBook
 from .core import Pair
 
 WS_URL = "wss://ws.kraken.com/v2"
 REST_PAIRS = "https://api.kraken.com/0/public/AssetPairs"
 PAIRS = ("BTC/USD", "ETH/USD", "SOL/USD")
-SILENCE_LIMIT = 10.0   # seconds without a message (Kraken sends a heartbeat each second)
 
 
 def parse_pairs(result: dict) -> dict[str, Pair]:
@@ -81,26 +81,33 @@ class PublicFeed:
 
     async def run(self) -> None:
         while True:
+            wait = None
             try:
-                async with websockets.connect(self.url, open_timeout=10, ping_interval=20) as ws:
+                async with websockets.connect(self.url, open_timeout=10, ping_interval=20, close_timeout=1) as ws:
                     self.ws = ws
                     if self.pair:
                         self.book = OrderBook(self.pair.price_decimals, self.pair.qty_decimals)
                         await self._subscribe()
                     self.attempt = 0
                     self.on_link(True, 0, 0)
-                    while True:
-                        raw = await asyncio.wait_for(ws.recv(), SILENCE_LIMIT)
-                        await self._handle(json.loads(raw, parse_float=Decimal))
+                    try:
+                        while True:   # no message (heartbeats count) for STALE_AFTER s: the feed is lost
+                            raw = await asyncio.wait_for(ws.recv(), core.STALE_AFTER)
+                            await self._handle(json.loads(raw, parse_float=Decimal))
+                    except Exception:
+                        wait = self._lost()   # now, not after the close: a stalled link holds the close
             except asyncio.CancelledError:
                 raise
             except Exception:
                 pass
-            self.ws = None
-            self.attempt += 1
-            wait = min(2 ** min(self.attempt, 4), 15)
-            self.on_link(False, self.attempt, wait)
-            await asyncio.sleep(wait)
+            await asyncio.sleep(self._lost() if wait is None else wait)
+
+    def _lost(self) -> float:
+        self.ws = None
+        self.attempt += 1
+        wait = min(2 ** min(self.attempt, 4), 15)
+        self.on_link(False, self.attempt, wait)
+        return wait
 
     async def _handle(self, m: dict) -> None:
         ch = m.get("channel")
@@ -117,6 +124,8 @@ class PublicFeed:
                 await self._send("unsubscribe", "book", self.pair.symbol, depth=10)
                 self.book = OrderBook(self.pair.price_decimals, self.pair.qty_decimals)
                 await self._send("subscribe", "book", self.pair.symbol, depth=10)
+        elif ch == "heartbeat" and self.book is not None and self.book.bids and not self.resync:
+            self.on_book(self.book, True)   # no change since the last book message: the book is still valid now
         elif ch == "trade" and m.get("type") == "update" and self.pair:
             for t in m["data"]:
                 if t.get("symbol") == self.pair.symbol:

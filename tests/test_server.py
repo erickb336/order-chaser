@@ -109,9 +109,9 @@ def test_the_token_is_only_in_the_served_page(setup):
 
 def test_unfinished_chase_in_sqlite_becomes_ended_on_server_start(tmp_path):
     pair = PAIRS["BTC/USD"]
-    c, _ = core.begin("oc-old", pair, "buy", D("0.05"), D("62417.9"), D("62418.5"), 120, 500.0, "the simulation")
+    c, _ = core.begin("oc-old", pair, "buy", D("0.05"), D("62417.9"), D("62418.5"), 120, 500.0, core.SIM_VENUE)
     c, _ = core.step(c, core.Placed(500.0))
-    c, _ = core.step(c, core.Filled(531.0, D("0.018"), D("62417.9"), True))
+    c, _ = core.step(c, core.Filled(531.0, D("0.018"), D("62417.9"), True, cum=D("0.018")))
     db = Db(tmp_path)
     db.save(c, "dry", 562.0)
     db.cx.close()
@@ -232,6 +232,7 @@ def test_one_dry_run_end_to_end_on_a_fake_feed(setup):
     assert (mid["phase"], mid["price"], mid["filled"]) == ("resting", "62418.1", "0.018")
 
     clock.t += 60
+    call(f._handle, {"channel": "heartbeat"})                                # no book change: the book is still valid
     call(eng.tick)                                                           # timeout: fallback
     c = client.get(f"/api/chase/{cid}").json()
     texts = [e["text"] for e in c["events"]]
@@ -242,7 +243,7 @@ def test_one_dry_run_end_to_end_on_a_fake_feed(setup):
         "Best bid rose to 62,418.10. Amended the order to 62,418.10.",
         "Filled 0.0180 BTC at 62,418.10 (maker).",
         "Timeout. Cancelling the resting order.",
-        "The simulation confirmed the cancel.",
+        "The simulated exchange confirmed the cancel.",
         "Read the filled quantity again: 0.0180 BTC.",
         "Sending an IOC buy, 0.0320 BTC at 62,418.50…",
         "Filled 0.0100 BTC at 62,418.50 (taker, IOC).",
@@ -409,3 +410,83 @@ def test_the_tool_never_changes_the_mode_of_an_existing_folder_and_warns(tmp_pat
     assert folder.stat().st_mode & 0o777 == 0o755
     assert [r.getMessage() for r in caplog.records] == [
         f"The data folder {folder} is readable by other users (mode 755). The tool did not change it."]
+
+
+# ---------- repair round 2 (R18 security review, R20 QA) ----------
+
+@pytest.mark.parametrize("qty", ["١", "０.００１", "0.0٥"])
+def test_digits_that_are_not_ascii_are_refused(setup, qty):
+    # UNICODE-DIGITS
+    H = started_book(setup)
+    r = setup[0].post("/api/chase", headers=H, json={"pair": "BTC/USD", "side": "buy", "qty": qty, "timeout": 120})
+    assert (r.status_code, r.json()) == (400, {"errors": ["Enter the amount as a plain number, such as 0.0500."]})
+    assert setup[2].chase is None
+
+
+def test_a_token_header_that_is_not_ascii_gets_403_with_the_frame_headers(setup):
+    # TOKEN-NONASCII-500
+    r = setup[0].post("/api/chase/stop", headers={**ORIGIN, "X-Session-Token": "tök".encode("utf-8")})
+    assert (r.status_code, r.text) == (403, "Refused: no valid session token.")
+    assert r.headers["x-frame-options"] == "DENY"
+
+
+def test_start_needs_a_book_at_most_10_s_old_and_a_heartbeat_renews_it(setup):
+    # STALE-FEED-FREEZE-AFTER-20S: Start and the running chase use one age limit, core.STALE_AFTER.
+    client, app, eng, f, clock, call = setup
+    H = started_book(setup)
+    body = {"pair": "BTC/USD", "side": "buy", "qty": "0.05", "timeout": 120}
+    clock.t += 10.5
+    assert client.get("/api/state").json()["feed"]["fresh"] is False
+    assert client.post("/api/chase", headers=H, json=body).json() == {"errors": ["Start needs live prices."]}
+    call(f._handle, {"channel": "heartbeat"})
+    assert client.get("/api/state").json()["feed"]["fresh"] is True
+    assert client.post("/api/chase", headers=H, json=body).status_code == 200
+
+
+def test_a_stalled_feed_is_lost_10_s_after_its_last_message_not_after_the_close(monkeypatch):
+    # STALE-FEED-FREEZE-AFTER-20S: a stalled link answers nothing, also not the close. The feed must report
+    # the loss when the silence passes the limit, not after the close handshake times out.
+    import time
+
+    import websockets
+    monkeypatch.setattr(core, "STALE_AFTER", 0.5)
+    events = []
+
+    async def scenario():
+        async def handler(ws):
+            for _ in range(10_000):
+                await ws.send(json.dumps({"channel": "heartbeat"}))
+                await asyncio.sleep(0.05)
+
+        stalled = asyncio.Event()
+
+        async def pipe(reader, writer):
+            while data := await reader.read(65536):
+                if not stalled.is_set():
+                    writer.write(data)
+                    await writer.drain()
+
+        async def proxy(cr, cw):
+            ur, uw = await asyncio.open_connection("127.0.0.1", up_port)
+            await asyncio.gather(pipe(cr, uw), pipe(ur, cw), return_exceptions=True)
+
+        async with websockets.serve(handler, "127.0.0.1", 0, close_timeout=0.1) as up:
+            up_port = up.sockets[0].getsockname()[1]
+            px = await asyncio.start_server(proxy, "127.0.0.1", 0)
+            url = f"ws://127.0.0.1:{px.sockets[0].getsockname()[1]}"
+            f = feed.PublicFeed(lambda b, ok: None, lambda *a: None, lambda up, *a: events.append((up, time.monotonic())), url)
+            task = asyncio.create_task(f.run())
+            while not events:
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.3)
+            stalled.set()
+            t_stall = time.monotonic()
+            while len(events) < 2:
+                await asyncio.sleep(0.01)
+            task.cancel()
+            px.close()
+            return events[1][1] - t_stall
+
+    lost_after = asyncio.run(asyncio.wait_for(scenario(), 15))
+    assert events[0][0] is True and events[1][0] is False
+    assert 0.4 < lost_after < 0.9          # 0.5 s of silence; the old code added the 10 s close timeout

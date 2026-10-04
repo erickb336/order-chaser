@@ -12,7 +12,7 @@ T0 = 1000.0
 
 
 def start(side="buy", qty="0.05", bid="62417.9", ask="62418.5", timeout=120, limit=None, rate=0.0):
-    c, cmds = core.begin("oc-1", BTC, side, D(qty), D(bid), D(ask), timeout, T0, "the simulation",
+    c, cmds = core.begin("oc-1", BTC, side, D(qty), D(bid), D(ask), timeout, T0, core.SIM_VENUE,
                          None if limit is None else D(limit), rate)
     return c, cmds
 
@@ -30,6 +30,11 @@ def resting(**kw):
     c, cmds = start(**kw)
     c, _ = core.step(c, Placed(T0))
     return c
+
+
+def beat(c, t):
+    """The book again at time t, as the feed re-sends it on each heartbeat: the prices are fresh."""
+    return Book(t, c.bid, c.ask, True)
 
 
 def logs(c, *events):
@@ -79,8 +84,8 @@ def test_amends_follow_the_bid_but_never_pass_the_cap():
 
 def test_the_fallback_ioc_goes_out_at_the_cap_even_when_the_ask_is_far_above():
     c = resting()
-    c, cmds = run(c, Book(T0 + 1, D("62430.0"), D("62431.0"), True), Tick(T0 + 121), Canceled(T0 + 121),
-                  OrderState(T0 + 121, False, D(0), None))
+    c, cmds = run(c, Book(T0 + 1, D("62430.0"), D("62431.0"), True), Tick(T0 + 121),
+                  Book(T0 + 121, D("62430.0"), D("62431.0"), True), Canceled(T0 + 121), OrderState(T0 + 121, False, D(0), None))
     assert [x for x in cmds if isinstance(x, Ioc)] == [Ioc("oc-1-ioc", "buy", D("62418.5"), D("0.05"))]
 
 
@@ -88,16 +93,17 @@ def test_the_fallback_ioc_goes_out_at_the_cap_even_when_the_ask_is_far_above():
 
 def test_remainder_after_partial_fills_sizes_the_ioc():
     c = resting()
-    c, cmds = run(c, Filled(T0 + 31, D("0.018"), D("62417.9"), True), Filled(T0 + 40, D("0.002"), D("62417.9"), True),
-                  Tick(T0 + 120), Canceled(T0 + 120), OrderState(T0 + 120, False, D("0.020"), None))
+    c, cmds = run(c, Filled(T0 + 31, D("0.018"), D("62417.9"), True, cum=D("0.018")),
+                  Filled(T0 + 40, D("0.002"), D("62417.9"), True, cum=D("0.020")),
+                  beat(c, T0 + 120), Tick(T0 + 120), Canceled(T0 + 120), OrderState(T0 + 120, False, D("0.020"), None))
     assert [x for x in cmds if isinstance(x, Ioc)] == [Ioc("oc-1-ioc", "buy", D("62418.5"), D("0.030"))]
     assert c.phase == "ioc"
 
 
 def test_reread_trusts_the_venue_when_it_reports_more_filled_than_the_tool_saw():
     c = resting()
-    c, cmds = run(c, Filled(T0 + 31, D("0.018"), D("62417.9"), True), Tick(T0 + 120), Canceled(T0 + 120),
-                  OrderState(T0 + 120, False, D("0.025"), None))
+    c, cmds = run(c, Filled(T0 + 31, D("0.018"), D("62417.9"), True, cum=D("0.018")), beat(c, T0 + 120), Tick(T0 + 120),
+                  Canceled(T0 + 120), OrderState(T0 + 120, False, D("0.025"), None))
     assert [x.qty for x in cmds if isinstance(x, Ioc)] == [D("0.025")]
 
 
@@ -105,7 +111,7 @@ def test_reread_trusts_the_venue_when_it_reports_more_filled_than_the_tool_saw()
 
 def test_timeout_fallback_is_cancel_then_canceled_event_then_reread_then_ioc_for_the_remainder_only():
     c = resting()
-    c, _ = run(c, Filled(T0 + 31, D("0.018"), D("62418.1"), True))
+    c, _ = run(c, Filled(T0 + 31, D("0.018"), D("62418.1"), True, cum=D("0.018")))
 
     c, cmds = run(c, Tick(T0 + 119))
     assert cmds == [] and c.phase == "resting"
@@ -114,7 +120,7 @@ def test_timeout_fallback_is_cancel_then_canceled_event_then_reread_then_ioc_for
     assert cmds == [Cancel("oc-1")] and c.phase == "cancelling"
 
     # A late fill can arrive before the cancel lands: no order goes out yet.
-    c, cmds = run(c, Filled(T0 + 120.1, D("0.002"), D("62418.1"), True), Tick(T0 + 121))
+    c, cmds = run(c, Filled(T0 + 120.1, D("0.002"), D("62418.1"), True, cum=D("0.020")), Tick(T0 + 121))
     assert cmds == []
 
     c, cmds = run(c, Canceled(T0 + 121))
@@ -123,7 +129,7 @@ def test_timeout_fallback_is_cancel_then_canceled_event_then_reread_then_ioc_for
     c, cmds = run(c, Tick(T0 + 121.5))
     assert cmds == []
 
-    c, cmds = run(c, OrderState(T0 + 122, False, D("0.020"), None))
+    c, cmds = run(c, beat(c, T0 + 122), OrderState(T0 + 122, False, D("0.020"), None))
     assert cmds == [Ioc("oc-1-ioc", "buy", D("62418.5"), D("0.030"))]
 
     c, _ = run(c, Filled(T0 + 122, D("0.030"), D("62418.5"), False, "ioc"), IocDone(T0 + 122))
@@ -132,15 +138,17 @@ def test_timeout_fallback_is_cancel_then_canceled_event_then_reread_then_ioc_for
 
 def test_ioc_that_fills_nothing_above_the_cap_ends_as_not_filled():
     c = resting()
-    c, texts = logs(c, Filled(T0 + 31, D("0.018"), D("62418.1"), True), Book(T0 + 100, D("62429.4"), D("62431.0"), True),
-                    Amended(T0 + 100), Tick(T0 + 120), Canceled(T0 + 120), OrderState(T0 + 121, False, D("0.018"), None), IocDone(T0 + 121))
+    c, texts = logs(c, Filled(T0 + 31, D("0.018"), D("62418.1"), True, cum=D("0.018")),
+                    Book(T0 + 100, D("62429.4"), D("62431.0"), True),
+                    Amended(T0 + 100), Book(T0 + 120, D("62429.4"), D("62431.0"), True), Tick(T0 + 120), Canceled(T0 + 120), OrderState(T0 + 121, False, D("0.018"), None), IocDone(T0 + 121))
     assert (c.phase, c.outcome, c.filled) == ("done", "notfilled", D("0.018"))
     assert texts[-1] == "IOC buy, 0.0320 BTC at 62,418.50: nothing filled. The ask is 62,431.00."
 
 
 def test_remainder_below_the_minimum_stops_as_not_filled_with_no_ioc():
     c = resting()
-    c, cmds = run(c, Filled(T0 + 31, D("0.04997"), D("62417.9"), True), Tick(T0 + 120), Canceled(T0 + 120),
+    c, cmds = run(c, Filled(T0 + 31, D("0.04997"), D("62417.9"), True, cum=D("0.04997")), beat(c, T0 + 120),
+                  Tick(T0 + 120), Canceled(T0 + 120),
                   OrderState(T0 + 120, False, D("0.04997"), None))
     assert [x for x in cmds if isinstance(x, Ioc)] == []
     assert (c.phase, c.outcome) == ("done", "belowmin")
@@ -148,8 +156,9 @@ def test_remainder_below_the_minimum_stops_as_not_filled_with_no_ioc():
 
 def test_remainder_below_costmin_also_stops():
     cheap = core.Pair("X/USD", "X", "USD", D("0.0001"), D("1"), D("5"), 4, 8, "online")
-    c, _ = core.begin("oc-2", cheap, "buy", D("10"), D("1.0000"), D("1.0001"), 60, T0, "the simulation")
-    c, cmds = run(c, Placed(T0), Filled(T0 + 5, D("6"), D("1.0000"), True), Tick(T0 + 60), Canceled(T0 + 60),
+    c, _ = core.begin("oc-2", cheap, "buy", D("10"), D("1.0000"), D("1.0001"), 60, T0, core.SIM_VENUE)
+    c, cmds = run(c, Placed(T0), Filled(T0 + 5, D("6"), D("1.0000"), True, cum=D("6")), beat(c, T0 + 60),
+                  Tick(T0 + 60), Canceled(T0 + 60),
                   OrderState(T0 + 60, False, D("6"), None))
     # The rest, 4 X, is above ordermin (1) but 4 x 1.0001 is below costmin (5).
     assert [x for x in cmds if isinstance(x, Ioc)] == []
@@ -165,7 +174,7 @@ def test_never_buys_more_than_asked_on_random_markets():
         bid = D("100.0")
         gw.on_book([(bid, D("1"))], [(bid + D("0.1"), D("0.3")), (bid + D("0.2"), D("5"))], 0.0)
         pair = core.Pair("X/USD", "X", "USD", D("0.1"), D("0.001"), D("0.01"), 1, 8, "online")
-        c, cmds = core.begin("oc", pair, "buy", D("1.0"), bid, bid + D("0.1"), 30, 0.0, "the simulation")
+        c, cmds = core.begin("oc", pair, "buy", D("1.0"), bid, bid + D("0.1"), 30, 0.0, core.SIM_VENUE)
         sent_qty = D(0)
         now = 0.0
         queue = [x for x in cmds if not isinstance(x, core.Log)]
@@ -277,7 +286,7 @@ def test_amend_reject_for_rate_limit_sets_the_counter_to_the_maximum_and_slows_a
 
 def test_stop_cancels_and_ends_with_no_ioc():
     c = resting()
-    c, cmds = run(c, Filled(T0 + 31, D("0.018"), D("62417.9"), True), UserStop(T0 + 55))
+    c, cmds = run(c, Filled(T0 + 31, D("0.018"), D("62417.9"), True, cum=D("0.018")), UserStop(T0 + 55))
     assert cmds == [Cancel("oc-1")]
     c, cmds = run(c, Tick(T0 + 200), Canceled(T0 + 55))
     assert cmds == []
@@ -294,7 +303,7 @@ def test_stop_while_placing_waits_for_the_order_then_cancels():
 
 def test_fill_the_rest_now_runs_the_fallback_at_once():
     c = resting()
-    c, cmds = run(c, Filled(T0 + 10, D("0.01"), D("62417.9"), True), UserFillNow(T0 + 20))
+    c, cmds = run(c, Filled(T0 + 10, D("0.01"), D("62417.9"), True, cum=D("0.01")), beat(c, T0 + 20), UserFillNow(T0 + 20))
     assert cmds == [Cancel("oc-1")]
     c, cmds = run(c, Canceled(T0 + 20), OrderState(T0 + 20, False, D("0.01"), None))
     assert cmds == [Query("oc-1"), Ioc("oc-1-ioc", "buy", D("62418.5"), D("0.04"))]
@@ -316,13 +325,13 @@ def test_sell_rests_at_the_ask_moves_down_never_below_the_floor_and_ioc_at_the_f
         if c.phase == "amending":
             c, _ = run(c, Amended(now))
     assert amends == [D("62418.3"), D("62418.0"), D("62417.9")]
-    c, cmds = run(c, Tick(T0 + 120), Canceled(T0 + 120), OrderState(T0 + 120, False, D(0), None))
+    c, cmds = run(c, beat(c, T0 + 120), Tick(T0 + 120), Canceled(T0 + 120), OrderState(T0 + 120, False, D(0), None))
     assert [x for x in cmds if isinstance(x, Ioc)] == [Ioc("oc-1-ioc", "sell", D("62417.9"), D("0.05"))]
 
 
 def test_sell_saving_counts_money_received():
     c = resting(side="sell")
-    c, _ = run(c, Filled(T0 + 5, D("0.05"), D("62418.5"), True))
+    c, _ = run(c, Filled(T0 + 5, D("0.05"), D("62418.5"), True, cum=D("0.05")))
     s = core.summary(c)
     # received 0.05 x 62418.5 x (1 - 0.004) = 3108.441300; market 0.05 x 62417.9 x (1 - 0.008) = 3095.927840
     assert s["ours"] == D("3108.4413000")
@@ -351,7 +360,7 @@ def test_feed_lost_freezes_the_order_then_reconciles():
     assert cmds == [] and c.phase == "feed_lost"   # no amend without the feed
     c, cmds = run(c, FeedBack(T0 + 101))
     assert cmds == [Query("oc-1")] and c.phase == "reconcile"
-    c, cmds = run(c, OrderState(T0 + 101, True, D(0), D("62417.9")))
+    c, cmds = run(c, beat(c, T0 + 101), OrderState(T0 + 101, True, D(0), D("62417.9")))
     assert cmds == [Amend("oc-1", D("62418.2"))]   # the book seen during the outage is not used...
 
 
@@ -365,7 +374,7 @@ def test_stop_works_while_the_feed_is_lost():
 
 def test_restart_ends_an_unfinished_dry_run_and_does_not_resume_it():
     c = resting()
-    c, _ = run(c, Filled(T0 + 31, D("0.018"), D("62417.9"), True))
+    c, _ = run(c, Filled(T0 + 31, D("0.018"), D("62417.9"), True, cum=D("0.018")))
     c, texts = logs(c, Restarted(T0 + 70, T0 + 62))
     assert (c.phase, c.outcome) == ("done", "ended")
     assert texts == ["Tool started again after 8 s off. Ended the simulated order. No order was on Kraken.",
@@ -378,7 +387,8 @@ def test_restart_ends_an_unfinished_dry_run_and_does_not_resume_it():
 
 def test_saving_against_a_market_order_at_the_start_matches_the_design_sample():
     c = resting()
-    c, _ = run(c, Filled(T0 + 31, D("0.018"), D("62418.1"), True), Filled(T0 + 78, D("0.032"), D("62418.3"), True))
+    c, _ = run(c, Filled(T0 + 31, D("0.018"), D("62418.1"), True, cum=D("0.018")),
+               Filled(T0 + 78, D("0.032"), D("62418.3"), True, cum=D("0.050")))
     s = core.summary(c)
     assert c.outcome == "filled"
     assert round(s["avg"], 2) == D("62418.23")
@@ -390,7 +400,7 @@ def test_saving_against_a_market_order_at_the_start_matches_the_design_sample():
 def test_maker_saving_is_not_below_zero_with_the_default_cap():
     # Maker fills at the cap, the worst maker price, still save the fee difference.
     c = resting()
-    c, _ = run(c, Filled(T0 + 5, D("0.05"), D("62418.5"), True))
+    c, _ = run(c, Filled(T0 + 5, D("0.05"), D("62418.5"), True, cum=D("0.05")))
     assert core.summary(c)["saving_maker"] == D("12.4837000")
 
 
@@ -401,7 +411,7 @@ def test_worst_case_with_a_higher_limit():
 
 def test_state_survives_json():
     c = resting()
-    c, _ = run(c, Filled(T0 + 31, D("0.018"), D("62418.1"), True))
+    c, _ = run(c, Filled(T0 + 31, D("0.018"), D("62418.1"), True, cum=D("0.018")))
     assert core.from_json(core.to_json(c)) == c
 
 
@@ -459,8 +469,8 @@ def test_a_cancel_reject_with_the_order_still_open_retries_then_ends_and_says_ch
     c, cmds = run(c, Rejected(T0 + 21, "cancel", "EGeneral:Temporary lockout"))
     c, texts = logs(c, OrderState(T0 + 21, True, D(0), D("62417.9")))
     assert (c.phase, c.outcome) == ("done", "cancelfail")
-    assert texts == ["The simulation rejected the cancel 3 times and the order is still open. The tool stopped "
-                     "the chase. Check Kraken Pro for an open order and cancel it there."]
+    assert texts == ["The simulated exchange rejected the cancel 3 times and the order is still open. The tool stopped "
+                     "the chase. Nothing to check in Kraken Pro: a dry run sends no orders."]
 
 
 def test_a_cancel_retry_waits_for_room_on_the_rate_counter():
@@ -478,8 +488,8 @@ def test_a_cancel_retry_waits_for_room_on_the_rate_counter():
 def test_the_outcome_and_the_summary_use_the_venue_filled_quantity():
     # OUTCOME-VS-VENUE-QTY: the venue reports 0.4 filled that the tool never saw; the IOC fills 0.6.
     c = resting(qty="1.0")
-    c, texts = logs(c, Tick(T0 + 120), Canceled(T0 + 120), OrderState(T0 + 120, False, D("0.4"), D("62417.9")))
-    assert "The simulation reports 0.4000 BTC more filled than the tool saw. Recorded it at 62,417.90 (maker)." in texts
+    c, texts = logs(c, beat(c, T0 + 120), Tick(T0 + 120), Canceled(T0 + 120), OrderState(T0 + 120, False, D("0.4"), D("62417.9")))
+    assert "The simulated exchange reports 0.4000 BTC more filled than the tool saw. Recorded it at 62,417.90 (maker)." in texts
     c, cmds = run(c, Filled(T0 + 121, D("0.6"), D("62418.5"), False, "ioc"), IocDone(T0 + 121))
     assert (c.phase, c.outcome, c.filled) == ("done", "filled", D("1.0"))
     assert core.summary(c)["maker_qty"] == D("0.4")
@@ -487,7 +497,7 @@ def test_the_outcome_and_the_summary_use_the_venue_filled_quantity():
 
 def test_a_late_fill_report_after_the_reread_is_not_counted_twice():
     c = resting()
-    c, cmds = run(c, Tick(T0 + 120), Canceled(T0 + 120), OrderState(T0 + 120, False, D("0.01"), D("62417.9")))
+    c, cmds = run(c, beat(c, T0 + 120), Tick(T0 + 120), Canceled(T0 + 120), OrderState(T0 + 120, False, D("0.01"), D("62417.9")))
     assert [x.qty for x in cmds if isinstance(x, Ioc)] == [D("0.04")]
     # The fill report of the same 0.01 arrives after the reread: the venue total stays 0.01.
     c, _ = run(c, Filled(T0 + 120.5, D("0.01"), D("62417.9"), True, "chase", D("0.01")))
@@ -529,3 +539,90 @@ def test_validate_answers_a_huge_amount_with_an_error_not_an_exception():
     assert core.validate(BTC, "buy", D("0.123456789"), None, D("62417.9"), D("62418.5"), True, 120) == [
         "Enter an amount above 0 with at most 8 decimals."]
     assert core.validate(BTC, "buy", D("0.050000000"), None, D("62417.9"), D("62418.5"), True, 120) == []
+
+
+# ---------- repair round 2 (R17 code review, R20 QA) ----------
+
+def test_a_cancel_rejected_for_rate_limit_waits_for_the_counter_before_it_tries_again():
+    # CANCEL-RETRY-IGNORES-RATE-LIMIT: the 3 tries must not all go out in one second into the same limit.
+    c = resting()
+    c, cmds = run(c, UserStop(T0 + 100))
+    assert cmds == [Cancel("oc-1")]
+    c, cmds = run(c, Rejected(T0 + 100.2, "cancel", "rate_limit"))
+    assert cmds == [Query("oc-1")] and c.rate == 60
+    c, cmds = run(c, OrderState(T0 + 100.3, True, D(0), D("62417.9")), Tick(T0 + 101.1))
+    assert cmds == []                     # 60 - 0.9 + 1 (a cancel at age 101) is above 60: wait
+    c, cmds = run(c, Tick(T0 + 101.3))
+    assert cmds == [Cancel("oc-1")] and c.phase == "cancelling"
+
+
+def test_a_chase_fill_without_the_venue_total_is_logged_and_not_counted():
+    # FILLED-WITHOUT-CUM-DOUBLE-COUNT: the reread counted 0.4; a late report of the same 0.4 has no cum.
+    c = resting(qty="1.0")
+    c, _ = run(c, beat(c, T0 + 30), Tick(T0 + 30), Canceled(T0 + 30.1), OrderState(T0 + 30.2, False, D("0.4"), D("62417.9")))
+    c, texts = logs(c, Filled(T0 + 30.3, D("0.4"), D("62417.9"), True, "chase"))
+    assert c.filled == D("0.4")
+    assert texts == ["The simulated exchange reported a fill of 0.4000 BTC with no filled total. The tool did not count it. "
+                     "It counts the filled total that the venue reports."]
+    c, _ = run(c, Filled(T0 + 30.4, D("0.6"), D("62418.5"), False, "ioc"))   # an IOC fill counts its qty
+    assert c.filled == D("1.0")
+
+
+def test_no_ioc_when_the_feed_is_back_but_the_book_is_not_valid_yet():
+    # FEEDBACK-BEFORE-REREAD-IOC: timeout while the feed is lost, the feed returns before the reread answer.
+    c = resting(timeout=30)
+    c, _ = run(c, FeedLost(T0 + 10), Tick(T0 + 30))
+    c, cmds = run(c, FeedBack(T0 + 30.1), Canceled(T0 + 30.2), OrderState(T0 + 30.3, False, D(0), D("62417.9")))
+    assert [x for x in cmds if isinstance(x, Ioc)] == []
+    assert (c.phase, c.outcome, c.end_ask) == ("done", "notfilled", None)
+
+
+def test_no_amend_on_a_book_older_than_10_seconds():
+    # STALE-FEED-FREEZE-AFTER-20S: the bid rose at T0 + 2; no message came after it.
+    c = resting()
+    c, _ = run(c, Book(T0 + 2, D("62418.1"), D("62418.5"), True))
+    _, cmds = run(c, Tick(T0 + 12.5))
+    assert cmds == []                                   # the book is 10.5 s old
+    _, cmds = run(c, Tick(T0 + 11.5))
+    assert cmds == [Amend("oc-1", D("62418.1"))]        # 9.5 s old: still valid
+
+
+def test_no_ioc_on_a_book_older_than_10_seconds():
+    c = resting()
+    c, _ = run(c, Book(T0 + 105, c.bid, c.ask, True), Tick(T0 + 120), Canceled(T0 + 120))
+    stale, cmds = run(c, OrderState(T0 + 120, False, D(0), None))
+    assert [x for x in cmds if isinstance(x, Ioc)] == [] and (stale.outcome, stale.end_ask) == ("notfilled", None)
+    _, cmds = run(c, beat(c, T0 + 119), OrderState(T0 + 120, False, D(0), None))
+    assert [x for x in cmds if isinstance(x, Ioc)] == [Ioc("oc-1-ioc", "buy", D("62418.5"), D("0.05"))]
+
+
+# ---------- SIM-FILL-DOUBLE-COUNT-SUSPECT ----------
+
+def test_sim_a_sell_print_takes_bid_liquidity_so_the_ask_side_never_fills_it_again():
+    # A sell print at X consumes a bid at X. Kraken then lowers that bid, not an ask. A buy fills from sell
+    # prints below its price and from asks at or below it, so one quantity cannot fill it twice.
+    gw = SimGateway()
+    gw.on_book([(D("99.9"), D("0.3"))], [(D("100.1"), D("1"))], T0)
+    gw.send(Place("oc-1", "buy", D("100.0"), D("1")), T0)
+    assert gw.on_trade("sell", D("99.9"), D("0.3"), T0 + 1) == [Filled(T0 + 1, D("0.3"), D("100.0"), True, "chase", D("0.3"))]
+    assert gw.on_book([], [(D("100.1"), D("1"))], T0 + 1) == []     # the bid at 99.9 is gone: nothing more
+    # A seller whose remainder rests as an ask at 99.9 is new liquidity: it fills once, the print does not repeat.
+    assert gw.on_book([], [(D("99.9"), D("0.2")), (D("100.1"), D("1"))], T0 + 2) == [
+        Filled(T0 + 2, D("0.2"), D("100.0"), True, "chase", D("0.5"))]
+    assert gw.on_book([], [(D("99.9"), D("0.2")), (D("100.1"), D("1"))], T0 + 3) == []
+
+
+def test_recorded_kraken_feed_a_sell_print_lowers_the_bid_at_its_price_not_an_ask():
+    # From tests/fixtures/kraken-btcusd.jsonl (line 142, 143): two sell prints at 85311.5 of 0.0173111 and
+    # 0.00043957; the bid at 85311.5 falls 0.01775067 -> 0.00043957 -> 0. The only ask at 85311.5 comes later
+    # (line 152), with another size: new liquidity of a seller, not the printed quantity again.
+    import json
+    from pathlib import Path
+    lines = [json.loads(x) for x in (Path(__file__).parent / "fixtures" / "kraken-btcusd.jsonl").open()]
+    prints = [t for t in lines[141]["data"]]
+    assert [(t["side"], t["price"], t["qty"]) for t in prints] == [("sell", 85311.5, 0.0173111), ("sell", 85311.5, 0.00043957)]
+    after = [m["data"][0] for m in lines[142:144]]
+    assert [[b for b in d["bids"] if b["price"] == 85311.5] for d in after] == [
+        [{"price": 85311.5, "qty": 0.00043957}], [{"price": 85311.5, "qty": 0.0}]]
+    assert [(i, a["qty"]) for i, m in enumerate(lines) if m["channel"] == "book"
+            for a in m["data"][0].get("asks", []) if a["price"] == 85311.5] == [(151, 0.11364277), (157, 0.0)]
