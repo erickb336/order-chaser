@@ -13,7 +13,7 @@
 OC.chrome('history'); OC.stream(() => {});
 const $ = OC.$;
 const HEAD = '<tr><th>When</th><th>Pair</th><th>Side</th><th class="r">Filled / asked</th><th class="r">Average price</th><th class="r">Saving USD</th><th>Mode</th><th>Outcome</th></tr>';
-const OUT = { filled: ['ok', 'Filled (simulated)'], notfilled: ['bad', 'Part filled: above cap'], belowmin: ['bad', 'Part filled: rest below minimum'], stopped: ['plain', 'Stopped by you'], ended: ['bad', 'Ended: tool restarted'], refused: ['bad', 'Order rejected'] };
+const OUT = { filled: ['ok', 'Filled (simulated)'], belowmin: ['bad', 'Part filled: rest below minimum'], stopped: ['plain', 'Stopped by you'], ended: ['bad', 'Ended: tool restarted'], refused: ['bad', 'Order rejected'] };
 function when(t) {
   const d = new Date(t * 1000), today = new Date();
   const hm = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
@@ -33,7 +33,7 @@ async function load() {
     return;
   }
   $('out').innerHTML = '<table class="t">' + HEAD + rows.map(r => {
-    const o = OUT[r.outcome] || ['plain', r.outcome], d = r.price_decimals;
+    const o = r.outcome === 'notfilled' ? ['bad', r.beyond ? (r.side === 'buy' ? 'Part filled: above cap' : 'Part filled: below floor') : 'Part filled: IOC at the cap'] : OUT[r.outcome] || ['plain', r.outcome], d = r.price_decimals;
     const outcome = r.outcome === 'filled' && Number(r.maker_qty) < Number(r.qty) ? ['ok', `Filled, ${Math.round((1 - Number(r.maker_qty) / Number(r.qty)) * 100)}% after timeout (simulated)`] : o;
     const sv = Number(r.saving);
     return `<tr class="click" data-id="${OC.esc(r.id)}" tabindex="0"><td>${when(r.started)}</td><td>${OC.esc(r.pair)}</td><td class="${r.side === 'buy' ? 'tone-fill' : 'tone-bad'}">${r.side === 'buy' ? 'Buy' : 'Sell'}</td><td class="r num">${OC.qty(r.filled)} / ${OC.qty(r.qty)}</td><td class="r num">${Number(r.filled) ? OC.px(r.avg, d) : '—'}</td><td class="r num ${sv >= 0 ? 'tone-fill' : 'tone-bad'}">${sv < 0 ? '−' : ''}${OC.usd(Math.abs(sv))}</td><td><span class="badge dry">Dry run</span></td><td><span class="badge ${outcome[0]}">${outcome[1]}</span></td></tr>`;

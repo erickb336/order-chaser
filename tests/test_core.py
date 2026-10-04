@@ -239,6 +239,14 @@ def test_rate_counter_costs():
 
 # ---------- amend reject ----------
 
+def test_no_amend_to_a_price_that_would_cross_the_other_side():
+    c = resting()
+    c, cmds = run(c, Book(T0 + 6, D("62418.3"), D("62418.3"), True))
+    assert cmds == []
+    c, cmds = run(c, Book(T0 + 7, D("62418.3"), D("62418.4"), True))
+    assert cmds == [Amend("oc-1", D("62418.3"))]
+
+
 def test_amend_reject_reads_the_order_again_and_does_not_retry_blindly():
     c = resting()
     c, cmds = run(c, Book(T0 + 6, D("62418.1"), D("62418.5"), True))

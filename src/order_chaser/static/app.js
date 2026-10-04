@@ -135,7 +135,7 @@ function copy(st, c, snap, ageOff) {
       t.title = c.exit === 'fillnow' ? 'Filling the rest now' : 'Time is up: filling the rest';
       t.sub = (c.exit === 'fillnow' ? 'You pressed "Fill the rest now".' : `The ${timeout} timeout passed.`) +
         ` The tool now fills the rest with one IOC limit at the ${w.limitWord}. IOC means "fill now what you can, cancel the rest". It does these steps in this order:`;
-      t.steps = [[now === 'cancelling' ? 'now' : 'done', 'Cancel the resting order.'],
+      t.steps = [['done', 'Cancel the resting order.'],
         [mark(1), 'Wait for the simulated exchange to confirm the cancel.'],
         [mark(2), 'Read the filled quantity again' + (now === 'ioc' ? `: ${qty(chaseFilled)} ${B}.` : '.')],
         [mark(3), `Send an IOC ${c.side} for the rest${now === 'ioc' ? ', ' + qty(Number(c.qty) - chaseFilled) + ' ' + B : ''}, at the ${w.limitWord}, ${p(c.limit)}.`]];
@@ -152,7 +152,7 @@ function copy(st, c, snap, ageOff) {
       t.title = 'Stopped: the rest did not fill';
       t.sub = (end != null && (w.buy ? Number(end) > Number(c.limit) : Number(end) < Number(c.limit))
         ? `The price ${w.buy ? 'rose above your cap' : 'fell below your floor'}. The ${w.other} is now ${p(end)}, which is ${p(diff)} ${w.above} the ${w.limitWord} of ${p(c.limit)}. `
-        : `The ${w.other} is now ${p(end)}. `) +
+        : `The ${w.other} is now ${p(end)}, at the ${w.limitWord}, but the book had too little at or ${w.buy ? 'below the cap' : 'above the floor'}. `) +
         `The IOC filled ${iocGot ? qty(iocGot) + ' ' + B : 'nothing'}. You ${w.bought} ${qty(filled)} of ${qty(c.qty)} ${B}. No order of yours rests in the simulation.`;
       break;
     }
@@ -249,6 +249,9 @@ function rail(c, bid, ask) {
   return h + '</div>';
 }
 
+// Did the price end beyond the cap (buy: above) or the floor (sell: below)?
+const beyond = c => c.end_ask != null && (c.side === 'buy' ? Number(c.end_ask) > Number(c.limit) : Number(c.end_ask) < Number(c.limit));
+
 function card(st, c, snap, ageOff) {
   const t = copy(st, c, snap, ageOff);
   const tone = TONE[st];
@@ -256,14 +259,14 @@ function card(st, c, snap, ageOff) {
   const pct = filled / total * 100;
   const done = DONE.includes(st);
   const makerPct = filled ? Number(c.summary.maker_qty) / total * 100 : 0;
-  const elapsed = (done ? c.ended_at : (snap ? snap.now : c.started)) - c.started;
+  const elapsed = (done ? c.ended_at : (snap ? snap.now : Date.now() / 1000)) - c.started;
   const steps = t.steps ? `<ol class="small" style="margin:10px 0 0;padding-left:20px">${t.steps.map(s => `<li style="padding:2px 0" class="${s[0] === 'now' ? 'tone-' + tone : s[0] === 'todo' ? 'muted' : ''}">${s[0] === 'done' ? '✓ ' : s[0] === 'now' ? '→ ' : ''}${s[1]}</li>`).join('')}</ol>` : '';
   const nf = ['notfilled', 'belowmin', 'ended', 'stopped'].includes(st) ? `<i class="nf" style="width:${100 - pct}%"></i>` : '';
   const stale = st === 'pageoffline' || st === 'disconnected';
   const bid = st === 'pageoffline' ? c.bid : (snap && snap.feed.ok ? snap.feed.bid : c.bid);
   const ask = st === 'pageoffline' ? c.ask : (snap && snap.feed.ok ? snap.feed.ask : c.ask);
   return `<div class="status" id="statuscard" data-state="${st}" style="${stale ? 'opacity:.92' : ''}">
-    <div class="state tone-${tone} ${done ? '' : 'pulse'}"><i></i>${LABEL[st]}</div>
+    <div class="state tone-${tone} ${done ? '' : 'pulse'}"><i></i>${st === 'notfilled' && !beyond(c) ? 'Rest not filled' : LABEL[st]}</div>
     <div class="head">${t.title}</div>
     <div class="sub">${t.sub}</div>${steps}
     ${t.todo ? `<div class="note info small" style="margin-top:12px"><b>What to do now</b><ul style="margin:4px 0 0;padding-left:18px">${t.todo.map(x => `<li>${x}</li>`).join('')}</ul></div>` : ''}
@@ -282,5 +285,5 @@ function eventLog(c) {
   return `<ul class="log">${c.events.slice().reverse().map(e => `<li><span class="ts">${mmss(e.t)}</span><span class="${kind[e.kind] || ''}">${esc(e.text)}</span></li>`).join('')}</ul>`;
 }
 
-return { TOKEN, $, esc, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
+return { TOKEN, $, esc, beyond, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
 })();

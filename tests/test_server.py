@@ -12,7 +12,7 @@ from starlette.testclient import TestClient
 
 from order_chaser import core, feed
 from order_chaser.book import OrderBook
-from order_chaser.db import Db
+from order_chaser.db import Db, lock_folder
 from order_chaser.server import create_app
 
 BASE = "http://127.0.0.1:5180"
@@ -122,6 +122,26 @@ def test_unfinished_chase_in_sqlite_becomes_ended_on_server_start(tmp_path):
     assert [e["text"] for e in got["events"]] == [
         "Tool started again after 8 s off. Ended the simulated order. No order was on Kraken.",
         "Recorded the simulated fills: 0.0180 of 0.0500 BTC.", "Did not continue the dry run."]
+
+
+def test_the_tool_records_when_it_last_ran_during_a_chase(setup):
+    client, app, eng, f, clock, call = setup
+    tok = token_of(client)
+    call(f._handle, FakeBook().msg("snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")]))
+    cid = client.post("/api/chase", headers={**ORIGIN, "X-Session-Token": tok},
+                      json={"pair": "BTC/USD", "side": "buy", "qty": "0.05", "timeout": 120}).json()["id"]
+    clock.t += 30
+    call(eng.tick)
+    row = eng.db.cx.execute("select updated from chase where id = ?", (cid,)).fetchone()
+    assert row["updated"] == clock.t
+
+
+def test_a_second_tool_on_the_same_data_folder_is_refused(tmp_path):
+    first = lock_folder(tmp_path)
+    with pytest.raises(BlockingIOError):
+        lock_folder(tmp_path)
+    first.close()
+    lock_folder(tmp_path).close()       # free again once the first tool stops
 
 
 # ---------- book checksum on recorded Kraken data ----------

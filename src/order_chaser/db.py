@@ -1,6 +1,7 @@
 """SQLite: one row per chase (its state as JSON) and an append-only event log keyed by cl_ord_id."""
 from __future__ import annotations
 
+import fcntl
 import os
 import sqlite3
 from pathlib import Path
@@ -20,6 +21,22 @@ create index if not exists event_chase on event(chase_id, seq);
 """
 
 
+def lock_folder(folder: Path):
+    """Hold an exclusive lock on the data folder for the life of the process.
+
+    A second tool on the same folder would end the first tool's chase as "ended" while it still runs.
+    Raises BlockingIOError when another process holds the lock.
+    """
+    folder.mkdir(parents=True, exist_ok=True)
+    f = open(folder / "lock", "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        f.close()
+        raise
+    return f
+
+
 class Db:
     def __init__(self, folder: Path) -> None:
         folder.mkdir(parents=True, exist_ok=True)
@@ -35,6 +52,10 @@ class Db:
             "on conflict(id) do update set phase=excluded.phase, outcome=excluded.outcome, "
             "updated=excluded.updated, state=excluded.state",
             (c.id, c.started, mode, c.phase, c.outcome, now, core.to_json(c)))
+
+    def touch(self, chase_id: str, now: float) -> None:
+        """Heartbeat: after a crash, "updated" tells when the tool last ran."""
+        self.cx.execute("update chase set updated = ? where id = ?", (now, chase_id))
 
     def log(self, chase_id: str, entry: core.Log, at: float) -> None:
         self.cx.execute("insert into event(chase_id, t, at, kind, text) values (?,?,?,?,?)",

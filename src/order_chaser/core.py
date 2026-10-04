@@ -449,6 +449,9 @@ def _maybe_amend(c: Chase, now: float) -> tuple[Chase, list]:
     target = min(best, c.limit) if c.buy else max(best, c.limit)
     if not (target > c.price if c.buy else target < c.price):
         return c, out
+    other = c.ask if c.buy else c.bid
+    if other is not None and (target >= other if c.buy else target <= other):
+        return c, out          # a post-only order there would cross: wait for the book
     every = AMEND_EVERY_SLOW if c.slow else AMEND_EVERY
     if now - max(c.placed_at or 0, c.last_amend_at or 0) < every:
         return c, out

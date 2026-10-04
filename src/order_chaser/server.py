@@ -22,7 +22,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from . import core, feed
-from .db import DEFAULT_DIR, Db
+from .db import DEFAULT_DIR, Db, lock_folder
 from .sim import SimGateway
 
 HOST, PORT = "127.0.0.1", 5180
@@ -61,6 +61,7 @@ class Engine:
         self.draining = False
         self.saved_key: str | None = None
         self.version = 0
+        self.touched = 0.0
         self.feed: feed.PublicFeed | None = None
 
     # ----- start of the tool -----
@@ -100,6 +101,9 @@ class Engine:
         if self.active:
             self.handle(core.Tick(self.clock()))
             self.version += 1
+        if self.active and self.clock() - self.touched >= 2:
+            self.touched = self.clock()
+            self.db.touch(self.chase.id, self.touched)
 
     # ----- the chase -----
     @property
@@ -319,7 +323,8 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
             rows.append({"id": c.id, "started": c.started, "pair": c.pair.symbol, "side": c.side, "qty": str(c.qty),
                          "filled": str(c.filled), "avg": str(s["avg"]), "saving": str(s["saving"]), "mode": mode,
                          "outcome": c.outcome, "maker_qty": str(s["maker_qty"]), "base": c.pair.base,
-                         "price_decimals": c.pair.price_decimals})
+                         "price_decimals": c.pair.price_decimals,
+                         "beyond": c.end_ask is not None and (c.end_ask > c.limit if c.buy else c.end_ask < c.limit)})
         return JSONResponse(rows)
 
     @contextlib.asynccontextmanager
@@ -338,7 +343,10 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
             with contextlib.suppress(BaseException):
                 await t
 
-    routes = [Route("/", index)] + [Route(f"/{p}", html) for p in PAGES] + [
+    async def no_icon(request: Request):
+        return PlainTextResponse("", status_code=204)
+
+    routes = [Route("/", index), Route("/favicon.ico", no_icon)] + [Route(f"/{p}", html) for p in PAGES] + [
         Route("/api/state", state), Route("/api/stream", stream),
         Route("/api/watch", watch, methods=["POST"]), Route("/api/chase", start, methods=["POST"]),
         Route("/api/chase/stop", action, methods=["POST"]), Route("/api/chase/fillnow", action, methods=["POST"]),
@@ -379,5 +387,11 @@ def main() -> None:
                     help="demo only: the estimated rate counter at start, to show the 'rate limit near' state")
     a = ap.parse_args()
     import uvicorn
+    try:
+        lock = lock_folder(a.data_dir)  # noqa: F841  (held until the process ends)
+    except BlockingIOError:
+        raise SystemExit(f"Another order chaser runs on {a.data_dir}. Stop it first.")
     print(f"Order chaser (DRY RUN: no real orders) on http://{HOST}:{PORT}  data: {a.data_dir}")
-    uvicorn.run(create_app(a.data_dir, rate_start=a.rate_start), host=HOST, port=PORT, log_level="warning")
+    # A short graceful shutdown: an open page (SSE) must not keep a stopped tool alive.
+    uvicorn.run(create_app(a.data_dir, rate_start=a.rate_start), host=HOST, port=PORT, log_level="warning",
+                timeout_graceful_shutdown=2)
