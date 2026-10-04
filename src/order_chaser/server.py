@@ -186,8 +186,10 @@ class Engine:
             errors += core.validate_margin(pair, what, qty, leverage, self.ask if side == "buy" else self.bid,
                                            self.gw.account.list(), Decimal(acc["free_orders"]))
             if not errors and close:
+                # The close takes the oldest positions first: its entry is the average entry of that part.
                 p = next(x for x in acc["positions"] if x["pair"] == symbol and x["dir"] == what[6:])
-                margin = core.Margin(p["leverage"], True, Decimal(p["qty"]), Decimal(p["entry"]), Decimal(p["rollover"]))
+                margin = core.Margin(p["leverage"], True, Decimal(p["qty"]), self.gw.account.close_entry(symbol, what[6:], qty),
+                                     Decimal(p["rollover"]))
             elif not errors:
                 margin = core.Margin(leverage)
         if errors:

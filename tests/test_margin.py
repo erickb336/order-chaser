@@ -207,7 +207,7 @@ def test_liquidation_ends_the_chase_and_cancels_its_order():
     r.book("52000.0", "52000.6", T0 + 10)           # the price falls 10,400: the level goes below 40%
     assert r.c.outcome == "liquidated"
     assert isinstance(r.sent[-1], core.Cancel) and not r.gw.orders["oc0123456789ab"]["open"]
-    assert acc.positions == {}
+    assert acc.positions == []
     assert "liquidated the position: the account margin level fell to 40%" in " ".join(r.logs)
 
 
@@ -216,7 +216,7 @@ def test_a_reduce_only_close_never_grows_or_flips_the_position():
     # A close of 0.05 against a 0.03 long (the form refuses it; the venue must hold too).
     r = Run(SimGateway(acc)).start("sell", "0.05", Margin(3, True, D("0.03"), D("62417.9")))
     r.trade("buy", "62419.0", "1", T0 + 3)
-    assert acc.positions == {}                      # closed, and no short opened
+    assert acc.positions == []                      # closed, and no short opened
     assert r.c.filled == D("0.03") and r.c.outcome == "nopos"
     assert "The long position on BTC/USD is closed. The reduce-only order has nothing left to close." in r.logs
 
@@ -301,6 +301,80 @@ def test_stop_during_a_replace_ends_the_chase_and_keeps_what_filled():
     assert (r.c.outcome, r.c.filled) == ("stopped", D("0.018"))
 
 
+# ---------- mixed leverage: each open is its own position (as Kraken) ----------
+
+ETH = core.Pair(**{**BTC.__dict__, "symbol": "ETH/USD", "base": "ETH"})
+
+
+def test_each_open_is_its_own_position_and_the_close_list_shows_the_count_and_the_average_leverage():
+    acc = SimAccount()
+    acc.fill(BTC, "buy", 3, False, D("0.01"), D("60000"), True, 0.0, "oc1")
+    acc.fill(BTC, "buy", 3, False, D("0.01"), D("60000"), True, 5.0, "oc1")      # the same chase: the same position
+    acc.fill(BTC, "buy", 5, False, D("0.02"), D("60000"), True, 60.0, "oc2")     # another open, another leverage
+    assert [(p["qty"], p["leverage"], p["opened"]) for p in acc.positions] == [(D("0.02"), 3, 0.0), (D("0.02"), 5, 60.0)]
+    row = acc.read(70.0)["positions"]
+    assert [(r["pair"], r["dir"], r["qty"], r["count"], r["leverage"]) for r in row] == [("BTC/USD", "long", D("0.04"), 2, 4)]
+    # 2,400 USD of cost on 400 + 240 USD of collateral: 3.75, "average 4x"
+
+
+def test_a_close_takes_the_oldest_position_first_partly_if_needed():
+    acc = SimAccount()
+    acc.fill(BTC, "buy", 2, False, D("0.01"), D("60000"), True, 0.0, "oc1")
+    acc.fill(BTC, "buy", 5, False, D("0.02"), D("61000"), True, 10.0, "oc2")
+    cash = acc.cash
+    assert acc.close_entry("BTC/USD", "long", D("0.015")) == (D("0.01") * 60000 + D("0.005") * 61000) / D("0.015")
+    assert acc.fill(BTC, "sell", 2, True, D("0.015"), D("62000"), True, 20.0) == D("0.015")
+    # The 2x position (the oldest) closes whole; the 5x position closes 0.005 of its 0.02.
+    assert [(p["qty"], p["entry"], p["leverage"], p["margin"]) for p in acc.positions] == [
+        (D("0.015"), D("61000"), 5, D("0.015") * 61000 / 5)]
+    pl = D("0.01") * 2000 + D("0.005") * 1000
+    fee = D("0.015") * 62000 * core.MAKER_FEE
+    roll = D("0.01") * 60000 * core.ROLLOVER + D("0.005") * 61000 * core.ROLLOVER
+    assert acc.cash - cash == pl - fee - roll
+
+
+def test_rollover_runs_from_the_open_of_each_position():
+    # ROLLOVER-FROM-FIRST-OPEN: a second open 20 h after the first pays rollover from its own open.
+    acc = SimAccount()
+    acc.fill(BTC, "buy", 2, False, D("0.01"), D("60000"), True, 0.0, "oc1")
+    acc.fill(BTC, "buy", 2, False, D("1"), D("60000"), True, 4 * 3600 * 5 + 1, "oc2")
+    roll = acc.read(4 * 3600 * 5 + 2)["positions"][0]["rollover"]
+    assert roll == D("31.80")            # 0.01 BTC: 6 started 4 h (1.80); 1 BTC: 1 started 4 h (30.00)
+
+
+def test_each_pair_has_its_own_mark_with_its_time_and_no_price_after_a_restart():
+    # UNWATCHED-PAIR-MARK-STALE
+    acc = SimAccount()
+    gw = SimGateway(acc)
+    acc.fill(BTC, "buy", 5, False, D("0.3"), D("60000"), True, 0.0, "oc1")
+    acc.fill(ETH, "sell", 2, False, D("1"), D("3000"), True, 0.0, "oc2")
+    gw.on_book([(D("61000"), D(1))], [(D("61002"), D(1))], 1.0, "BTC/USD")
+    gw.on_book([(D("2900"), D(1))], [(D("2902"), D(1))], 2.0, "ETH/USD")      # the owner watches ETH now
+    rows = {r["pair"]: r for r in acc.read(3.0)["positions"]}
+    assert (rows["BTC/USD"]["mark"], rows["BTC/USD"]["mark_at"], rows["BTC/USD"]["upl"]) == (D("61001"), 1.0, D("0.3") * 1001)
+    assert (rows["ETH/USD"]["mark"], rows["ETH/USD"]["mark_at"], rows["ETH/USD"]["upl"]) == (D("2901"), 2.0, D("99"))
+    again = SimAccount.from_json(acc.to_json()).read(4.0)
+    assert [(r["pair"], r["mark"], r["upl"]) for r in again["positions"]] == [("BTC/USD", None, None), ("ETH/USD", None, None)]
+    assert again["unpriced"] == ["BTC/USD", "ETH/USD"]
+
+
+def test_liquidation_uses_the_mark_of_each_pair_when_its_book_arrives():
+    acc = SimAccount(cash=D("2500"))
+    gw = SimGateway(acc)
+    acc.fill(BTC, "buy", 5, False, D("0.3"), D("60000"), True, 0.0, "oc1")    # 18,000 USD at 5x: 3,600 collateral
+    gw.on_book([(D("60000"), D(1))], [(D("60002"), D(1))], 1.0, "BTC/USD")
+    gw.on_book([(D("3000"), D(1))], [(D("3002"), D(1))], 2.0, "ETH/USD")     # ETH books never move the BTC mark
+    assert acc.marks["BTC/USD"] == (D("60001"), 1.0) and len(acc.positions) == 1
+    assert gw.on_book([(D("54000"), D(1))], [(D("54002"), D(1))], 3.0, "BTC/USD") == [core.PositionGone(3.0, "liquidated")]
+    assert acc.positions == []
+
+
+def test_an_old_account_file_with_one_merged_position_per_direction_still_loads():
+    old = '{"cash": "4000", "allowance": "100000", "positions": [["BTC/USD", "long", {"qty": "0.05", "entry": "60000", "margin": "1000", "opened": 5.0, "stop": 40}]]}'
+    acc = SimAccount.from_json(old)
+    assert [(p["pair"], p["dir"], p["qty"], p["leverage"], p["opened"]) for p in acc.positions] == [("BTC/USD", "long", D("0.05"), 3, 5.0)]
+
+
 # ---------- the SQLite file ----------
 
 def test_the_db_maps_each_leg_to_its_chase_and_reads_rows_of_the_earlier_build(tmp_path):
@@ -337,30 +411,39 @@ def probe(seed: int) -> dict:
     acc = SimAccount(cash=D(rnd.choice(["5000", "900", "400", "150"])))
     gw = SimGateway(acc)
     gw.refuse_margin_amends = rnd.random() < 0.5
+    cross = rnd.random() < 0.3          # new legs are often refused would_cross (the book moved while they were in flight)
     bid = D("100.0")
     gw.pair = pair = core.Pair("X/USD", "X", "USD", D("0.1"), D("0.001"), D("0.01"), 1, 8, "online",
                                (2, 3, 4, 5), (2, 3, 4, 5), 80, 40)
-    gw.on_book([(bid, D("1"))], [(bid + D("0.1"), D("0.3")), (bid + D("0.2"), D("5"))], 0.0)
+    gw.on_book([(bid, D("1"))], [(bid + D("0.1"), D("0.3")), (bid + D("0.2"), D("5"))], -1.0)
     lev = rnd.choice([2, 3, 4, 5])
     close = rnd.random() < 0.5
-    if close:   # open a position first, then close all or part of it
-        d = rnd.choice(["long", "short"])
-        acc.fill(pair, "buy" if d == "long" else "sell", lev, False, D("8"), bid, True, 0.0)
-        pos0 = acc.position("X/USD", d)["qty"]
+    d = rnd.choice(["long", "short"])
+    # Earlier opens of this direction, each with its own leverage, price and time (mixed leverage).
+    for k in range(rnd.choice([0, 1, 2, 3]) if not close else rnd.choice([1, 2, 3])):
+        acc.fill(pair, "buy" if d == "long" else "sell", rnd.choice([2, 3, 4, 5]), False, D(rnd.choice(["2", "3", "4"])),
+                 bid + D(rnd.choice(["-2", "0", "2"])), True, -20000.0 * (3 - k), f"old{k}")
+    before = [dict(p) for p in acc.positions]
+    pos0 = sum((p["qty"] for p in before), D(0))
+    if close:   # close all or part of the positions, or more (the venue must cut it)
         side = "sell" if d == "long" else "buy"
-        qty = rnd.choice([pos0, D("5"), D("9")])          # 9: more than the position (the venue must cut it)
-        margin = Margin(lev, True, pos0, bid)
+        qty = rnd.choice([pos0, D("5"), D("9"), pos0 + 1])
+        g = acc.position("X/USD", d)
+        margin = Margin(g["leverage"], True, pos0, acc.close_entry("X/USD", d, qty))
     else:
-        d, side, qty, margin = None, rnd.choice(["buy", "sell"]), D(rnd.choice(["1", "5", "20"])), Margin(lev)
+        side, qty, margin = "buy" if d == "long" else "sell", D(rnd.choice(["1", "5", "20"])), Margin(lev)
     limit = rnd.choice([None, bid + D("3") if side == "buy" else bid - D("3")])    # a limit away from the start price
+    cash0 = acc.cash
     c, cmds = core.begin("oc" + f"{seed:012x}", pair, side, qty, bid, bid + D("0.1"), rnd.choice([30, 60, 120]), 0.0,
                          core.SIM_VENUE, limit, margin=margin)
     sent, now, queue = [], 0.0, [x for x in cmds if not isinstance(x, core.Log)]
-    stats = {"replaces": 0, "rate_max": 0.0, "id_max": 0}
+    stats = {"replaces": 0, "rate_max": 0.0, "id_max": 0, "cross": 0, "legs_min_gap": None, "liquidated": False}
+    legs_at: list[float] = []
 
     def feed(evs):
         nonlocal c
         for ev in evs:
+            stats["liquidated"] |= isinstance(ev, core.PositionGone) and ev.reason == "liquidated"
             c, m = core.step(c, ev)
             queue.extend(x for x in m if not isinstance(x, core.Log))
 
@@ -369,10 +452,18 @@ def probe(seed: int) -> dict:
             cmd = queue.pop(0)
             sent.append(cmd)
             stats["id_max"] = max(stats["id_max"], len(cmd.id))
-            stats["replaces"] += isinstance(cmd, core.MarginPlace) and cmd.id != c.id
-            feed(gw.send(cmd, now))
+            new_leg = isinstance(cmd, core.MarginPlace) and cmd.id != c.id
+            if new_leg:
+                stats["replaces"] += 1
+                legs_at.append(now)
+                assert c.rate <= core.RATE_MAX - core.cancel_cost(0), seed                 # room for its cancel
+            if new_leg and cross and rnd.random() < 0.6:
+                stats["cross"] += 1
+                feed([core.Rejected(now, "place", "would_cross")])
+            else:
+                feed(gw.send(cmd, now))
             stats["rate_max"] = max(stats["rate_max"], c.rate)
-        now += rnd.choice([0.5, 1, 3])
+        now += rnd.choice([0.2, 0.5, 1, 3])
         r = rnd.random()
         if r < 0.45:
             bid = max(D("20"), bid + D(rnd.choice(["-12", "-3", "-0.3", "-0.1", "0.1", "0.2", "0.3", "2", "12"])))
@@ -386,28 +477,71 @@ def probe(seed: int) -> dict:
             feed([UserStop(now)])
         else:
             feed([Tick(now)])
-        if close and d:
-            p = acc.position("X/USD", d)
-            other = acc.position("X/USD", "short" if d == "long" else "long")
-            assert other is None and (p is None or p["qty"] <= pos0), seed          # never flips, never grows
+        assert not (acc.of("X/USD", "long") and acc.of("X/USD", "short")), seed       # never long and short at once
+        mine = acc.position("X/USD", d)
+        assert (mine["qty"] if mine else D(0)) <= pos0 + (0 if close else c.filled), seed   # a close never grows
     assert c.phase == "done", seed
     assert c.filled <= c.qty, seed                                                  # never more than asked
     assert sum((x.qty for x in sent if isinstance(x, core.Ioc)), D(0)) <= c.qty, seed
     assert all((f.price <= c.limit) if c.buy else (f.price >= c.limit) for f in c.fills), seed   # never past the cap/floor
     assert all(c.leg_cum(leg) == gw.orders[leg]["cum"] for leg in c.legs if leg in gw.orders), seed   # legs = the venue
     assert stats["id_max"] <= 18 and stats["rate_max"] <= core.RATE_MAX, seed
-    return {**stats, "outcome": c.outcome, "close": close, "refuse": gw.refuse_margin_amends}
+    gaps = [round(b - a, 6) for a, b in zip(legs_at, legs_at[1:])]
+    assert all(g >= core.AMEND_EVERY for g in gaps), (seed, gaps)                  # new legs: at most one each 5 s
+    stats["legs_min_gap"] = min(gaps) if gaps else None
+    if not stats["liquidated"]:
+        mixed_checks(seed, acc, before, cash0, c, d, close)
+    return {**stats, "outcome": c.outcome, "close": close, "refuse": gw.refuse_margin_amends, "positions": len(before)}
+
+
+def mixed_checks(seed, acc, before, cash0, c, d, close):
+    """Mixed leverage: a close takes the oldest positions first (FIFO), each pays rollover from its own open;
+    an open is a new position of its own and leaves the others as they were. Recomputed here from the fills."""
+    left = [dict(p) for p in before]
+    if close:
+        expect = D(0)
+        for f in c.fills:
+            take_all = f.qty
+            for p in left:
+                take = min(take_all, p["qty"])
+                if take == 0:
+                    continue
+                sign = 1 if d == "long" else -1
+                roll = take * p["entry"] * core.ROLLOVER * core.rollover_periods(f.t - p["opened"])
+                expect += sign * (f.price - p["entry"]) * take - take * f.price * (core.MAKER_FEE if f.maker else core.TAKER_FEE) - roll
+                p["margin"] -= p["margin"] * take / p["qty"]
+                p["qty"] -= take
+                take_all -= take
+            left = [p for p in left if p["qty"] > 0]
+        assert [(p["qty"], p["entry"], p["leverage"], p["opened"]) for p in acc.positions] == \
+            [(p["qty"], p["entry"], p["leverage"], p["opened"]) for p in left], seed     # FIFO, partly if needed
+        assert abs(acc.cash - cash0 - expect) < D("1e-12"), (seed, acc.cash - cash0, expect)   # rollover of each part
+    else:
+        old = [(p["qty"], p["entry"], p["leverage"], p["opened"]) for p in acc.positions if p["ref"] != c.id]
+        assert old == [(p["qty"], p["entry"], p["leverage"], p["opened"]) for p in before], seed
+        new = [p for p in acc.positions if p["ref"] == c.id]
+        assert (sum((p["qty"] for p in new), D(0)), [p["leverage"] for p in new]) == (
+            c.filled, [c.margin.leverage] if c.filled else []), seed
 
 
 def probe_counts(n: int, first: int = 0) -> dict:
-    counts: dict = {"runs": 0, "replaces": 0, "runs_with_replace": 0, "rate_max": 0.0, "id_max": 0, "outcomes": {}}
+    counts: dict = {"runs": 0, "new_legs": 0, "runs_with_replace": 0, "would_cross_refusals": 0, "runs_with_would_cross": 0,
+                    "legs_min_gap_s": None, "rate_max": 0.0, "id_max": 0, "close_runs_over_2_or_more_positions": 0,
+                    "open_runs_beside_other_positions": 0, "liquidated_runs": 0, "outcomes": {}}
     for seed in range(first, first + n):
         r = probe(seed)
         counts["runs"] += 1
-        counts["replaces"] += r["replaces"]
+        counts["new_legs"] += r["replaces"]
         counts["runs_with_replace"] += r["replaces"] > 0
+        counts["would_cross_refusals"] += r["cross"]
+        counts["runs_with_would_cross"] += r["cross"] > 0
+        if r["legs_min_gap"] is not None:
+            counts["legs_min_gap_s"] = min(r["legs_min_gap"], counts["legs_min_gap_s"] or 1e9)
         counts["rate_max"] = max(counts["rate_max"], r["rate_max"])
         counts["id_max"] = max(counts["id_max"], r["id_max"])
+        counts["close_runs_over_2_or_more_positions"] += r["close"] and r["positions"] >= 2
+        counts["open_runs_beside_other_positions"] += not r["close"] and r["positions"] >= 1
+        counts["liquidated_runs"] += r["liquidated"]
         key = ("close " if r["close"] else "open ") + r["outcome"]
         counts["outcomes"][key] = counts["outcomes"].get(key, 0) + 1
     return counts
@@ -415,7 +549,8 @@ def probe_counts(n: int, first: int = 0) -> dict:
 
 def test_random_margin_runs_keep_every_rule():
     counts = probe_counts(400)
-    assert counts["runs"] == 400 and counts["runs_with_replace"] > 20
+    assert counts["runs"] == 400 and counts["runs_with_replace"] > 20 and counts["runs_with_would_cross"] > 10
+    assert counts["close_runs_over_2_or_more_positions"] > 50 and counts["open_runs_beside_other_positions"] > 50
     assert any(k.endswith("liquidated") for k in counts["outcomes"])
 
 

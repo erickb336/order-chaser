@@ -15,15 +15,20 @@ Rules:
   best ask (sell: at or below the best bid).
 - The IOC fills against the book, level by level, up to its limit, as taker.
 
-Margin (the simulated account: 5,000 USD at the start, labelled "simulated account" on the pages):
-- One position per pair and direction: qty, average entry, collateral (cost / leverage), opened at.
-- Mark = the mid of the public book. Unrealized P/L at the mark. Equity = cash + P/L - rollover so far.
-  Margin level = equity / used margin x 100. At or below the pair's margin_stop the account is liquidated:
-  every position closes at its mark.
-- An open fill pays the trading fee and the opening fee (0.05% of the cost). Rollover: 0.05% of the cost
-  for each started 4 h, paid when the position (or a part of it) closes.
-- A reduce-only order fills at most the position (it never grows or flips it). With no position it is
-  refused; when the position is gone while it is open, the gateway reports PositionGone("nopos").
+Margin (the simulated account: 5,000 USD at the start, labelled "simulated account" on the pages), as Kraken
+does with mixed leverage:
+- Each open is its own position: qty, entry, collateral (cost / leverage), leverage, opened at. The fills of one
+  chase (its legs and its IOC) build one position. Long and short on one pair are never open together.
+- A close (a reduce-only order) takes the oldest position of the pair and direction first (FIFO), partly if needed.
+- The mark of a pair = the mid of the last valid public book of that pair, with its time. The tool watches one pair,
+  so the mark of another pair is the last price seen; after a restart a pair has no mark until its book arrives.
+  Unrealized P/L at the mark (none without a mark: equity counts it as 0). Equity = cash + P/L - rollover so far.
+  Margin level = equity / used margin x 100. At or below the pair's margin_stop the account is liquidated when a
+  book arrives: every position closes at the mark of its own pair (at its entry if its pair has no mark).
+- An open fill pays the trading fee and the opening fee (0.05% of the cost). Rollover: 0.05% of the cost of each
+  position for each started 4 h since that position opened, paid when the position (or a part of it) closes.
+- A reduce-only order fills at most the positions (it never grows or flips them). With no position it is
+  refused; when the positions are gone while it is open, the gateway reports PositionGone("nopos").
 - Refusals, with Kraken's texts: a leverage that the pair does not allow, a position against an open
   position of the other direction, "Margin position size exceeded" (AssetPairs position limit),
   "Margin allowance exceeded" (the most the account may borrow), "Insufficient margin" (free margin for orders).
@@ -33,7 +38,8 @@ Margin (the simulated account: 5,000 USD at the start, labelled "simulated accou
 from __future__ import annotations
 
 import json
-from decimal import Decimal
+import re
+from decimal import ROUND_HALF_UP, Decimal
 
 from . import core
 
@@ -48,72 +54,109 @@ class SimAccount:
 
     def __init__(self, cash: Decimal = START_CASH, allowance: Decimal = ALLOWANCE) -> None:
         self.cash, self.allowance = cash, allowance
-        self.positions: dict[tuple[str, str], dict] = {}   # (pair, dir) -> {qty, entry, margin, opened, stop}
-        self.marks: dict[str, Decimal] = {}
+        # Oldest first. Each: {pair, dir, ref, qty, entry, margin, leverage, opened, stop}; ref: the chase id, or None.
+        self.positions: list[dict] = []
+        self.marks: dict[str, tuple[Decimal, float]] = {}  # pair -> (mid of its last valid book, time)
         self.changed = False                               # cash or positions changed since the last save
 
     # ----- numbers -----
+    def of(self, pair: str, d: str) -> list[dict]:
+        """The positions of one pair and direction, oldest first (the order of a close)."""
+        return [p for p in self.positions if p["pair"] == pair and p["dir"] == d]
+
     def position(self, pair: str, d: str) -> dict | None:
-        return self.positions.get((pair, d))
+        """The positions of one pair and direction together: qty, average entry, collateral, average leverage
+        (cost / collateral, rounded), count. None when there is none."""
+        ps = self.of(pair, d)
+        if not ps:
+            return None
+        qty = sum((p["qty"] for p in ps), ZERO)
+        cost = sum((p["qty"] * p["entry"] for p in ps), ZERO)
+        margin = sum((p["margin"] for p in ps), ZERO)
+        return {"qty": qty, "entry": cost / qty, "margin": margin, "count": len(ps),
+                "leverage": int((cost / margin).quantize(Decimal(1), ROUND_HALF_UP)), "opened": ps[0]["opened"]}
 
     def used(self) -> Decimal:
-        return sum((p["margin"] for p in self.positions.values()), ZERO)
+        return sum((p["margin"] for p in self.positions), ZERO)
 
     def borrowed(self) -> Decimal:
-        return sum((p["qty"] * p["entry"] - p["margin"] for p in self.positions.values()), ZERO)
+        return sum((p["qty"] * p["entry"] - p["margin"] for p in self.positions), ZERO)
 
-    def _upl(self, key, p) -> Decimal:
-        mark = self.marks.get(key[0], p["entry"])
-        return (mark - p["entry"]) * p["qty"] * (1 if key[1] == "long" else -1)
+    def _upl(self, p) -> Decimal | None:
+        """Unrealized P/L at the mark of the position's own pair; None when that pair has no mark yet."""
+        mark = self.marks.get(p["pair"])
+        return None if mark is None else (mark[0] - p["entry"]) * p["qty"] * (1 if p["dir"] == "long" else -1)
 
     @staticmethod
     def _roll(p, now: float) -> Decimal:
         return p["qty"] * p["entry"] * core.ROLLOVER * core.rollover_periods(now - p["opened"])
 
     def equity(self, now: float) -> Decimal:
-        return self.cash + sum((self._upl(k, p) - self._roll(p, now) for k, p in self.positions.items()), ZERO)
+        return self.cash + sum(((self._upl(p) or ZERO) - self._roll(p, now) for p in self.positions), ZERO)
 
     def level(self, now: float) -> Decimal | None:
         used = self.used()
         return self.equity(now) / used * 100 if used else None
 
     def read(self, now: float, reserved: Decimal = ZERO) -> dict:
-        """What Kraken's TradeBalance and OpenPositions give (simulated): the pages and validate_margin use it."""
+        """What Kraken's TradeBalance and OpenPositions give (simulated): the pages and validate_margin use it.
+        positions: one row for each pair and direction, with the count and the average leverage of its positions."""
         free = self.equity(now) - self.used()
-        return {
-            "simulated": True, "cash": self.cash, "equity": self.equity(now), "used": self.used(), "free": free,
-            "free_orders": free - reserved, "level": self.level(now), "at": now,
-            "positions": [{"pair": k[0], "dir": k[1], "qty": p["qty"], "entry": p["entry"], "margin": p["margin"],
-                           "leverage": round(p["qty"] * p["entry"] / p["margin"]), "mark": self.marks.get(k[0], p["entry"]),
-                           "upl": self._upl(k, p), "rollover": self._roll(p, now), "opened": p["opened"]}
-                          for k, p in sorted(self.positions.items())],
-        }
+        rows = []
+        for pair, d in dict.fromkeys((p["pair"], p["dir"]) for p in self.positions):
+            ps, g = self.of(pair, d), self.position(pair, d)
+            upls = [self._upl(p) for p in ps]
+            mark = self.marks.get(pair)
+            rows.append({"pair": pair, "dir": d, **g, "mark": mark and mark[0], "mark_at": mark and mark[1],
+                         "upl": None if mark is None else sum(upls, ZERO),
+                         "rollover": sum((self._roll(p, now) for p in ps), ZERO),
+                         "parts": [{"qty": p["qty"], "entry": p["entry"], "leverage": p["leverage"], "opened": p["opened"]}
+                                   for p in ps]})
+        return {"simulated": True, "cash": self.cash, "equity": self.equity(now), "used": self.used(), "free": free,
+                "free_orders": free - reserved, "level": self.level(now), "at": now,
+                "unpriced": sorted({p["pair"] for p in self.positions if p["pair"] not in self.marks}),
+                "positions": rows}
 
     def list(self) -> list[core.Position]:
-        return [core.Position(k[0], k[1], p["qty"], p["entry"], round(p["qty"] * p["entry"] / p["margin"]))
-                for k, p in sorted(self.positions.items())]
+        groups = dict.fromkeys((p["pair"], p["dir"]) for p in self.positions)
+        return [core.Position(k[0], k[1], g["qty"], g["entry"], g["leverage"]) for k in groups if (g := self.position(*k))]
+
+    def close_entry(self, pair: str, d: str, qty: Decimal) -> Decimal:
+        """The average entry of the part that a close of qty takes, oldest first (FIFO)."""
+        left, cost = qty, ZERO
+        for p in self.of(pair, d):
+            take = min(left, p["qty"])
+            cost, left = cost + take * p["entry"], left - take
+        return cost / (qty - left) if qty > left else ZERO
 
     # ----- changes -----
     def fill(self, pair: core.Pair, side: str, leverage: int, reduce_only: bool, qty: Decimal, price: Decimal,
-             maker: bool, now: float) -> Decimal:
-        """Apply a margin fill. Returns the qty that filled: a reduce-only fill is cut to the position."""
+             maker: bool, now: float, ref: str | None = None) -> Decimal:
+        """Apply a margin fill. Returns the qty that filled: a reduce-only fill is cut to the positions.
+        ref: the chase of the order; the open fills of one chase build one position."""
         fee = core.MAKER_FEE if maker else core.TAKER_FEE
         if reduce_only:
-            key = (pair.symbol, "short" if side == "buy" else "long")
-            p = self.positions.get(key)
-            qty = min(qty, p["qty"]) if p else ZERO
-            if qty > 0:
-                part = qty / p["qty"]
-                pl = (price - p["entry"]) * qty * (1 if key[1] == "long" else -1)
-                self.cash += pl - qty * price * fee - self._roll(p, now) * part
+            d = "short" if side == "buy" else "long"
+            left = qty
+            for p in self.of(pair.symbol, d):               # the oldest position first
+                take = min(left, p["qty"])
+                part = take / p["qty"]
+                pl = (price - p["entry"]) * take * (1 if d == "long" else -1)
+                self.cash += pl - take * price * fee - self._roll(p, now) * part
                 p["margin"] -= p["margin"] * part
-                p["qty"] -= qty
-                if p["qty"] == 0:
-                    del self.positions[key]
+                p["qty"] -= take
+                left -= take
+                if left == 0:
+                    break
+            self.positions = [p for p in self.positions if p["qty"] > 0]
+            qty -= left
         else:
-            key = (pair.symbol, "long" if side == "buy" else "short")
-            p = self.positions.setdefault(key, {"qty": ZERO, "entry": price, "margin": ZERO, "opened": now,
-                                                "stop": pair.margin_stop})
+            d = "long" if side == "buy" else "short"
+            p = next((p for p in self.of(pair.symbol, d) if ref is not None and p["ref"] == ref), None)
+            if p is None:
+                p = {"pair": pair.symbol, "dir": d, "ref": ref, "qty": ZERO, "entry": price, "margin": ZERO,
+                     "leverage": leverage, "opened": now, "stop": pair.margin_stop}
+                self.positions.append(p)
             cost = qty * price
             p["entry"] = (p["qty"] * p["entry"] + cost) / (p["qty"] + qty)
             p["qty"] += qty
@@ -123,32 +166,40 @@ class SimAccount:
         return qty
 
     def mark(self, pair: str, bid: Decimal, ask: Decimal, now: float) -> bool:
-        """A new mark (the mid). True when the account is liquidated: every position closes at its mark."""
-        self.marks[pair] = (bid + ask) / 2
+        """A new mark of one pair (the mid). True when the account is liquidated: every position closes at its mark."""
+        self.marks[pair] = ((bid + ask) / 2, now)
         level = self.level(now)
-        if level is None or level > max(p["stop"] for p in self.positions.values()):
+        if level is None or level > max(p["stop"] for p in self.positions):
             return False
-        for k, p in self.positions.items():
-            self.cash += self._upl(k, p) - self._roll(p, now)
-        self.positions = {}
+        for p in self.positions:
+            self.cash += (self._upl(p) or ZERO) - self._roll(p, now)
+        self.positions = []
         self.changed = True
         return True
 
-    # ----- the SQLite copy -----
+    # ----- the SQLite copy (the marks are not kept: after a restart a pair has no price until its book arrives) -----
+    NUMS = ("qty", "entry", "margin")
+
     def to_json(self) -> str:
         return json.dumps({"cash": str(self.cash), "allowance": str(self.allowance),
-                           "positions": [[k[0], k[1], {**{f: str(p[f]) for f in ("qty", "entry", "margin")},
-                                                       "opened": p["opened"], "stop": p["stop"]}]
-                                         for k, p in self.positions.items()]})
+                           "positions": [{**p, **{f: str(p[f]) for f in self.NUMS}} for p in self.positions]})
 
     @classmethod
     def from_json(cls, s: str) -> SimAccount:
         d = json.loads(s)
         a = cls(Decimal(d["cash"]), Decimal(d["allowance"]))
-        for pair, dr, p in d["positions"]:
-            a.positions[(pair, dr)] = {"qty": Decimal(p["qty"]), "entry": Decimal(p["entry"]), "margin": Decimal(p["margin"]),
-                                       "opened": p["opened"], "stop": p["stop"]}
+        for p in d["positions"]:
+            if isinstance(p, list):       # the earlier build: [pair, dir, {qty, entry, margin, opened, stop}], one per direction
+                pair, dr, p = p
+                p = {**p, "pair": pair, "dir": dr, "ref": None,
+                     "leverage": int((Decimal(p["qty"]) * Decimal(p["entry"]) / Decimal(p["margin"])).quantize(Decimal(1), ROUND_HALF_UP))}
+            a.positions.append({**p, **{f: Decimal(p[f]) for f in cls.NUMS}})
         return a
+
+
+def chase_of(cl_ord_id: str) -> str:
+    """The chase of an order: "<id>", "<id>-1" (a new leg) and "<id>-i" (the IOC) all belong to the chase <id>."""
+    return re.sub(r"-(\d+|i)$", "", cl_ord_id)
 
 
 class SimGateway:
@@ -261,7 +312,7 @@ class SimGateway:
                 break
             take = min(left, qty)
             if isinstance(cmd, core.MarginIoc):   # reduce-only: at most the position
-                take = self.account.fill(self.pair, cmd.side, cmd.leverage, cmd.reduce_only, take, price, False, now)
+                take = self.account.fill(self.pair, cmd.side, cmd.leverage, cmd.reduce_only, take, price, False, now, chase_of(cmd.id))
                 if take == 0:
                     break
             out.append(core.Filled(now, take, price, maker=False, order="ioc", id=cmd.id))
@@ -280,7 +331,8 @@ class SimGateway:
     def _fill(self, take: Decimal, now: float) -> list:
         o = self.order
         if o["leverage"]:
-            take = self.account.fill(self.pair, o["side"], o["leverage"], o["reduce_only"], take, o["price"], True, now)
+            take = self.account.fill(self.pair, o["side"], o["leverage"], o["reduce_only"], take, o["price"], True, now,
+                                     chase_of(o["id"]))
         out = []
         if take > 0:
             o["cum"] += take
