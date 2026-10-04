@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import fcntl
-import os
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -21,13 +21,24 @@ create index if not exists event_chase on event(chase_id, seq);
 """
 
 
-def lock_folder(folder: Path):
-    """Hold an exclusive lock on the data folder for the life of the process.
+log = logging.getLogger("order_chaser")
 
+
+def lock_folder(folder: Path):
+    """Make the data folder if it is missing, and hold an exclusive lock on it for the life of the process.
+
+    The tool makes a missing folder with mode 0700. It never changes the mode of a folder that is
+    there already (it can be a folder such as ~/Documents); it warns when others can read it.
     A second tool on the same folder would end the first tool's chase as "ended" while it still runs.
     Raises BlockingIOError when another process holds the lock.
     """
-    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        folder.parent.mkdir(parents=True, exist_ok=True)
+        folder.mkdir(mode=0o700)
+    except FileExistsError:
+        mode = folder.stat().st_mode & 0o777
+        if mode & 0o077:
+            log.warning(f"The data folder {folder} is readable by other users (mode {mode:o}). The tool did not change it.")
     f = open(folder / "lock", "w")
     try:
         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -39,8 +50,7 @@ def lock_folder(folder: Path):
 
 class Db:
     def __init__(self, folder: Path) -> None:
-        folder.mkdir(parents=True, exist_ok=True)
-        os.chmod(folder, 0o700)
+        """The folder must exist: lock_folder() makes it."""
         self.path = folder / "order-chaser.sqlite3"
         self.cx = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)  # one event loop uses it
         self.cx.row_factory = sqlite3.Row

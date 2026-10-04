@@ -16,6 +16,7 @@ from pathlib import Path
 import uvicorn
 
 from order_chaser import feed
+from order_chaser.db import lock_folder
 from order_chaser.server import create_app
 
 PAIRS = feed.parse_pairs({"BTC/USD": {"tick_size": "0.1", "ordermin": "0.00005", "costmin": "0.5",
@@ -92,6 +93,7 @@ async def drive(eng):
 
 
 async def main(data_dir: Path):
+    lock = lock_folder(data_dir)  # noqa: F841  (makes the folder; held until the demo ends)
     guard = create_app(data_dir, connect=False)
     server = uvicorn.Server(uvicorn.Config(guard, host="127.0.0.1", port=5180, log_level="warning"))
     task = asyncio.create_task(server.serve())

@@ -6,12 +6,14 @@ import asyncio
 import contextlib
 import dataclasses
 import json
+import logging
 import os
+import re
 import secrets
 import time
 import uuid
 from collections import deque
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
@@ -31,6 +33,22 @@ ALLOWED_ORIGINS = {f"http://{h}" for h in ALLOWED_HOSTS}
 STATIC = Path(__file__).parent / "static"
 PAGES = ("new", "chase", "result", "history", "setup")
 MODE = "dry"   # T2 has only dry runs. No code path sends a private request to Kraken.
+PLAIN_NUMBER = re.compile(r"\d{1,15}(\.\d{1,18})?")
+NUMBER_MAX = Decimal(10) ** 12
+# No page of the tool may show inside a frame of another site (clickjacking).
+FRAME_HEADERS = [(b"x-frame-options", b"DENY"), (b"content-security-policy", b"frame-ancestors 'none'")]
+
+
+def number(v) -> Decimal | None:
+    """A plain decimal string ("0.05", no commas, no exponent) or a JSON number, finite, from 0 to below 10^12.
+    None for anything else."""
+    if isinstance(v, str) and PLAIN_NUMBER.fullmatch(v.strip()):
+        d = Decimal(v.strip())
+    elif isinstance(v, (int, float)) and not isinstance(v, bool):
+        d = Decimal(str(v))
+    else:
+        return None
+    return d if d.is_finite() and 0 <= d < NUMBER_MAX else None
 
 
 def _plain(o):
@@ -209,26 +227,43 @@ class Engine:
 # ---------- Security guard (LOCALHOST-CSRF) ----------
 
 class Guard:
-    """Refuse a foreign Host, and a state-changing request without our Origin and session token."""
+    """Refuse a foreign Host, and a state-changing request (any method but GET and HEAD, and any WebSocket)
+    without our Origin and session token. Every HTTP response forbids framing."""
 
     def __init__(self, app, token: str) -> None:
         self.app, self.token = app, token
 
+    def refusal(self, scope) -> str | None:
+        if scope["type"] not in ("http", "websocket"):
+            return "Refused: unknown connection type."
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
+        if headers.get("host") not in ALLOWED_HOSTS:
+            return "Refused: unknown Host."
+        if scope["type"] == "websocket" or scope["method"] not in ("GET", "HEAD"):
+            if headers.get("origin") not in ALLOWED_ORIGINS:
+                return "Refused: the Origin is not this tool."
+            if not secrets.compare_digest(headers.get("x-session-token", ""), self.token):
+                return "Refused: no valid session token."
+        return None
+
     async def __call__(self, scope, receive, send):
+        if scope["type"] == "lifespan":
+            await self.app(scope, receive, send)
+            return
+        reason = self.refusal(scope)
         if scope["type"] == "http":
-            headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
-            reason = None
-            if headers.get("host") not in ALLOWED_HOSTS:
-                reason = "Refused: unknown Host."
-            elif scope["method"] not in ("GET", "HEAD"):
-                if headers.get("origin") not in ALLOWED_ORIGINS:
-                    reason = "Refused: the Origin is not this tool."
-                elif not secrets.compare_digest(headers.get("x-session-token", ""), self.token):
-                    reason = "Refused: no valid session token."
+            async def framed(msg):
+                if msg["type"] == "http.response.start":
+                    msg = {**msg, "headers": [*msg.get("headers", []), *FRAME_HEADERS]}
+                await send(msg)
             if reason:
-                await PlainTextResponse(reason, status_code=403)(scope, receive, send)
-                return
-        await self.app(scope, receive, send)
+                await PlainTextResponse(reason, status_code=403)(scope, receive, framed)
+            else:
+                await self.app(scope, receive, framed)
+        elif scope["type"] == "websocket" and not reason:
+            await self.app(scope, receive, send)
+        elif scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 1008, "reason": reason})
 
 
 # ---------- App ----------
@@ -278,7 +313,7 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
     async def watch(request: Request):
         d = await body(request)
         symbol = d.get("pair")
-        if symbol not in eng.pairs:
+        if not isinstance(symbol, str) or symbol not in eng.pairs:
             return JSONResponse({"errors": ["Unknown pair."]}, status_code=400)
         if eng.active and symbol != eng.chase.pair.symbol:
             return JSONResponse({"errors": ["A chase runs now."]}, status_code=409)
@@ -292,17 +327,17 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
 
     async def start(request: Request):
         d = await body(request)
-        try:
-            qty = Decimal(str(d.get("qty", "")).strip())
-            limit = None if d.get("limit") in (None, "") else Decimal(str(d["limit"]).replace(",", "").strip())
-            timeout = int(d.get("timeout", 120))
-        except (InvalidOperation, ValueError, TypeError):
-            return JSONResponse({"errors": ["Enter a number."]}, status_code=400)
-        if not (qty.is_finite() and (limit is None or limit.is_finite())):
-            return JSONResponse({"errors": ["Enter a number."]}, status_code=400)
-        if limit is not None and not d.get("accept_extra"):
-            return JSONResponse({"errors": ["Accept the extra cost to start."]}, status_code=400)
-        errors = eng.start(str(d.get("pair")), str(d.get("side")), qty, limit, timeout)
+        qty, timeout, pair = number(d.get("qty")), d.get("timeout"), d.get("pair")
+        limit = None if d.get("limit") in (None, "") else number(d["limit"])
+        error = ("Unknown pair." if not isinstance(pair, str)
+                 else "Enter the amount as a plain number, such as 0.0500." if qty is None
+                 else "Enter the limit as a plain number, such as 62480.0." if limit is None and d.get("limit") not in (None, "")
+                 else "Pick a timeout from the list: 30 s to 15 min." if type(timeout) is not int or timeout not in core.TIMEOUTS
+                 else "Accept the extra cost to start." if limit is not None and d.get("accept_extra") is not True
+                 else None)
+        if error:
+            return JSONResponse({"errors": [error]}, status_code=400)
+        errors = eng.start(pair, str(d.get("side")), qty, limit, timeout)
         if errors:
             return JSONResponse({"errors": errors}, status_code=400)
         return JSONResponse({"id": eng.chase.id})
@@ -391,6 +426,7 @@ def main() -> None:
                     help="demo only: the estimated rate counter at start, to show the 'rate limit near' state")
     a = ap.parse_args()
     import uvicorn
+    logging.basicConfig(format="%(message)s")
     try:
         lock = lock_folder(a.data_dir)  # noqa: F841  (held until the process ends)
     except BlockingIOError:

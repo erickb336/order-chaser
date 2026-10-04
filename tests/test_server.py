@@ -284,3 +284,128 @@ def test_a_higher_limit_needs_the_tick_box(setup):
     r = client.post("/api/chase", headers=H, json={**body, "accept_extra": True})
     assert r.status_code == 200
     assert client.get("/api/state").json()["chase"]["limit"] == "62480.0"
+
+
+# ---------- repair round 1 (R13 code review, R14 security review) ----------
+
+def started_book(setup):
+    client, app, eng, f, clock, call = setup
+    call(f._handle, book_msg("snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")]))
+    return {**ORIGIN, "X-Session-Token": token_of(client)}
+
+
+def raw_post(client, url, headers, text):
+    return client.post(url, headers={**headers, "Content-Type": "application/json"}, content=text)
+
+
+@pytest.mark.parametrize("text, error", [
+    ('{"pair":"BTC/USD","side":"buy","qty":"1e999999999","timeout":120}', "Enter the amount as a plain number, such as 0.0500."),
+    ('{"pair":"BTC/USD","side":"buy","qty":1e30,"timeout":120}', "Enter the amount as a plain number, such as 0.0500."),
+    ('{"pair":"BTC/USD","side":"buy","qty":"1e30","timeout":120}', "Enter the amount as a plain number, such as 0.0500."),
+    ('{"pair":"BTC/USD","side":"buy","qty":"0.05","limit":"1e999999999","accept_extra":true,"timeout":120}',
+     "Enter the limit as a plain number, such as 62480.0."),
+    ('{"pair":"BTC/USD","side":"buy","qty":"0.05","timeout":Infinity}', "Pick a timeout from the list: 30 s to 15 min."),
+    ('{"pair":"BTC/USD","side":"buy","qty":"0.05","timeout":1e400}', "Pick a timeout from the list: 30 s to 15 min."),
+    ('{"pair":"BTC/USD","side":"buy","qty":NaN,"timeout":120}', "Enter the amount as a plain number, such as 0.0500."),
+    ('{"pair":["x"],"side":"buy","qty":"0.05","timeout":120}', "Unknown pair."),
+])
+def test_bad_numbers_at_the_http_boundary_give_400_with_the_form_copy(setup, text, error):
+    # INPUT-500 and HUGE-QTY-500
+    H = started_book(setup)
+    r = raw_post(setup[0], "/api/chase", H, text)
+    assert (r.status_code, r.json()) == (400, {"errors": [error]})
+
+
+def test_watch_with_a_pair_that_is_not_a_string_gives_400(setup):
+    H = started_book(setup)
+    r = raw_post(setup[0], "/api/watch", H, '{"pair":["x"]}')
+    assert (r.status_code, r.json()) == (400, {"errors": ["Unknown pair."]})
+
+
+@pytest.mark.parametrize("field, value, error", [
+    ("timeout", 30.99, "Pick a timeout from the list: 30 s to 15 min."),
+    ("timeout", True, "Pick a timeout from the list: 30 s to 15 min."),
+    ("timeout", "120", "Pick a timeout from the list: 30 s to 15 min."),
+    ("timeout", 45, "Pick a timeout from the list: 30 s to 15 min."),
+    ("limit", "1,0,0,0,0,0,0,0,0", "Enter the limit as a plain number, such as 62480.0."),
+    ("limit", "62,480.0", "Enter the limit as a plain number, such as 62480.0."),
+    ("qty", True, "Enter the amount as a plain number, such as 0.0500."),
+    ("qty", "0x10", "Enter the amount as a plain number, such as 0.0500."),
+])
+def test_loose_numbers_are_refused(setup, field, value, error):
+    # TIMEOUT-LOOSE-PARSE
+    H = started_book(setup)
+    body = {"pair": "BTC/USD", "side": "buy", "qty": "0.05", "timeout": 120, "accept_extra": True, field: value}
+    r = setup[0].post("/api/chase", headers=H, json=body)
+    assert (r.status_code, r.json()) == (400, {"errors": [error]})
+
+
+def test_a_json_number_amount_and_a_plain_limit_start_a_chase(setup):
+    H = started_book(setup)
+    r = setup[0].post("/api/chase", headers=H, json={"pair": "BTC/USD", "side": "buy", "qty": 0.05, "timeout": 60,
+                                                    "limit": "62480.0", "accept_extra": True})
+    assert r.status_code == 200
+    assert setup[0].get("/api/state").json()["chase"]["qty"] == "0.05"
+
+
+def test_a_floor_of_0_does_not_start_a_chase(setup):
+    # LIMIT-NOT-POSITIVE at the server
+    H = started_book(setup)
+    r = setup[0].post("/api/chase", headers=H, json={"pair": "BTC/USD", "side": "sell", "qty": "0.05", "timeout": 120,
+                                                    "limit": "0", "accept_extra": True})
+    assert (r.status_code, r.json()) == (400, {"errors": ["The floor must be above 0."]})
+
+
+@pytest.mark.parametrize("path", ["/", "/chase", "/new", "/api/state", "/static/app.js"])
+def test_every_response_forbids_framing(setup, path):
+    # CLICKJACK-ONE-CLICK
+    r = setup[0].get(path, follow_redirects=False)
+    assert r.headers["x-frame-options"] == "DENY"
+    assert r.headers["content-security-policy"] == "frame-ancestors 'none'"
+
+
+def test_a_refused_request_also_forbids_framing(setup):
+    r = setup[0].get("/chase", headers={"Host": "evil.example:5180"})
+    assert r.status_code == 403 and r.headers["x-frame-options"] == "DENY"
+
+
+def test_the_guard_checks_a_websocket_like_a_state_change():
+    # GUARD-HTTP-ONLY: a future WebSocket route gets the same Host, Origin and token checks.
+    from starlette.applications import Starlette
+    from starlette.routing import WebSocketRoute
+    from starlette.websockets import WebSocketDisconnect
+
+    from order_chaser.server import Guard
+
+    async def ws(websocket):
+        await websocket.accept()
+        await websocket.send_text("in")
+        await websocket.close()
+
+    client = TestClient(Guard(Starlette(routes=[WebSocketRoute("/ws", ws)]), "tok"), base_url=BASE)
+    good = {"Host": "127.0.0.1:5180", "Origin": BASE, "X-Session-Token": "tok"}
+    for bad in ({**good, "Host": "evil.example:5180"}, {**good, "Origin": "http://evil.example"},
+                {**good, "X-Session-Token": "guess"}):
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect("/ws", headers=bad) as s:
+                s.receive_text()
+    with client.websocket_connect("/ws", headers=good) as s:
+        assert s.receive_text() == "in"
+
+
+def test_the_tool_creates_its_data_folder_0700(tmp_path):
+    # DATA-DIR-CHMOD
+    folder = tmp_path / "new" / "order-chaser"
+    lock_folder(folder).close()
+    assert folder.stat().st_mode & 0o777 == 0o700
+
+
+def test_the_tool_never_changes_the_mode_of_an_existing_folder_and_warns(tmp_path, caplog):
+    folder = tmp_path / "Documents"
+    folder.mkdir(mode=0o755)
+    folder.chmod(0o755)
+    lock_folder(folder).close()
+    Db(folder)
+    assert folder.stat().st_mode & 0o777 == 0o755
+    assert [r.getMessage() for r in caplog.records] == [
+        f"The data folder {folder} is readable by other users (mode 755). The tool did not change it."]
