@@ -131,7 +131,7 @@ def test_the_tool_records_when_it_last_ran_during_a_chase(setup):
     tok = token_of(client)
     call(f._handle, FakeBook().msg("snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")]))
     cid = client.post("/api/chase", headers={**ORIGIN, "X-Session-Token": tok},
-                      json={"pair": "BTC/USD", "side": "buy", "qty": "0.05", "timeout": 120}).json()["id"]
+                      json={"pair": "BTC/USD", "what": "buy", "qty": "0.05", "timeout": 120}).json()["id"]
     clock.t += 30
     call(eng.tick)
     row = eng.db.cx.execute("select updated from chase where id = ?", (cid,)).fetchone()
@@ -217,11 +217,11 @@ def test_one_dry_run_end_to_end_on_a_fake_feed(setup):
     call(f._handle, kb.msg("snapshot", [("62417.9", "1.0"), ("62417.0", "2.0")],
                            [("62418.5", "0.01"), ("62418.6", "0.02"), ("62419.0", "3.0")]))
 
-    r = client.post("/api/chase", headers=H, json={"pair": "BTC/USD", "side": "buy", "qty": "0.05", "timeout": 60})
+    r = client.post("/api/chase", headers=H, json={"pair": "BTC/USD", "what": "buy", "qty": "0.05", "timeout": 60})
     assert r.status_code == 200
     cid = r.json()["id"]
     # One chase at a time.
-    r2 = client.post("/api/chase", headers=H, json={"pair": "BTC/USD", "side": "buy", "qty": "0.05", "timeout": 60})
+    r2 = client.post("/api/chase", headers=H, json={"pair": "BTC/USD", "what": "buy", "qty": "0.05", "timeout": 60})
     assert r2.json() == {"errors": ["A chase runs now. You can start a new chase when it ends."]}
 
     clock.t += 6
@@ -273,7 +273,7 @@ def test_start_is_refused_for_a_pair_that_is_not_online(setup):
     call(f._handle, book_msg("snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")]))
     eng.pairs = off
     r = client.post("/api/chase", headers={**ORIGIN, "X-Session-Token": tok},
-                    json={"pair": "BTC/USD", "side": "buy", "qty": "0.05", "timeout": 120})
+                    json={"pair": "BTC/USD", "what": "buy", "qty": "0.05", "timeout": 120})
     assert r.json() == {"errors": ["Kraken accepts no new chase for BTC/USD now. Pair status: maintenance."]}
 
 
@@ -281,7 +281,7 @@ def test_a_higher_limit_needs_the_tick_box(setup):
     client, app, eng, f, clock, call = setup
     tok = token_of(client)
     call(f._handle, book_msg("snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")]))
-    body = {"pair": "BTC/USD", "side": "buy", "qty": "0.05", "timeout": 120, "limit": "62480.0"}
+    body = {"pair": "BTC/USD", "what": "buy", "qty": "0.05", "timeout": 120, "limit": "62480.0"}
     H = {**ORIGIN, "X-Session-Token": tok}
     assert client.post("/api/chase", headers=H, json=body).json() == {"errors": ["Accept the extra cost to start."]}
     r = client.post("/api/chase", headers=H, json={**body, "accept_extra": True})
@@ -302,15 +302,15 @@ def raw_post(client, url, headers, text):
 
 
 @pytest.mark.parametrize("text, error", [
-    ('{"pair":"BTC/USD","side":"buy","qty":"1e999999999","timeout":120}', "Enter the amount as a plain number, such as 0.0500."),
-    ('{"pair":"BTC/USD","side":"buy","qty":1e30,"timeout":120}', "Enter the amount as a plain number, such as 0.0500."),
-    ('{"pair":"BTC/USD","side":"buy","qty":"1e30","timeout":120}', "Enter the amount as a plain number, such as 0.0500."),
-    ('{"pair":"BTC/USD","side":"buy","qty":"0.05","limit":"1e999999999","accept_extra":true,"timeout":120}',
+    ('{"pair":"BTC/USD","what":"buy","qty":"1e999999999","timeout":120}', "Enter the amount as a plain number, such as 0.0500."),
+    ('{"pair":"BTC/USD","what":"buy","qty":1e30,"timeout":120}', "Enter the amount as a plain number, such as 0.0500."),
+    ('{"pair":"BTC/USD","what":"buy","qty":"1e30","timeout":120}', "Enter the amount as a plain number, such as 0.0500."),
+    ('{"pair":"BTC/USD","what":"buy","qty":"0.05","limit":"1e999999999","accept_extra":true,"timeout":120}',
      "Enter the limit as a plain number, such as 62480.0."),
-    ('{"pair":"BTC/USD","side":"buy","qty":"0.05","timeout":Infinity}', "Pick a timeout from the list: 30 s to 15 min."),
-    ('{"pair":"BTC/USD","side":"buy","qty":"0.05","timeout":1e400}', "Pick a timeout from the list: 30 s to 15 min."),
-    ('{"pair":"BTC/USD","side":"buy","qty":NaN,"timeout":120}', "Enter the amount as a plain number, such as 0.0500."),
-    ('{"pair":["x"],"side":"buy","qty":"0.05","timeout":120}', "Unknown pair."),
+    ('{"pair":"BTC/USD","what":"buy","qty":"0.05","timeout":Infinity}', "Pick a timeout from the list: 30 s to 15 min."),
+    ('{"pair":"BTC/USD","what":"buy","qty":"0.05","timeout":1e400}', "Pick a timeout from the list: 30 s to 15 min."),
+    ('{"pair":"BTC/USD","what":"buy","qty":NaN,"timeout":120}', "Enter the amount as a plain number, such as 0.0500."),
+    ('{"pair":["x"],"what":"buy","qty":"0.05","timeout":120}', "Unknown pair."),
 ])
 def test_bad_numbers_at_the_http_boundary_give_400_with_the_form_copy(setup, text, error):
     # INPUT-500 and HUGE-QTY-500
@@ -338,14 +338,14 @@ def test_watch_with_a_pair_that_is_not_a_string_gives_400(setup):
 def test_loose_numbers_are_refused(setup, field, value, error):
     # TIMEOUT-LOOSE-PARSE
     H = started_book(setup)
-    body = {"pair": "BTC/USD", "side": "buy", "qty": "0.05", "timeout": 120, "accept_extra": True, field: value}
+    body = {"pair": "BTC/USD", "what": "buy", "qty": "0.05", "timeout": 120, "accept_extra": True, field: value}
     r = setup[0].post("/api/chase", headers=H, json=body)
     assert (r.status_code, r.json()) == (400, {"errors": [error]})
 
 
 def test_a_json_number_amount_and_a_plain_limit_start_a_chase(setup):
     H = started_book(setup)
-    r = setup[0].post("/api/chase", headers=H, json={"pair": "BTC/USD", "side": "buy", "qty": 0.05, "timeout": 60,
+    r = setup[0].post("/api/chase", headers=H, json={"pair": "BTC/USD", "what": "buy", "qty": 0.05, "timeout": 60,
                                                     "limit": "62480.0", "accept_extra": True})
     assert r.status_code == 200
     assert setup[0].get("/api/state").json()["chase"]["qty"] == "0.05"
@@ -354,7 +354,7 @@ def test_a_json_number_amount_and_a_plain_limit_start_a_chase(setup):
 def test_a_floor_of_0_does_not_start_a_chase(setup):
     # LIMIT-NOT-POSITIVE at the server
     H = started_book(setup)
-    r = setup[0].post("/api/chase", headers=H, json={"pair": "BTC/USD", "side": "sell", "qty": "0.05", "timeout": 120,
+    r = setup[0].post("/api/chase", headers=H, json={"pair": "BTC/USD", "what": "sell", "qty": "0.05", "timeout": 120,
                                                     "limit": "0", "accept_extra": True})
     assert (r.status_code, r.json()) == (400, {"errors": ["The floor must be above 0."]})
 
@@ -420,7 +420,7 @@ def test_the_tool_never_changes_the_mode_of_an_existing_folder_and_warns(tmp_pat
 def test_digits_that_are_not_ascii_are_refused(setup, qty):
     # UNICODE-DIGITS
     H = started_book(setup)
-    r = setup[0].post("/api/chase", headers=H, json={"pair": "BTC/USD", "side": "buy", "qty": qty, "timeout": 120})
+    r = setup[0].post("/api/chase", headers=H, json={"pair": "BTC/USD", "what": "buy", "qty": qty, "timeout": 120})
     assert (r.status_code, r.json()) == (400, {"errors": ["Enter the amount as a plain number, such as 0.0500."]})
     assert setup[2].chase is None
 
@@ -436,7 +436,7 @@ def test_start_needs_a_book_at_most_10_s_old_and_a_heartbeat_renews_it(setup):
     # STALE-FEED-FREEZE-AFTER-20S: Start and the running chase use one age limit, core.STALE_AFTER.
     client, app, eng, f, clock, call = setup
     H = started_book(setup)
-    body = {"pair": "BTC/USD", "side": "buy", "qty": "0.05", "timeout": 120}
+    body = {"pair": "BTC/USD", "what": "buy", "qty": "0.05", "timeout": 120}
     clock.t += 10.5
     assert client.get("/api/state").json()["feed"]["fresh"] is False
     assert client.post("/api/chase", headers=H, json=body).json() == {"errors": ["Start needs live prices."]}
@@ -522,7 +522,7 @@ def test_a_book_message_alone_does_not_write_the_chase(setup):
     kb = FakeBook()
     call(f._handle, kb.msg("snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")]))
     H = {**ORIGIN, "X-Session-Token": token_of(client)}
-    assert client.post("/api/chase", headers=H, json={"pair": "BTC/USD", "side": "buy", "qty": "0.05", "timeout": 600}).status_code == 200
+    assert client.post("/api/chase", headers=H, json={"pair": "BTC/USD", "what": "buy", "qty": "0.05", "timeout": 600}).status_code == 200
     saves = []
     save = eng.db.save
     eng.db.save = lambda *a: (saves.append(a[0].phase), save(*a))
@@ -652,3 +652,25 @@ def test_the_account_is_read_at_the_start_after_fills_at_most_every_3_s_and_at_t
         call(eng.tick)
     call(eng.user, "stop")
     assert reads == [0.0, 3.0, 10.0]                                        # start, one read for the fills, the end
+
+
+@pytest.mark.parametrize("body, error", [
+    ({"what": "buy", "leverage": 3}, "Leverage is only for an open long or an open short. Leave it out."),
+    ({"what": "close-long", "leverage": 5}, "Leverage is only for an open long or an open short. Leave it out."),
+    ({"what": "buy", "side": "long", "leverage": 3}, 'Send what to do in the field "what" only, not "side".'),
+    ({"side": "long", "leverage": 3}, 'Send what to do in the field "what" only, not "side".'),
+    ({"side": "buy"}, 'Send what to do in the field "what" only, not "side".'),
+    ({"what": "long"}, "Pick a leverage for the open: 2x to 5x."),
+    ({"what": "short", "leverage": "3"}, "Pick a leverage for the open: 2x to 5x."),
+    ({"what": "long", "leverage": True}, "Pick a leverage for the open: 2x to 5x."),
+    ({"what": ["long"], "leverage": 3}, "Pick what to do: buy, sell, open long, open short or close a position."),
+])
+def test_start_takes_one_action_field_and_leverage_only_for_an_open(setup, body, error):
+    # MIXED-SPOT-MARGIN-FIELDS: a mix of fields is refused, never run as something else.
+    client, app, eng, f, clock, call = setup
+    eng.pairs = MARGIN_BTC
+    call(f._handle, FakeBook().msg("snapshot", [("62417.9", "1.0")], [("62418.5", "0.01"), ("62419.0", "3.0")]))
+    r = client.post("/api/chase", headers={**ORIGIN, "X-Session-Token": token_of(client)},
+                    json={"pair": "BTC/USD", "qty": "0.05", "timeout": 60, **body})
+    assert (r.status_code, r.json()) == (400, {"errors": [error]})
+    assert eng.chase is None

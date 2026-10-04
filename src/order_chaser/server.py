@@ -403,8 +403,15 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
                  else None)
         if error:
             return JSONResponse({"errors": [error]}, status_code=400)
-        lev = d.get("leverage")
-        errors = eng.start(pair, str(d.get("what", d.get("side"))), qty, limit, timeout, lev if type(lev) is int else None)
+        what, lev = d.get("what"), d.get("leverage")
+        error = ('Send what to do in the field "what" only, not "side".' if "side" in d
+                 else "Pick what to do: buy, sell, open long, open short or close a position." if not isinstance(what, str) or what not in WHAT
+                 else "Pick a leverage for the open: 2x to 5x." if what in ("long", "short") and type(lev) is not int
+                 else "Leverage is only for an open long or an open short. Leave it out." if what not in ("long", "short") and "leverage" in d
+                 else None)
+        if error:
+            return JSONResponse({"errors": [error]}, status_code=400)
+        errors = eng.start(pair, what, qty, limit, timeout, lev)
         if errors:
             return JSONResponse({"errors": errors}, status_code=400)
         return JSONResponse({"id": eng.chase.id})

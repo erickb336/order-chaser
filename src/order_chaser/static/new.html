@@ -400,9 +400,8 @@ function draw() {
 $('start').onclick = async () => {
   if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
   const body = { pair: $('pairsel').value, qty: $('amt').value.trim(), timeout: Number($('to').value) };
-  if (what === 'close') body.what = 'close-' + position().dir;
-  else if (MARGIN.includes(what)) { body.what = what; body.leverage = lev; }
-  else body.side = what;
+  body.what = what === 'close' ? 'close-' + position().dir : what;
+  if (what === 'long' || what === 'short') body.leverage = lev;
   if (override) { body.limit = $('ovp').value.trim(); body.accept_extra = $('ovok').checked; }
   $('start').disabled = true;
   const r = await OC.post('/api/chase', body);
