@@ -687,3 +687,22 @@ def test_the_dry_run_has_no_code_that_reads_a_key_or_calls_a_private_endpoint():
     from pathlib import Path
     src = " ".join(f.read_text() for f in (Path(__file__).parent.parent / "src" / "order_chaser").glob("*.py"))
     assert [w for w in ("API-Key", "API-Sign", "/0/private", "KRAKEN_KEY", "KRAKEN_API") if w in src] == []
+
+
+def test_an_open_against_a_short_while_its_chase_runs_says_a_chase_runs_first(setup):
+    # OPPOSE-MSG-WHILE-CHASE-RUNS: "a chase runs" comes before every check of the open.
+    client, app, eng, f, clock, call = setup
+    eng.pairs = feed.parse_pairs({"BTC/USD": {"tick_size": "0.1", "ordermin": "0.00005", "costmin": "0.5", "pair_decimals": 1,
+                                              "lot_decimals": 8, "status": "online", "leverage_buy": [2, 3, 4, 5],
+                                              "leverage_sell": [2, 3, 4, 5]}})
+    H = started_book(setup)
+    assert client.post("/api/chase", headers=H, json={"pair": "BTC/USD", "what": "short", "qty": "0.02", "leverage": 2,
+                                                      "timeout": 120}).status_code == 200
+    call(f._handle, trade_msg("buy", "62419.0", "0.01"))                   # a part fill: a short of 0.01 is open
+    assert eng.gw.account.position("BTC/USD", "short")["qty"] == D("0.01")
+    long = {"pair": "BTC/USD", "what": "long", "qty": "0.01", "leverage": 2, "timeout": 120}
+    r = client.post("/api/chase", headers=H, json=long)
+    assert (r.status_code, r.json()) == (400, {"errors": ["A chase runs now. You can start a new chase when it ends."]})
+    assert client.post("/api/chase/stop", headers=H).status_code == 200
+    r = client.post("/api/chase", headers=H, json=long)
+    assert (r.status_code, r.json()) == (400, {"errors": ["Close the short first. You have an open short position on BTC/USD."]})
