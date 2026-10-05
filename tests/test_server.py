@@ -640,6 +640,10 @@ def test_a_margin_open_and_its_close_through_the_api_and_the_account_stays_after
     assert float(plan["level_after"]) > float(plan["level_now"])
     assert [client.get("/api/plan", params=q).status_code for q in ({"pair": "BTC/USD", "dir": "long", "qty": "1e3"},
             {"pair": "BTC/USD", "dir": "short", "qty": "0.02"}, {"pair": "X", "dir": "long", "qty": "0.02"})] == [400, 400, 400]
+    # PLAN-ACCEPTS-SIZE-ABOVE-POSITION: the plan refuses a size with the rule and the text of POST /api/chase
+    for qty in ("0.06", "0.00001", "0.000000001"):
+        got = client.get("/api/plan", params={"pair": "BTC/USD", "dir": "long", "qty": qty})
+        assert (got.status_code, got.json()["errors"]) == (400, post({"what": "close-long", "qty": qty}).json()["errors"]), qty
     r = post({"what": "close-long", "qty": "0.02"})
     c = client.get(f"/api/chase/{r.json()['id']}").json()
     assert (c["side"], c["dir"], c["margin"]["close"], [p["qty"] for p in c["margin"]["positions"]]) == ("sell", "long", True, ["0.05"])

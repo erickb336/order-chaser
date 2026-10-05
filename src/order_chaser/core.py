@@ -375,13 +375,7 @@ def validate(pair: Pair, side: str, qty: Decimal, limit: Decimal | None,
         errors.append("Start needs live prices.")
     if timeout not in TIMEOUTS:
         errors.append("Pick a timeout from the list: 30 s to 15 min.")
-    if qty <= 0 or qty.normalize().as_tuple().exponent < -pair.qty_decimals:
-        errors.append(f"Enter an amount above 0 with at most {pair.qty_decimals} decimals.")
-    elif ask is not None and bid is not None:
-        ref = ask if side == "buy" else bid
-        if qty < pair.ordermin or qty * ref < pair.costmin:
-            errors.append(f"The amount is below the Kraken minimums for {pair.symbol}: "
-                          f"at least {fmt_qty(pair.ordermin)} {pair.base} and {pair.costmin} {pair.quote}.")
+    errors += amount_errors(pair, qty, ask if side == "buy" else bid)
     if limit is not None and limit <= 0:
         errors.append(f"The {'cap' if side == 'buy' else 'floor'} must be above 0.")
     elif limit is not None and bid is not None and ask is not None:
@@ -392,6 +386,17 @@ def validate(pair: Pair, side: str, qty: Decimal, limit: Decimal | None,
         elif side == "sell" and limit > bid:
             errors.append("A lower limit must be at or below the bid now.")
     return errors
+
+
+def amount_errors(pair: Pair, qty: Decimal, ref: Decimal | None) -> list[str]:
+    """The amount rule of a start and of the close plan. ref: the ask (buy) or bid (sell) now; None: no price,
+    so the cost minimum is not checked."""
+    if qty <= 0 or qty.normalize().as_tuple().exponent < -pair.qty_decimals:
+        return [f"Enter an amount above 0 with at most {pair.qty_decimals} decimals."]
+    if ref is not None and (qty < pair.ordermin or qty * ref < pair.costmin):
+        return [f"The amount is below the Kraken minimums for {pair.symbol}: "
+                f"at least {fmt_qty(pair.ordermin)} {pair.base} and {pair.costmin} {pair.quote}."]
+    return []
 
 
 def validate_margin(pair: Pair, what: str, qty: Decimal, leverage: int | None, ref: Decimal | None,
@@ -504,14 +509,15 @@ def _position_text(c: Chase) -> str:
     """After a margin fill: what the position of this chase is now."""
     m, base = c.margin, c.pair.base
     if not m.close:
-        return f" Position opened: {fmt_qty(c.filled)} {base} {c.dir}, {m.leverage}x."
+        word = "Position opened" if len(c.fills) == 1 else "Position now"   # one chase makes one position
+        return f" {word}: {fmt_qty(c.filled)} {base} {c.dir}, {m.leverage}x."
     stays = plan_words(m.positions, c.filled, c.pair, c.started)["stays"]
     return f" Stays open: {stays}." if stays else " Position closed."
 
 
 def step(c: Chase, ev) -> tuple[Chase, list]:
     if c.phase == "done":
-        return c, []
+        return _liquidated_after_end(c, ev)
     c = _decay(c, ev.now)
     out: list = []
     t = ev.now - c.started
@@ -644,6 +650,20 @@ def step(c: Chase, ev) -> tuple[Chase, list]:
         out += more
 
     return c, out
+
+
+def _liquidated_after_end(c: Chase, ev) -> tuple[Chase, list]:
+    """One book can fill the rest of a margin order and then liquidate the account (the simulated exchange
+    fills first, then marks). The fill ends the chase; the liquidation of the same book still belongs to it
+    when a position of this chase was open: an open that filled, or a close that leaves part of the positions."""
+    m = c.margin
+    if not (isinstance(ev, PositionGone) and ev.reason == "liquidated" and m and c.outcome == "filled" and ev.now == c.ended_at):
+        return c, []
+    if m.close and not close_plan(m.positions, c.filled)[1]:
+        return c, []
+    return replace(c, exit="liquidated", outcome="liquidated"), [
+        Log(ev.now - c.started, f"{_venue(c)} liquidated the position on the same book: the account margin level fell to "
+                                f"{c.pair.margin_stop}%.", "bad")]
 
 
 def _resume(c: Chase, now: float) -> tuple[Chase, list]:

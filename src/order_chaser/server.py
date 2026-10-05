@@ -103,11 +103,14 @@ class Engine:
         if ok:
             self.book_at = self.clock()
             fills = self.gw.on_book(book.top_bids(), book.top_asks(), self.clock(), self.watched)
-            if self.account and self.watched in self.account["unpriced"]:
-                self.read_account(force=True)     # the first price of a pair with positions: the pages show its P/L now
-        if self.active:
-            for ev in fills:
+        for ev in fills:
+            # A liquidation also reaches a chase that the same book ended (its last fill): the core decides.
+            if self.active or (self.chase and isinstance(ev, core.PositionGone)):
                 self.handle(ev)
+        if any(getattr(ev, "reason", None) == "liquidated" for ev in fills) or (
+                ok and self.account and self.watched in self.account["unpriced"]):
+            # A liquidation, with or without a chase, or the first price of a pair with positions: the pages show it now.
+            self.read_account(force=True)
         if self.active:
             self.handle(core.Book(self.clock(), self.bid, self.ask, ok))
         self._save_account()
@@ -274,6 +277,9 @@ class Engine:
         d["worst"] = str(core.worst_case(c.side, c.qty, c.limit, c.margin))
         d["dir"] = c.dir
         d["margin_est"] = json.loads(json.dumps(core.margin_summary(c), default=_plain))
+        if c.margin:   # a position of this chase is in the account now: the pages offer its close only then
+            ids = {p.id for p in c.margin.positions} if c.margin.close else {c.id}
+            d["open_now"] = any(p["ref"] in ids for p in self.gw.account.positions)
         if c.phase != "done":
             d["rate"] = max(0.0, c.rate - (self.clock() - c.rate_at))
         return d
@@ -479,11 +485,16 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
 
     async def plan(request: Request):
         q = request.query_params
-        qty, d = number(q.get("qty")), q.get("dir")
-        got = eng.close_preview(q.get("pair"), d, qty) if qty and d in ("long", "short") else None
-        if got is None:
-            return JSONResponse({"error": "No position to close, or no valid size."}, status_code=400)
-        return JSONResponse(json.loads(json.dumps(got, default=_plain)))
+        qty, d, pair = number(q.get("qty")), q.get("dir"), eng.pairs.get(q.get("pair"))
+        if qty is None or d not in ("long", "short") or pair is None:
+            return JSONResponse({"errors": ["No position to close, or no valid size."]}, status_code=400)
+        # The size rules of POST /api/chase for a close: the amount, the minimums at the price now, the position.
+        ref = (eng.ask if d == "short" else eng.bid) if pair.symbol == eng.watched else None
+        errors = core.amount_errors(pair, qty, ref) or core.validate_margin(
+            pair, "close-" + d, qty, None, None, eng.gw.account.list(), Decimal(0))
+        if errors:
+            return JSONResponse({"errors": errors}, status_code=400)
+        return JSONResponse(json.loads(json.dumps(eng.close_preview(pair.symbol, d, qty), default=_plain)))
 
     async def no_icon(request: Request):
         return PlainTextResponse("", status_code=204)

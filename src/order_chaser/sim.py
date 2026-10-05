@@ -25,7 +25,8 @@ does with mixed leverage:
   so the mark of another pair is the last price seen; after a restart a pair has no mark until its book arrives.
   Unrealized P/L at the mark (none without a mark: equity counts it as 0). Equity = cash + P/L - rollover so far.
   Margin level = equity / used margin x 100. At or below the pair's margin_stop the account is liquidated when a
-  book arrives: every position closes at the mark of its own pair (at its entry if its pair has no mark).
+  book arrives: every position closes at the mark of its own pair (at its entry if its pair has no mark). The account
+  keeps the last liquidation (positions, marks, time) for the pages, also in the SQLite copy.
 - An open fill pays the trading fee and the opening fee (0.05% of the cost). Rollover: 0.05% of the cost of each
   position for each full 4 h since that position opened, paid when the position (or a part of it) closes.
 - A reduce-only order fills at most the positions (it never grows or flips them). With no position it is
@@ -61,6 +62,8 @@ class SimAccount:
         self.positions: list[dict] = []
         self.marks: dict[str, tuple[Decimal, float]] = {}  # pair -> (mid of its last valid book, time)
         self.changed = False                               # cash or positions changed since the last save
+        # The last liquidation, for the pages: {at, level, positions: [{pair, dir, qty, leverage, entry, mark, pl}]}.
+        self.liquidation: dict | None = None
 
     # ----- numbers -----
     def of(self, pair: str, d: str) -> list[dict]:
@@ -119,7 +122,7 @@ class SimAccount:
         return {"simulated": True, "cash": self.cash, "equity": self.equity(now), "used": self.used(), "free": free,
                 "free_orders": free - reserved, "level": self.level(now), "at": now,
                 "unpriced": sorted({p["pair"] for p in self.positions if p["pair"] not in self.marks}),
-                "positions": rows}
+                "positions": rows, "liquidation": self.liquidation}
 
     def list(self) -> list[core.Position]:
         groups = dict.fromkeys((p["pair"], p["dir"]) for p in self.positions)
@@ -164,8 +167,14 @@ class SimAccount:
         level = self.level(now)
         if level is None or level > max(p["stop"] for p in self.positions):
             return False
+        gone = []
         for p in self.positions:
-            self.cash += (self._upl(p) or ZERO) - self._roll(p, now)
+            pl = (self._upl(p) or ZERO) - self._roll(p, now)
+            self.cash += pl
+            mark = self.marks.get(p["pair"], (p["entry"],))[0]
+            gone.append({"pair": p["pair"], "dir": p["dir"], "qty": str(p["qty"]), "leverage": p["leverage"],
+                         "entry": str(p["entry"]), "mark": str(mark), "pl": str(pl)})
+        self.liquidation = {"at": now, "level": str(level), "positions": gone}
         self.positions = []
         self.changed = True
         return True
@@ -174,13 +183,14 @@ class SimAccount:
     NUMS = ("qty", "entry", "margin")
 
     def to_json(self) -> str:
-        return json.dumps({"cash": str(self.cash), "allowance": str(self.allowance),
+        return json.dumps({"cash": str(self.cash), "allowance": str(self.allowance), "liquidation": self.liquidation,
                            "positions": [{**p, **{f: str(p[f]) for f in self.NUMS}} for p in self.positions]})
 
     @classmethod
     def from_json(cls, s: str) -> SimAccount:
         d = json.loads(s)
         a = cls(Decimal(d["cash"]), Decimal(d["allowance"]))
+        a.liquidation = d.get("liquidation")
         for p in d["positions"]:
             if isinstance(p, list):       # the earlier build: [pair, dir, {qty, entry, margin, opened, stop}], one per direction
                 pair, dr, p = p

@@ -1,10 +1,14 @@
 """Margin in the dry run: the core and the simulated exchange and account, with no network."""
+import json
 import random
+import tempfile
 import time
 from dataclasses import replace
 from decimal import Decimal as D
+from pathlib import Path
 
-from order_chaser import core
+from order_chaser import core, server
+from order_chaser.db import Db
 from order_chaser.core import Book, Margin, Tick, UserStop
 from order_chaser.sim import SimAccount, SimGateway
 
@@ -582,19 +586,66 @@ def test_the_db_maps_each_leg_to_its_chase_and_reads_rows_of_the_earlier_build(t
     assert (c.filled, c.legs, c.margin, db.chase_of("oc-0123456789abcdef")) == (D("0.020"), ("oc-0123456789abcdef",), None, "oc-0123456789abcdef")
 
 
+def test_one_book_that_fills_the_rest_and_liquidates_ends_the_chase_as_liquidated():
+    # LIQUIDATION-IN-FINAL-FILL-BOOK-HIDDEN: the fill ends the chase, the liquidation of the same book still reaches it
+    r = Run(SimGateway(SimAccount(cash=D("700")))).start("buy", "0.05", Margin(5)).trade("sell", "62417.0", "0.01", T0 + 1)
+    r.book("50000.0", "50000.5", T0 + 2)
+    assert (r.c.filled, r.c.outcome, r.c.exit, r.gw.account.positions) == (D("0.05"), "liquidated", "liquidated", [])
+    assert r.logs[-1] == "The simulated exchange liquidated the position on the same book: the account margin level fell to 40%."
+    # A later liquidation (another book) does not change an ended chase.
+    done = Run(SimGateway(SimAccount(cash=D("700")))).start("buy", "0.05", Margin(5)).trade("sell", "62417.0", "0.05", T0 + 1)
+    assert done.c.outcome == "filled"
+    done.book("50000.0", "50000.5", T0 + 2)
+    assert (done.c.outcome, done.gw.account.positions) == ("filled", [])
+
+
+def test_each_part_fill_of_an_open_says_position_opened_once_then_position_now():
+    # EVENT-POSITION-OPENED-REPEATS
+    r = Run().start("buy", "0.05", Margin(3)).trade("sell", "62417.0", "0.02", T0 + 1).trade("sell", "62417.0", "0.03", T0 + 2)
+    fills = [x for x in r.logs if x.startswith("Filled")]
+    assert fills == ["Filled 0.0200 BTC at 62,417.90 (maker). Position opened: 0.0200 BTC long, 3x.",
+                     "Filled 0.0300 BTC at 62,417.90 (maker). Order complete. Position now: 0.0500 BTC long, 3x."]
+
+
 # ---------- many seeded random runs ----------
 
+class _Book:
+    """A public book as the feed gives it to Engine.on_book: one bid, two ask levels."""
+
+    def __init__(self, bid):
+        self.best_bid, self.best_ask = bid, bid + D("0.1")
+        self.bids, self.asks = [(bid, D("1"))], [(bid + D("0.1"), D("0.3")), (bid + D("0.2"), D("5"))]
+
+    def top_bids(self):
+        return self.bids
+
+    def top_asks(self):
+        return self.asks
+
+
+def _plain(o):
+    return json.loads(json.dumps(o, default=server._plain))
+
+
 def probe(seed: int) -> dict:
-    """One random margin chase on a random market; returns what happened. Raises on a broken rule."""
+    """One random margin chase on a random market, run by the server's Engine on the simulated exchange, then
+    some books with no chase. Returns what happened. Raises on a broken rule. After each liquidation it checks
+    what the pages read: the server's account (and so the close list) is the simulated account, and the
+    result data of the chase says liquidated and offers no close when no position of the chase is left."""
     rnd = random.Random(seed)
-    acc = SimAccount(cash=D(rnd.choice(["5000", "900", "400", "150"])))
-    gw = SimGateway(acc)
+    crash = rnd.random() < 0.6          # big moves on a small account: often a liquidation, also on the book of the last fill
+    acc = SimAccount(cash=D(rnd.choice(["400", "150", "150"] if crash else ["5000", "900", "400", "150"])))
+    tmp = tempfile.TemporaryDirectory()
+    now = [0.0]
+    eng = server.Engine(Db(Path(tmp.name)), clock=lambda: now[0], latency=0)
+    eng.gw = gw = SimGateway(acc)
     gw.refuse_margin_amends = rnd.random() < 0.5
     cross = rnd.random() < 0.3          # new legs are often refused would_cross (the book moved while they were in flight)
     bid = D("100.0")
     gw.pair = pair = core.Pair("X/USD", "X", "USD", D("0.1"), D("0.001"), D("0.01"), 1, 8, "online",
                                (2, 3, 4, 5), (2, 3, 4, 5), 80, 40)
-    gw.on_book([(bid, D("1"))], [(bid + D("0.1"), D("0.3")), (bid + D("0.2"), D("5"))], -1.0)
+    eng.pairs, eng.watched = {"X/USD": pair}, "X/USD"
+    gw.on_book(_Book(bid).bids, _Book(bid).asks, -1.0)
     lev = rnd.choice([2, 3, 4, 5])
     close = rnd.random() < 0.5
     d = rnd.choice(["long", "short"])
@@ -612,68 +663,109 @@ def probe(seed: int) -> dict:
         side, qty, margin = "buy" if d == "long" else "sell", D(rnd.choice(["1", "5", "20"])), Margin(lev)
     limit = rnd.choice([None, bid + D("3") if side == "buy" else bid - D("3")])    # a limit away from the start price
     cash0 = acc.cash
-    c, cmds = core.begin("oc" + f"{seed:012x}", pair, side, qty, bid, bid + D("0.1"), rnd.choice([30, 60, 120]), 0.0,
-                         core.SIM_VENUE, limit, margin=margin)
-    sent, now, queue = [], 0.0, [x for x in cmds if not isinstance(x, core.Log)]
-    stats = {"replaces": 0, "rate_max": 0.0, "id_max": 0, "cross": 0, "legs_min_gap": None, "liquidated": False, "in_flight": 0}
+    eng.read_account(force=True)
+    sent = []
+    stats = {"replaces": 0, "rate_max": 0.0, "id_max": 0, "cross": 0, "legs_min_gap": None, "liquidated": False, "in_flight": 0,
+             "liquidations": 0, "same_book": False, "no_chase_liquidations": 0}
     legs_at: list[float] = []
     late: list = []          # a refusal of a new leg that arrives after the next event
     asked = None             # what the user asked first and the chase took: "fillnow" or "stop"
     gw_refused = False       # the venue refused an order with its own text (no IOC can follow)
+    send, on_book = gw.send, gw.on_book
 
-    def feed(evs):
-        nonlocal c, asked, gw_refused
-        for ev in evs:
-            stats["liquidated"] |= isinstance(ev, core.PositionGone) and ev.reason == "liquidated"
-            gw_refused |= isinstance(ev, core.Rejected) and ev.op in ("place", "ioc") and ev.reason not in ("would_cross", "rate_limit")
-            exit0 = c.exit
-            stats["in_flight"] += isinstance(ev, (core.UserFillNow, UserStop)) and c.phase == "placing" and len(c.legs) > 1
-            c, m = core.step(c, ev)
-            if asked is None and exit0 is None and isinstance(ev, (core.UserFillNow, UserStop)) and c.exit:
-                asked = c.exit
-            queue.extend(x for x in m if not isinstance(x, core.Log))
+    def gw_send(cmd, t):
+        nonlocal gw_refused
+        c = eng.chase
+        sent.append(cmd)
+        stats["id_max"] = max(stats["id_max"], len(cmd.id))
+        new_leg = isinstance(cmd, core.MarginPlace) and cmd.id != c.id
+        if new_leg:
+            stats["replaces"] += 1
+            legs_at.append(t)
+            assert c.rate <= core.RATE_MAX - core.cancel_cost(0), seed                 # room for its cancel
+        if new_leg and cross and rnd.random() < 0.6:
+            # The venue refuses the new leg: at once, or after the next event (Fill now or Stop can come first).
+            stats["cross"] += 1
+            refusal = core.Rejected(t, "place", rnd.choice(["would_cross", "would_cross", "rate_limit"]))
+            if rnd.random() < 0.5:
+                return [refusal]
+            late.append(refusal)
+            return []
+        evs = send(cmd, t)
+        gw_refused |= any(isinstance(ev, core.Rejected) and ev.op in ("place", "ioc") and ev.reason not in ("would_cross", "rate_limit")
+                          for ev in evs)
+        return evs
 
-    while c.phase != "done" and now < 400:
-        while queue:
-            cmd = queue.pop(0)
-            sent.append(cmd)
-            stats["id_max"] = max(stats["id_max"], len(cmd.id))
-            new_leg = isinstance(cmd, core.MarginPlace) and cmd.id != c.id
-            if new_leg:
-                stats["replaces"] += 1
-                legs_at.append(now)
-                assert c.rate <= core.RATE_MAX - core.cancel_cost(0), seed                 # room for its cancel
-            if new_leg and cross and rnd.random() < 0.6:
-                # The venue refuses the new leg: at once, or after the next event (Fill now or Stop can come first).
-                stats["cross"] += 1
-                refusal = core.Rejected(now, "place", rnd.choice(["would_cross", "would_cross", "rate_limit"]))
-                feed([refusal]) if rnd.random() < 0.5 else late.append(refusal)
-            else:
-                feed(gw.send(cmd, now))
-            stats["rate_max"] = max(stats["rate_max"], c.rate)
-        now += rnd.choice([0.2, 0.5, 1, 3])
+    def gw_book(bids, asks, t, symbol=None):
+        evs = on_book(bids, asks, t, symbol)
+        if core.PositionGone(t, "liquidated") in evs:
+            stats["liquidations"] += 1
+            stats["no_chase_liquidations"] += not eng.active
+            stats["liquidated"] |= eng.active
+        return evs
+
+    gw.send, gw.on_book = gw_send, gw_book
+
+    def check_pages_after_liquidation():
+        # (a) the server's account is the simulated account: no closed position, no old level
+        assert eng.account == _plain(gw.read(now[0])) and eng.account["positions"] == [] and eng.account["level"] is None, seed
+        # (c) the close list (the account of the state the pages read) has no row
+        assert eng.snapshot()["account"]["positions"] == [], seed
+
+    def book(new_bid):
+        n = stats["liquidations"]
+        eng.on_book(_Book(new_bid), True)
+        if stats["liquidations"] > n:
+            check_pages_after_liquidation()
+
+    eng._apply(*core.begin("oc" + f"{seed:012x}", pair, side, qty, bid, bid + D("0.1"), rnd.choice([30, 60, 120]), 0.0,
+                           core.SIM_VENUE, limit, margin=margin))
+    def user(action):
+        nonlocal asked
+        exit0 = eng.chase.exit
+        eng.user(action)
+        if asked is None and exit0 is None and eng.chase.exit:
+            asked = eng.chase.exit
+
+    moves = ["-12", "-3", "-0.3", "-0.1", "0.1", "0.2", "0.3", "2", "12"] + (["-30", "30", "-30", "30"] if crash else [])
+    while eng.active and now[0] < 400:
+        now[0] += rnd.choice([0.2, 0.5, 1, 3])
         r = rnd.random()
-        if late and rnd.random() < 0.5:     # Fill now or Stop while the new leg is in flight
-            feed([rnd.choice([core.UserFillNow, UserStop])(now)])
-        elif r < 0.45:
-            bid = max(D("20"), bid + D(rnd.choice(["-12", "-3", "-0.3", "-0.1", "0.1", "0.2", "0.3", "2", "12"])))
-            feed(gw.on_book([(bid, D("1"))], [(bid + D("0.1"), D("0.3")), (bid + D("0.2"), D("5"))], now))
-            feed([Book(now, bid, bid + D("0.1"), True)])
-        elif r < 0.8:
-            feed(gw.on_trade(rnd.choice(["sell", "buy"]), bid + D(rnd.choice(["-0.1", "0.2"])), D(rnd.choice(["0.1", "0.7", "3"])), now))
-        elif r < 0.82:
-            feed([core.UserFillNow(now)])
-        elif r < 0.83:
-            feed([UserStop(now)])
-        else:
-            feed([Tick(now)])
-        feed(late)
+        c, pending = eng.chase, late[:]     # the refusals in flight from the last step arrive after this event
         late.clear()
+        if pending and rnd.random() < 0.5:     # Fill now or Stop while the new leg is in flight
+            stats["in_flight"] += c.phase == "placing" and len(c.legs) > 1
+            user(rnd.choice(["fillnow", "stop"]))
+        elif r < 0.45:
+            bid = max(D("20"), bid + D(rnd.choice(moves)))
+            book(bid)
+        elif r < 0.8:
+            eng.on_trade(rnd.choice(["sell", "buy"]), bid + D(rnd.choice(["-0.1", "0.2"])), D(rnd.choice(["0.1", "0.7", "3"])))
+        elif r < 0.82:
+            user("fillnow")
+        elif r < 0.83:
+            user("stop")
+        else:
+            eng.tick()
+        for ev in pending:
+            if eng.active:
+                eng.handle(ev)
+        stats["rate_max"] = max(stats["rate_max"], eng.chase.rate)
         assert not (acc.of("X/USD", "long") and acc.of("X/USD", "short")), seed       # never long and short at once
         assert sum(o["open"] for o in gw.orders.values()) <= 1, seed                  # one open order per chase at most
         mine = acc.position("X/USD", d)
-        assert (mine["qty"] if mine else D(0)) <= pos0 + (0 if close else c.filled), seed   # a close never grows
+        assert (mine["qty"] if mine else D(0)) <= pos0 + (0 if close else eng.chase.filled), seed   # a close never grows
+    c = eng.chase
     assert c.phase == "done", seed
+    # (b) the result data: a liquidation that took the position of the chase ends it as liquidated, and the result
+    # offers a close only when a position of the chase is open in the account.
+    view = eng.view(c)
+    ids = {p.id for p in c.margin.positions} if close else {c.id}
+    assert view["open_now"] == any(p["ref"] in ids for p in acc.positions), seed
+    if stats["liquidated"]:
+        assert view["outcome"] == "liquidated" or view["open_now"], (seed, view["outcome"])
+        assert view["outcome"] != "liquidated" or not view["open_now"], seed
+        stats["same_book"] = any("on the same book" in e["text"] for e in view["events"])
     assert c.filled <= c.qty, seed                                                  # never more than asked
     assert sum((x.qty for x in sent if isinstance(x, core.Ioc)), D(0)) <= c.qty, seed
     assert all((f.price <= c.limit) if c.buy else (f.price >= c.limit) for f in c.fills), seed   # never past the cap/floor
@@ -691,6 +783,15 @@ def probe(seed: int) -> dict:
         assert ioc or gw_refused or c.end_ask is None, (seed, c.exit)   # end_ask None: no valid price, no IOC
     stats["asked"] = asked
     agreed = not stats["liquidated"] and mixed_checks(seed, acc, before, cash0, c, d, close)
+    # After the chase: books with no chase. A liquidation still reaches the pages; the old result offers no close then.
+    for k in range(rnd.choice([0, 5, 10, 20])):
+        now[0] += 1
+        if not acc.positions and acc.cash > 0:   # an open of another chase (the account changes with no read of it)
+            acc.fill(pair, rnd.choice(["buy", "sell"]), 5, False, D("2"), bid, True, now[0], f"later{k}")
+        bid = max(D("20"), bid + D(rnd.choice(["-30", "-12", "-3", "3", "12", "30"])))
+        book(bid)
+    assert eng.view(c)["open_now"] == any(p["ref"] in ids for p in acc.positions), seed
+    tmp.cleanup()
     return {**stats, "agreed": agreed, "part": close and 0 < c.filled < c.qty, "outcome": c.outcome, "close": close, "refuse": gw.refuse_margin_amends, "positions": len(before)}
 
 
@@ -738,7 +839,8 @@ def mixed_checks(seed, acc, before, cash0, c, d, close):
 def probe_counts(n: int, first: int = 0) -> dict:
     counts: dict = {"runs": 0, "new_legs": 0, "runs_with_replace": 0, "new_leg_refusals": 0, "runs_with_new_leg_refusal": 0,
                     "legs_min_gap_s": None, "rate_max": 0.0, "id_max": 0, "close_runs_over_2_or_more_positions": 0,
-                    "open_runs_beside_other_positions": 0, "liquidated_runs": 0, "close_runs_pages_agree_with_the_account": 0,
+                    "open_runs_beside_other_positions": 0, "liquidated_runs": 0, "liquidations_checked": 0, "of_which_with_no_chase": 0,
+                    "of_which_on_the_book_of_the_last_fill": 0, "close_runs_pages_agree_with_the_account": 0,
                     "of_which_part_closes": 0, "fillnow_runs": 0, "stop_runs": 0, "asks_while_a_new_leg_is_in_flight": 0, "outcomes": {}}
     for seed in range(first, first + n):
         r = probe(seed)
@@ -754,6 +856,9 @@ def probe_counts(n: int, first: int = 0) -> dict:
         counts["close_runs_over_2_or_more_positions"] += r["close"] and r["positions"] >= 2
         counts["open_runs_beside_other_positions"] += not r["close"] and r["positions"] >= 1
         counts["liquidated_runs"] += r["liquidated"]
+        counts["liquidations_checked"] += r["liquidations"]
+        counts["of_which_with_no_chase"] += r["no_chase_liquidations"]
+        counts["of_which_on_the_book_of_the_last_fill"] += r["same_book"]
         counts["close_runs_pages_agree_with_the_account"] += r["agreed"]
         counts["of_which_part_closes"] += r["agreed"] and r["part"]
         counts["fillnow_runs"] += r["asked"] == "fillnow"
@@ -765,12 +870,15 @@ def probe_counts(n: int, first: int = 0) -> dict:
 
 
 def test_random_margin_runs_keep_every_rule():
-    counts = probe_counts(400)
-    assert counts["runs"] == 400 and counts["runs_with_replace"] > 20 and counts["runs_with_new_leg_refusal"] > 10
-    assert counts["close_runs_over_2_or_more_positions"] > 50 and counts["open_runs_beside_other_positions"] > 50
-    assert any(k.endswith("liquidated") for k in counts["outcomes"])
-    assert counts["close_runs_pages_agree_with_the_account"] > 100 and counts["of_which_part_closes"] > 20
-    assert counts["fillnow_runs"] > 20 and counts["stop_runs"] > 10 and counts["asks_while_a_new_leg_is_in_flight"] > 0
+    counts = probe_counts(600)
+    assert counts["runs"] == 600 and counts["runs_with_replace"] > 30 and counts["runs_with_new_leg_refusal"] > 10
+    assert counts["close_runs_over_2_or_more_positions"] > 75 and counts["open_runs_beside_other_positions"] > 75
+    # The pages after a liquidation: during a chase, on the book of its last fill, and with no chase.
+    assert counts["liquidations_checked"] > 150 and counts["of_which_with_no_chase"] > 100
+    assert counts["of_which_on_the_book_of_the_last_fill"] > 1
+    assert counts["outcomes"].get("open liquidated", 0) > 3 and counts["outcomes"].get("close liquidated", 0) > 10
+    assert counts["close_runs_pages_agree_with_the_account"] > 150 and counts["of_which_part_closes"] > 30
+    assert counts["fillnow_runs"] > 30 and counts["stop_runs"] > 15 and counts["asks_while_a_new_leg_is_in_flight"] > 0
 
 
 if __name__ == "__main__":   # uv run python tests/test_margin.py 5000: the counts of a larger probe
