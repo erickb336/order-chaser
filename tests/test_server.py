@@ -658,6 +658,11 @@ def test_a_margin_open_and_its_close_through_the_api_and_the_account_stays_after
     for qty in ("0.06", "0.00001", "0.000000001"):
         got = client.get("/api/plan", params={"pair": "BTC/USD", "dir": "long", "qty": qty})
         assert (got.status_code, got.json()["errors"]) == (400, post({"what": "close-long", "qty": qty}).json()["errors"]), qty
+    # PLAN-TEXT-DIFFERS-FROM-POST: a size that is not a plain number has the number check and the text of POST
+    for qty in ("-1", "1e-3", "abc"):
+        got = client.get("/api/plan", params={"pair": "BTC/USD", "dir": "long", "qty": qty})
+        assert (got.status_code, got.json()["errors"]) == (400, ["Enter the amount as a plain number, such as 0.0500."]), qty
+        assert post({"what": "close-long", "qty": qty}).json()["errors"] == ["Enter the amount as a plain number, such as 0.0500."], qty
     r = post({"what": "close-long", "qty": "0.02"})
     c = client.get(f"/api/chase/{r.json()['id']}").json()
     assert (c["side"], c["dir"], c["margin"]["close"], [p["qty"] for p in c["margin"]["positions"]]) == ("sell", "long", True, ["0.05"])
