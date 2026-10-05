@@ -138,6 +138,7 @@ class PrivateFeed:
 TIMER = 60            # s: the safety timer, CancelAllOrdersAfter
 RENEW_EVERY = 20      # s
 RETRY_EVERY = 2       # s: a failed renewal, or a REST read with no answer, tries again
+NO_ANSWER = 60        # s: a read with no answer for this long ends the chase (core.NoAnswer); the timer stays
 FEED_WAIT = 10        # s: the private feed must be up before the first order
 
 
@@ -207,8 +208,9 @@ class KrakenGateway:
         except OSError:   # no caffeinate (not macOS): the chase runs, the Mac can sleep
             log.warning("caffeinate did not start: the Mac can sleep during the chase.")
 
-    async def close(self) -> None:
-        """The chase ended (or did not start): the Mac can sleep, no feed, timer 0 (no cancel-all later)."""
+    async def close(self, keep_timer: bool = False) -> None:
+        """The chase ended (or did not start): the Mac can sleep, no feed, timer 0 (no cancel-all later).
+        keep_timer: Kraken did not answer, so an order can still rest: no renewal, no 0; the timer cancels it."""
         if self.awake is not None:
             self.awake.terminate()
             self.awake.wait()
@@ -220,6 +222,8 @@ class KrakenGateway:
             self.task = self.feed = None
         if self.timer["on"]:
             self.timer["on"] = False
+            if keep_timer:
+                return
             try:
                 await self.rest.call("CancelAllOrdersAfter", timeout=0)
             except (KrakenError, httpx.HTTPError) as e:   # Kraken cancels all orders when the 60 s end
@@ -264,27 +268,33 @@ class KrakenGateway:
 
     # ----- commands -----
     async def send(self, cmd, now: float) -> list:
+        """The events of one command. Never raises for Kraken: a read that gets no answer for NO_ANSWER s (or an
+        error) gives core.NoAnswer, so that the chase ends in a clear state and the queue goes on."""
         try:
-            if isinstance(cmd, core.Ioc):
-                return await self._ioc(cmd)
-            if isinstance(cmd, core.Place):
-                return await self._place(cmd)
-            if isinstance(cmd, core.Amend):
-                return await self._amend(cmd)
-            if isinstance(cmd, core.Cancel):
-                return await self._cancel(cmd)
-            if isinstance(cmd, core.Query):
-                return await self._query(cmd.id)
-        except httpx.HTTPError:   # no answer: did the order reach Kraken? Read it (the read tries again).
-            if isinstance(cmd, core.Ioc):
-                return await self._ioc_read(cmd.id)
-            if isinstance(cmd, core.Place):
-                st, _ = await self._read(cmd.id)
-                return [core.Placed(self.clock())] if st.open else [core.Rejected(self.clock(), "place", "Kraken did not answer")]
-            if isinstance(cmd, core.Cancel):
-                return [core.Rejected(self.clock(), "cancel", "Kraken did not answer")]   # the core reads the order
-            if isinstance(cmd, core.Query):
-                return await self._query(cmd.id)
+            try:
+                if isinstance(cmd, core.Ioc):
+                    return await self._ioc(cmd)
+                if isinstance(cmd, core.Place):
+                    return await self._place(cmd)
+                if isinstance(cmd, core.Amend):
+                    return await self._amend(cmd)
+                if isinstance(cmd, core.Cancel):
+                    return await self._cancel(cmd)
+                if isinstance(cmd, core.Query):
+                    return await self._query(cmd.id)
+            except httpx.HTTPError:   # no answer to an order call: did the order reach Kraken? Read it.
+                if isinstance(cmd, core.Ioc):
+                    return await self._ioc_read(cmd.id)
+                if isinstance(cmd, core.Place):
+                    st, _ = await self._read(cmd.id)
+                    return [core.Placed(self.clock())] if st.open else [core.Rejected(self.clock(), "place", "Kraken did not answer")]
+                if isinstance(cmd, core.Cancel):
+                    return [core.Rejected(self.clock(), "cancel", "Kraken did not answer")]   # the core reads the order
+                raise                 # a Query: _read already tried for NO_ANSWER s
+        except httpx.HTTPError:
+            return [core.NoAnswer(self.clock(), "")]
+        except KrakenError as e:
+            return [core.NoAnswer(self.clock(), str(e))]
         raise TypeError(cmd)
 
     def _order(self, cmd, ioc: bool) -> dict:
@@ -336,10 +346,11 @@ class KrakenGateway:
             return [core.Rejected(self.clock(), "cancel", _reason(e.errors))]
         return [core.Canceled(self.clock())]
 
-    async def _read(self, leg: str, tries: int = 30) -> tuple[core.OrderState, dict]:
+    async def _read(self, leg: str) -> tuple[core.OrderState, dict]:
         """REST QueryOrders by cl_ord_id. Kraken's "unknown order": open False, cum 0.
-        No answer: it tries again every 2 s, `tries` times, then raises httpx.HTTPError."""
-        for i in range(tries):
+        No answer: it tries again every 2 s; after NO_ANSWER s (the chase clock) it raises httpx.HTTPError."""
+        start = self.clock()
+        while True:
             try:
                 r = await self.rest.call("QueryOrders", cl_ord_id=leg)
                 break
@@ -349,7 +360,7 @@ class KrakenGateway:
                 r = {}
                 break
             except httpx.HTTPError:
-                if i == tries - 1:
+                if self.clock() - start >= NO_ANSWER:
                     raise
                 await asyncio.sleep(RETRY_EVERY)
         for info in r.values():

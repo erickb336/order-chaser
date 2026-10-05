@@ -145,6 +145,12 @@ AWAKE = ["/bin/sh", "-c", "sleep 30", "sh"]   # stands in for caffeinate -i (it 
 
 @pytest.fixture
 def live(tmp_path, fake):
+    with live_app(tmp_path, fake) as got:
+        yield got
+
+
+@__import__("contextlib").contextmanager
+def live_app(tmp_path, fake):
     from starlette.testclient import TestClient
     from test_server import BASE, Clock, FakeWs
     from order_chaser.server import create_app
@@ -304,3 +310,47 @@ def test_the_gateway_maps_margin_orders_a_refused_margin_amend_and_an_unknown_or
     c, out = core.step(c, amended[0])
     assert c.replace is True
     assert fake.calls_of("CancelAllOrdersAfter") == [{"timeout": "60"}, {"timeout": "0"}]
+
+
+def test_kraken_not_answering_ends_the_chase_in_a_clear_state_keeps_the_timer_and_the_queue_goes_on(live, fake, monkeypatch):
+    """READ-RETRY-STALLS-QUEUE: a read that gets no answer for 60 s (chase clock) ends the chase; the safety timer
+    stays as the backstop (no "0"), and the command queue still sends the commands of the next chase."""
+    from order_chaser import kraken
+    monkeypatch.setattr(kraken, "RETRY_EVERY", 0.05)
+    eng, f, clock, call, _ = live
+    book(f, call, "snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")])
+    assert call(eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
+    wait_for(lambda: eng.chase.phase == "resting")
+    fake.rest_down = True
+    assert call(eng.user, "stop") is True                                    # Cancel: no answer, then reads by cl_ord_id
+    wait_for(lambda: len(fake.calls_of("AddOrder")) == 1 and eng.chase.phase == "cancelling")
+
+    def later():                                                             # 60 s with no answer (each read try)
+        clock.t += 61
+        return eng.chase.phase == "done"
+    wait_for(later)
+    assert eng.chase.outcome == "noanswer"
+    assert texts(eng)[-1] == ("Kraken did not answer for 60 s. The chase ended. The safety timer cancels the order "
+                              "on Kraken within 60 s. Check Kraken Pro for fills.")
+    wait_for(lambda: eng.kgw.task is None)
+    fake.rest_down = False
+    assert fake.calls_of("CancelAllOrdersAfter") == [{"timeout": "60"}]     # the timer stays: no "0"
+    assert not eng.draining and not eng.queue
+    book(f, call, "update", [], [])
+    assert call(eng.start, "BTC/USD", "buy", D("0.01"), None, 60) == []      # the next chase (a dry run) places its order
+    wait_for(lambda: eng.chase.phase == "resting")
+
+
+def test_a_stop_of_the_tool_during_a_live_chase_says_that_the_timer_cancels_all_orders(tmp_path, fake, caplog):
+    """STOP-KEEPS-TIMER-UNSAID: the shutdown log line and the next start say it."""
+    with live_app(tmp_path, fake) as (eng, f, clock, call, _):
+        book(f, call, "snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")])
+        assert call(eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
+        wait_for(lambda: eng.chase.phase == "resting")
+        cid = eng.chase.id
+    assert ("The tool stopped during a live chase. The safety timer stays on: within 60 s Kraken cancels ALL open "
+            "orders on this account, also stop-loss and take-profit orders.") in caplog.messages
+    assert fake.calls_of("CancelAllOrdersAfter") == [{"timeout": "60"}]     # no "0": the timer is the backstop
+    with live_app(tmp_path, fake) as (eng, *_):
+        events = [e["text"] for e in eng.db.events(cid)]
+    assert any("The safety timer of the live chase stayed on" in t for t in events), events

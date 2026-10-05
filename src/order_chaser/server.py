@@ -49,6 +49,8 @@ AMOUNT_TEXT = "Enter the amount as a plain number, such as 0.0500."
 WITHDRAW_NOT_REMOVED = ("This key can withdraw funds. The tool refused it, but macOS did not let it remove the key. "
                         "Delete the item \"Kraken API key (order-chaser)\" in Keychain Access, and delete the key in Kraken Pro.")
 KEYCHAIN_TEXT = keys.KEYCHAIN_TEXT
+STOP_TIMER_TEXT = ("The tool stopped during a live chase. The safety timer stays on: within 60 s Kraken cancels ALL "
+                   "open orders on this account, also stop-loss and take-profit orders.")
 
 
 def number(v) -> Decimal | None:
@@ -268,7 +270,7 @@ class Engine:
         c, cmds = core.step(self.chase, ev)
         self._apply(c, cmds)
         if not c.dry and c.phase == "done" and was != "done":
-            self._spawn(self.kgw.close())     # timer 0, no private feed, caffeinate off
+            self._spawn(self.kgw.close(keep_timer=c.outcome == "noanswer"))   # timer 0, no private feed, caffeinate off
         if c.margin is not None and isinstance(ev, core.Filled):
             self.account_due = True               # tick() reads it, at most every 3 s
         if c.margin is not None and c.phase == "done" and was != "done":
@@ -552,6 +554,8 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         if eng.tasks:   # the end of a live chase that just ended: timer 0 (else it cancels other orders later)
             await asyncio.wait(eng.tasks, timeout=3)
         # A live chase that the stop cuts keeps its safety timer: Kraken cancels its order within 60 s.
+        if eng.active and not eng.chase.dry and eng.kgw.timer["on"]:
+            logging.getLogger("order_chaser").warning(STOP_TIMER_TEXT)
         for t in tasks + [eng.kgw.task]:
             if t is not None:
                 t.cancel()

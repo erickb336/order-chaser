@@ -158,7 +158,8 @@ class Chase:
     reconcile_for: str | None = None  # "feed" or "reject"
     cancel_tries: int = 0             # cancels sent for the chase order
     cancel_wait: bool = False         # a cancel was rejected and the order is open: retry when the rate allows
-    outcome: str | None = None        # filled, notfilled, belowmin, stopped, ended, refused, cancelfail
+    outcome: str | None = None        # filled, notfilled, belowmin, stopped, ended, refused, cancelfail,
+                                      # live: timer, venuecancel, noanswer
     ended_at: float | None = None
     end_ask: Decimal | None = None    # the ask (buy) or bid (sell) when the chase ended; None without a valid price
     off_from: float | None = None     # last event before the tool stopped (outcome "ended")
@@ -304,6 +305,13 @@ class VenueCanceled:
     timer (CancelAllOrdersAfter) fired; else Kraken's text."""
     now: float
     reason: str
+
+@dataclass(frozen=True)
+class NoAnswer:
+    """Live: Kraken did not answer a read of the order for 60 s (or answered with an error). The tool does not
+    know the state of the order: the chase ends, and the safety timer cancels the order. reason: Kraken's error."""
+    now: float
+    reason: str = ""
 
 @dataclass(frozen=True)
 class IocDone:
@@ -611,6 +619,13 @@ def step(c: Chase, ev) -> tuple[Chase, list]:
                           f"Kraken cancelled the order at {at}: \"{ev.reason}\". Filled {fmt_qty(c.filled)} {base}. "
                           "Chase ended. No IOC sent.", "bad"))
         c, more = _end(c, ev.now, "filled" if c.filled >= c.qty else "timer" if ev.reason == "timer" else "venuecancel")
+        out += more
+
+    elif isinstance(ev, NoAnswer):
+        why = f"Kraken answered \"{ev.reason}\" to a read of the order" if ev.reason else "Kraken did not answer for 60 s"
+        out.append(Log(t, f"{why}. The chase ended. The safety timer cancels the order on Kraken within 60 s. "
+                          "Check Kraken Pro for fills.", "bad"))
+        c, more = _end(c, ev.now, "noanswer")
         out += more
 
     elif isinstance(ev, Placed) and c.phase == "placing":
@@ -948,8 +963,10 @@ def _restarted(c: Chase, ev: Restarted, t: float) -> tuple[Chase, list]:
         lines = [Log(t, f"Tool started again after {off} s off. Ended the simulated order. No order was on Kraken.", "bad"),
                  Log(t, f"Recorded the simulated fills: {fmt_qty(c.filled)} of {fmt_qty(c.qty)} {base}."),
                  Log(t, "Did not continue the dry run.")]
-    else:  # U6 replaces this with the restart reconcile against Kraken (Q5) before it ends the chase.
-        lines = [Log(t, f"Tool started again after {off} s off. Chase ended, not continued.", "bad")]
+    else:
+        lines = [Log(t, f"Tool started again after {off} s off. Chase ended, not continued.", "bad"),
+                 Log(t, "The safety timer of the live chase stayed on: within 60 s of the stop, Kraken cancelled all "
+                        "open orders on the account, also stop-loss and take-profit orders.", "warn")]
     c, more = _end(replace(c, off_from=ev.last_seen), ev.now, "ended")
     return c, lines + more
 
