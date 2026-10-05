@@ -37,6 +37,7 @@ try {
     }
   }
 } finally {
+  console.error('close the browser');
   await browser.close();
 }
 console.log('RESULT ' + JSON.stringify(out));
