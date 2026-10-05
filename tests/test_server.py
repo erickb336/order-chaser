@@ -289,6 +289,20 @@ def test_a_higher_limit_needs_the_tick_box(setup):
     assert client.get("/api/state").json()["chase"]["limit"] == "62480.0"
 
 
+@pytest.mark.parametrize("what,limit,error", [("buy", "62400.0", "A higher limit must be at or above the ask now."),
+                                               ("sell", "62430.0", "A lower limit must be at or below the bid now.")])
+@pytest.mark.parametrize("accept", [None, True])
+def test_a_limit_on_the_wrong_side_gets_the_limit_rule_with_or_without_the_tick_box(setup, what, limit, error, accept):
+    # LOWER-CAP-WRONG-MESSAGE: a cap below the ask (a floor above the bid) is not an extra cost to accept.
+    client, app, eng, f, clock, call = setup
+    call(f._handle, book_msg("snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")]))
+    body = {"pair": "BTC/USD", "what": what, "qty": "0.05", "timeout": 120, "limit": limit}
+    if accept:
+        body["accept_extra"] = True
+    r = client.post("/api/chase", headers={**ORIGIN, "X-Session-Token": token_of(client)}, json=body)
+    assert (r.status_code, r.json()) == (400, {"errors": [error]})
+
+
 def test_a_limit_at_the_price_now_needs_no_tick_box(setup):
     # UX-ZERO-LOSS-ACCEPT-CHECKBOX: a floor at the bid (a cap at the ask) can lose nothing against a market order now.
     client, app, eng, f, clock, call = setup

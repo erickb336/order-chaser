@@ -426,9 +426,10 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
                  else "Pick what to do: buy, sell, open long, open short or close a position." if not isinstance(what, str) or what not in WHAT
                  else "Pick a leverage for the open: 2x to 5x." if what in ("long", "short") and type(lev) is not int
                  else "Leverage is only for an open long or an open short. Leave it out." if what not in ("long", "short") and "leverage" in d
-                 # A limit away from the price now (buy: the ask, sell: the bid) can cost more: the tick box accepts it.
-                 else "Accept the extra cost to start." if limit is not None and limit != (eng.ask if WHAT[what] == "buy" else eng.bid)
-                      and d.get("accept_extra") is not True
+                 # A limit beyond the price now (buy: above the ask, sell: below the bid) can cost more: the tick box accepts it.
+                 # A limit on the other side gets the limit rule of the start (core.validate), with or without the tick box.
+                 else "Accept the extra cost to start." if limit is not None and d.get("accept_extra") is not True
+                      and (eng.ask is not None and limit > eng.ask if WHAT[what] == "buy" else eng.bid is not None and limit < eng.bid)
                  else None)
         if error:
             return JSONResponse({"errors": [error]}, status_code=400)
