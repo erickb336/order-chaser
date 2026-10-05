@@ -583,7 +583,17 @@ def step(c: Chase, ev) -> tuple[Chase, list]:
         return replace(c, others_cancelled=ev.others), [Log(ev.now - c.started, _others_text(ev.others), "bad")]
     if c.phase == "done":
         return _liquidated_after_end(c, ev)
-    c = _decay(c, ev.now)
+    c, out = _on(_decay(c, ev.now), ev)
+    # Every amend and new order goes through _settle, which checks the timeout first. Here any event (not only a Tick)
+    # starts the timeout path: cancel, reread, one IOC.
+    if c.phase in ("resting", "feed_lost"):
+        c, more = _settle(c, ev.now) if _deadline(c, ev.now)[1] else (c, [])
+    else:
+        c, more = _deadline(c, ev.now)
+    return c, out + more
+
+
+def _on(c: Chase, ev) -> tuple[Chase, list]:
     out: list = []
     t = ev.now - c.started
     p = lambda x: fmt_price(c.pair, x)
@@ -595,15 +605,10 @@ def step(c: Chase, ev) -> tuple[Chase, list]:
             out.append(Log(t, "The order book checksum did not match. Reading the book again. No amend until the book is valid.", "warn"))
         c = replace(c, bid=ev.bid, ask=ev.ask, book_ok=ev.ok, book_at=ev.now if ev.ok else c.book_at)
         if c.phase == "resting":
-            c, more = _maybe_amend(c, ev.now)
+            c, more = _settle(c, ev.now)
             out += more
 
     elif isinstance(ev, Tick):
-        if c.exit is None and t >= c.timeout and c.phase in ("resting", "feed_lost") + REPLACE_IN_FLIGHT:
-            c = replace(c, exit="timeout")
-            out.append(Log(t, _no_new_order(c, ev.now) if c.phase in REPLACE_IN_FLIGHT or c.price is None
-                           else "Timeout. Cancelling the resting order." if c.phase == "resting"
-                           else "Timeout while the price feed is lost. Cancelling the order.", "warn"))
         if c.phase in ("resting", "feed_lost"):
             c, more = _settle(c, ev.now)
             out += more
@@ -763,6 +768,17 @@ def step(c: Chase, ev) -> tuple[Chase, list]:
     return c, out
 
 
+def _deadline(c: Chase, now: float) -> tuple[Chase, list]:
+    """The timeout: from it on, the chase sends no new order and no amend (only the cancel, the reread and one IOC)."""
+    t = now - c.started
+    if c.exit is not None or t < c.timeout or c.phase not in ("resting", "feed_lost") + REPLACE_IN_FLIGHT:
+        return c, []
+    c = replace(c, exit="timeout")
+    return c, [Log(t, _no_new_order(c, now) if c.phase in REPLACE_IN_FLIGHT or c.price is None
+                   else "Timeout. Cancelling the resting order." if c.phase == "resting"
+                   else "Timeout while the price feed is lost. Cancelling the order.", "warn")]
+
+
 def _no_new_order(c: Chase, now: float) -> str:
     """The timeout when no order rests: the IOC goes out only at a valid price (see the reread)."""
     return "Timeout. The tool places no new order" + (" and fills the rest with one IOC." if c.fresh(now) else ".")
@@ -801,6 +817,10 @@ def _settle(c: Chase, now: float) -> tuple[Chase, list]:
         return _end(c, now, "filled")
     if c.phase not in ("resting", "feed_lost"):
         return c, []
+    c, out = _deadline(c, now)
+    if out:
+        c, more = _settle(c, now)
+        return c, out + more
     if c.exit:
         if c.price is None:   # no order rests (a refused place, or between the legs of a replace): nothing to cancel
             if c.exit == "stop" or c.exit in GONE:
@@ -896,8 +916,8 @@ def _rejected(c: Chase, ev: Rejected, t: float) -> tuple[Chase, list]:
             if ev.reason == "rate_limit":
                 c = replace(c, rate=float(RATE_MAX), slow=True)   # as for an amend: trust Kraken
             what = "the new order" if c.replace else "the order"
+            c, more = _settle(replace(c, phase="resting"), ev.now)   # after the timeout: the reread, no new order
             again = f" The tool places it again at the best {'bid' if c.buy else 'ask'} after the wait." if c.exit is None else ""
-            c, more = _settle(replace(c, phase="resting"), ev.now)
             return c, [Log(t, f"{_venue(c)} rejected {what}: {why}.{again}", "warn")] + more
         out = [Log(t, f"{_venue(c)} rejected the order: {why}.", "bad")]
         c, more = _end(c, ev.now, "refused" if c.placed_at is None else "notfilled")   # refused: no order ever rested
@@ -978,9 +998,6 @@ def _order_state(c: Chase, ev: OrderState, t: float) -> tuple[Chase, list]:
         if c.exit == "stop" or c.exit in GONE:     # during a cancel and replace
             c, more = _end(c, ev.now, "stopped")
             return c, out + more
-        if c.exit is None and ev.now - c.started >= c.timeout:
-            c = replace(c, exit="timeout")
-            out.append(Log(t, _no_new_order(c, ev.now), "warn"))
         below = Log(t, f"The rest, {fmt_qty(rest)} {base}, is below the Kraken minimum for {c.pair.symbol} "
                        f"({fmt_qty(c.pair.ordermin)} {base} or {c.pair.costmin} {c.pair.quote}). It counts as not filled.", "bad")
         if c.exit is None:                          # cancel and replace: the next leg, for the rest

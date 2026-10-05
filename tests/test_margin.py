@@ -229,8 +229,7 @@ def test_a_timeout_while_a_new_leg_is_in_flight_reads_the_fills_then_sends_the_i
     c, _ = replacing()
     c = replace(c, timeout=10)
     c, _ = core.step(c, Tick(T0 + 10.2))                 # the timeout comes while the leg is in flight
-    c, out = core.step(c, core.Rejected(T0 + 10.3, "place", "would_cross"))
-    c, out = core.step(c, Tick(T0 + 10.4))
+    c, out = core.step(c, core.Rejected(T0 + 10.3, "place", "would_cross"))   # the refusal starts the timeout path
     assert (c.exit, out[-1]) == ("timeout", core.Query("oc0123456789ab-1"))
     c, out = core.step(c, core.OrderState(T0 + 10.5, False, D(0), None, "oc0123456789ab-1"))
     assert [type(x).__name__ for x in out if not isinstance(x, core.Log)] == ["MarginIoc"]
@@ -688,6 +687,8 @@ def _probe(seed: int) -> dict:
         sent.append(cmd)
         stats["id_max"] = max(stats["id_max"], len(cmd.id))
         place = isinstance(cmd, core.MarginPlace)
+        if place or isinstance(cmd, core.Amend):                                       # no Place or Amend at or after the timeout
+            assert t < c.started + c.timeout, (seed, type(cmd).__name__, cmd.id, t)
         new_leg = place and cmd.id != c.id
         if place:
             legs_at.append(t)                                                           # the first order is a move too

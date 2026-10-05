@@ -136,6 +136,23 @@ def test_timeout_fallback_is_cancel_then_canceled_event_then_reread_then_ioc_for
     assert (c.phase, c.outcome, c.filled) == ("done", "filled", D("0.050"))
 
 
+def test_no_amend_or_new_order_at_or_after_the_timeout_the_first_event_after_it_starts_the_cancel():
+    # ORDER-AFTER-TIMEOUT: a Book after the timeout and before the next Tick amended the order.
+    c = resting()
+    c, cmds = run(c, Book(T0 + 120, D("62418.2"), D("62418.5"), True))     # the bid rose, at the timeout: no amend
+    assert cmds == [Cancel("oc-1")] and (c.phase, c.exit) == ("cancelling", "timeout")
+    # An amend in flight at the timeout: its answer after the timeout cancels; it does not amend again.
+    c = resting()
+    c, cmds = run(c, Book(T0 + 118, D("62418.2"), D("62418.5"), True))
+    assert cmds == [Amend("oc-1", D("62418.2"))]
+    c, cmds = run(c, Amended(T0 + 121), Book(T0 + 121.5, D("62418.4"), D("62418.5"), True))
+    assert cmds == [Cancel("oc-1")] and c.exit == "timeout"
+    # A refused first order: the book after the timeout places no new order; it reads the fills for the IOC.
+    c, _ = start()
+    c, cmds = run(c, Rejected(T0 + 1, "place", "would_cross"), Book(T0 + 125, D("62418.0"), D("62418.5"), True))
+    assert cmds == [Query("oc-1")] and (c.phase, c.exit) == ("reread", "timeout")
+
+
 def test_ioc_that_fills_nothing_above_the_cap_ends_as_not_filled():
     c = resting()
     c, texts = logs(c, Filled(T0 + 31, D("0.018"), D("62418.1"), True, cum=D("0.018")),
