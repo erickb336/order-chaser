@@ -151,7 +151,9 @@ class Tool:
                     p.kill()
             err.seek(0)
             assert result, err.read()
-        return json.loads(result[0][7:])
+        out = json.loads(result[0][7:])
+        assert out.pop("csp") == []   # the pages run under the full CSP with no refusal
+        return out
 
     def stop(self):
         self.server.should_exit = True
@@ -273,7 +275,7 @@ def test_page_a_feed_lost_end_shows_the_age_and_dashes_the_rail_with_readable_pr
 
 def test_page_a_dry_run_cancel_failed_says_there_is_nothing_to_check_in_kraken_pro(tool):
     # UX-CANCELFAIL-DRY-TODO
-    send = tool.eng.gw.send
+    send = tool.eng.gw.answer
     def refuse_cancel(cmd, now):
         if isinstance(cmd, core.Cancel):
             return [core.Rejected(now, "cancel", "EGeneral:Internal error")]
@@ -281,7 +283,7 @@ def test_page_a_dry_run_cancel_failed_says_there_is_nothing_to_check_in_kraken_p
             o = tool.eng.gw.order
             return [core.OrderState(now, True, o["cum"], o["price"])]
         return send(cmd, now)
-    tool.eng.gw.send = refuse_cancel
+    tool.eng.gw.answer = refuse_cancel
     cid = tool.start()
     tool.call(tool.eng.user, "stop")
     assert tool.eng.chase.outcome == "cancelfail"
@@ -462,9 +464,9 @@ def test_page_close_lists_the_simulated_positions_with_the_whole_size_reduce_onl
 
 def test_page_cancel_and_replace_shows_its_steps_and_its_costs(tool):
     tool.eng.gw.refuse_margin_amends = True
-    send = tool.eng.gw.send
+    send = tool.eng.gw.answer
     held = []
-    tool.eng.gw.send = lambda cmd, now: held.append(cmd) or [] if isinstance(cmd, core.Cancel) else send(cmd, now)
+    tool.eng.gw.answer = lambda cmd, now: held.append(cmd) or [] if isinstance(cmd, core.Cancel) else send(cmd, now)
     tool.start("long", leverage=3)
     tool.trade("sell", "62417.0", "0.018")
     tool.clock.t += 6
@@ -480,7 +482,7 @@ def test_page_cancel_and_replace_shows_its_steps_and_its_costs(tool):
                             "Read the fills again: 0.0180 BTC filled.", "Place a new post-only buy for the rest, 0.0320 BTC at 62,418.30, leverage 3x."]
     assert got["cost"].startswith("What a replace costs: each move is a cancel and a new order, not one amend. A cancel adds up to 8")
     assert (got["rate"], got["order"], got["ro"]) == ("Cancel and replace: a cancel adds up to 8", "Open long 0.0500 BTC, 3x", "No: this order opens")
-    tool.eng.gw.send = send
+    tool.eng.gw.answer = send
     tool.call(lambda: send(held[0], tool.clock.t) and tool.eng.handle(core.Canceled(tool.clock.t)))
     assert tool.eng.chase.legs[-1].endswith("-1") and tool.eng.chase.phase == "resting"
     got = tool.look([{"goto": "/chase"}, card_shown("partial"), {"text": "#statuscard .sub", "as": "sub"}, {"shot": "m-chase-after-replace.png"}])
@@ -1003,8 +1005,8 @@ def test_page_the_close_button_of_an_open_names_the_whole_row_it_closes(tool):
 
 def test_page_an_open_refused_with_nothing_filled_says_nothing_opened_in_the_position_card(tool):
     # NOTHING-OPENED-SAYS-CLOSED
-    send = tool.eng.gw.send
-    tool.eng.gw.send = lambda cmd, now: [core.Rejected(now, "place", "EOrder:Insufficient margin")] if isinstance(cmd, core.Place) else send(cmd, now)
+    send = tool.eng.gw.answer
+    tool.eng.gw.answer = lambda cmd, now: [core.Rejected(now, "place", "EOrder:Insufficient margin")] if isinstance(cmd, core.Place) else send(cmd, now)
     cid = tool.start("long", "0.01", leverage=2)
     assert (tool.eng.chase.outcome, tool.eng.chase.filled) == ("refused", 0)
     got = tool.look([{"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"},
@@ -1123,8 +1125,8 @@ def test_page_the_gauge_has_no_now_dot_when_there_is_no_position(tool):
 
 def test_page_a_liquidation_before_the_ioc_fills_ends_liquidated_with_the_position_that_stays(tool):
     # LATE-IOC-AFTER-LIQUIDATION-SAYS-FILLED: the IOC that the core sent before the liquidation fills after it.
-    send, held = tool.eng.gw.send, []
-    tool.eng.gw.send = lambda cmd, now: held.append(cmd) or [] if isinstance(cmd, core.MarginIoc) and not held else send(cmd, now)
+    send, held = tool.eng.gw.answer, []
+    tool.eng.gw.answer = lambda cmd, now: held.append(cmd) or [] if isinstance(cmd, core.MarginIoc) and not held else send(cmd, now)
     tool.eng.gw.account.cash = D(1500)
     cid = tool.start("long", "0.105", timeout=30, leverage=5)
     tool.trade("sell", "62417.0", "0.10")

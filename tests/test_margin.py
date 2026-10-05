@@ -1,4 +1,5 @@
 """Margin in the dry run: the core and the simulated exchange and account, with no network."""
+import asyncio
 import json
 import random
 import tempfile
@@ -44,7 +45,7 @@ class Run:
                 self.logs.append(x.text)
                 continue
             self.sent.append(x)
-            for ev in self.gw.send(x, now):
+            for ev in self.gw.answer(x, now):
                 queue += self._step(ev)
 
     def _step(self, ev):
@@ -309,7 +310,7 @@ def test_leverage_is_the_pairs_list_within_2x_to_5x():
     r = Run()
     r.gw.pair = sol
     r.c, cmds = core.begin("oc1", sol, "buy", D("1"), D("140"), D("140.1"), 120, T0, core.SIM_VENUE, margin=Margin(4))
-    assert r.gw.send(cmds[1], T0) == [core.Rejected(T0, "place", "EGeneral:Invalid arguments:leverage")]
+    assert r.gw.answer(cmds[1], T0) == [core.Rejected(T0, "place", "EGeneral:Invalid arguments:leverage")]
 
 
 def test_the_venue_refusals_show_krakens_text():
@@ -361,7 +362,7 @@ def test_stop_during_a_replace_ends_the_chase_and_keeps_what_filled():
     gw.refuse_margin_amends = True
     r = Run(gw).start("buy", "0.05", Margin(3))
     r.trade("sell", "62417.0", "0.018", T0 + 2)
-    gw.send = (lambda send: lambda cmd, now: [] if isinstance(cmd, core.Cancel) else send(cmd, now))(gw.send)  # the cancel is in flight
+    gw.answer = (lambda send: lambda cmd, now: [] if isinstance(cmd, core.Cancel) else send(cmd, now))(gw.answer)  # the cancel is in flight
     r.book("62418.3", "62418.9", T0 + 6)
     assert r.c.phase == "cancelling"
     r.ev(UserStop(T0 + 7)).ev(core.Canceled(T0 + 7))
@@ -628,6 +629,13 @@ def _plain(o):
 
 
 def probe(seed: int) -> dict:
+    """_probe in an event loop: the engine sends its commands to the gateway in an (eager) task."""
+    async def in_loop():
+        return _probe(seed)
+    return asyncio.run(in_loop())
+
+
+def _probe(seed: int) -> dict:
     """One random margin chase on a random market, run by the server's Engine on the simulated exchange, then
     some books with no chase. Returns what happened. Raises on a broken rule. After each liquidation it checks
     what the pages read: the server's account (and so the close list) is the simulated account, and the
@@ -671,7 +679,7 @@ def probe(seed: int) -> dict:
     late: list = []          # a refusal of a new leg that arrives after the next event
     asked = None             # what the user asked first and the chase took: "fillnow" or "stop"
     gw_refused = False       # the venue refused an order with its own text (no IOC can follow)
-    send, on_book = gw.send, gw.on_book
+    send, on_book = gw.answer, gw.on_book
 
     def gw_send(cmd, t):
         nonlocal gw_refused
@@ -704,7 +712,7 @@ def probe(seed: int) -> dict:
             stats["liquidated"] |= eng.active
         return evs
 
-    gw.send, gw.on_book = gw_send, gw_book
+    gw.answer, gw.on_book = gw_send, gw_book
 
     def check_pages_after_liquidation():
         # (a) the server's account is the simulated account: no closed position, no old level
@@ -903,7 +911,7 @@ def test_an_ioc_that_fills_after_a_liquidation_ends_liquidated_and_names_only_wh
                 c, more = core.step(c, x)
                 q += more
             else:
-                q += gw.send(x, now)
+                q += gw.answer(x, now)
         return c
     c = run(c, cmds, 0.1)
     c = run(c, gw.on_trade("sell", D(59990), D("0.10"), 1.0), 1.0)     # 0.10 of 0.105 fills as maker
@@ -912,7 +920,7 @@ def test_an_ioc_that_fills_after_a_liquidation_ends_liquidated_and_names_only_wh
     c = run(c, gw.on_book([(D(47000), D(5))], [(D("47000.1"), D(5))], 31.05, "BTC/USD"), 31.05)   # liquidated
     assert (c.exit, gw.account.positions) == ("liquidated", [])
     logs.clear()
-    c = run(c, gw.send(held[0], 31.15), 31.15)                         # the IOC reaches the exchange after it
+    c = run(c, gw.answer(held[0], 31.15), 31.15)                         # the IOC reaches the exchange after it
     assert (c.outcome, c.filled, [p["qty"] for p in gw.account.positions]) == ("liquidated", D("0.105"), [D("0.005")])
     assert logs == ["Filled 0.0050 BTC at 47,000.10 (taker, IOC). Order complete. Position now: 0.0050 BTC long, 5x."]
     est = core.margin_summary(c)                                       # collateral and rollover of the 0.005 that stays

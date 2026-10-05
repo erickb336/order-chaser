@@ -36,8 +36,12 @@ PLAIN_NUMBER = re.compile(r"[0-9]{1,15}(\.[0-9]{1,18})?")   # ASCII digits only:
 NUMBER_MAX = Decimal(10) ** 12
 WHAT = {"buy": "buy", "sell": "sell", "long": "buy", "short": "sell", "close-long": "sell", "close-short": "buy"}  # -> side
 READ_EVERY = 3.0    # s: the account and positions are read at most this often (after fills; never each second)
-# No page of the tool may show inside a frame of another site (clickjacking).
-FRAME_HEADERS = [(b"x-frame-options", b"DENY"), (b"content-security-policy", b"frame-ancestors 'none'")]
+# Every response: no frame of another site (clickjacking), and scripts only from the tool's own files (no inline
+# script, no eval), so that an injected text cannot run before or after a key exists. Inline style attributes stay.
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+       "connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'")
+SECURITY_HEADERS = [(b"x-frame-options", b"DENY"), (b"content-security-policy", CSP.encode()),
+                    (b"x-content-type-options", b"nosniff"), (b"referrer-policy", b"no-referrer")]
 
 
 AMOUNT_TEXT = "Enter the amount as a plain number, such as 0.0500."
@@ -250,17 +254,30 @@ class Engine:
         self.version += 1
         if self.queue and not self.draining:
             if self.latency:
-                asyncio.get_running_loop().call_later(self.latency, self._drain)
+                self.draining = True   # the commands wait for the (simulated) latency; new ones join the queue
+                asyncio.get_running_loop().call_later(self.latency, self._start_drain)
             else:
-                self._drain()
+                self._start_drain()
 
-    def _drain(self) -> None:
-        """Send the queued commands to the gateway, one at a time, and handle its answers."""
+    def _start_drain(self) -> None:
+        """Run the drain as an eager task: it runs now, up to the first gateway call that waits (the network).
+        A gateway that answers at once (the simulator) so finishes the drain before this returns, as before.
+        An error in that part reaches the caller; an error after a wait is logged."""
+        task = asyncio.Task(self._drain(), loop=asyncio.get_running_loop(), eager_start=True)
+        if task.done():
+            task.result()
+        else:
+            task.add_done_callback(lambda t: t.cancelled() or t.exception() is None
+                                   or logging.getLogger(__name__).error("drain failed", exc_info=t.exception()))
+
+    async def _drain(self) -> None:
+        """Send the queued commands to the gateway, one at a time, and handle its answers. While a call waits,
+        new events still reach the core; their commands join the queue and go out in order after it."""
         self.draining = True
         try:
             while self.queue:
                 cmd = self.queue.popleft()
-                for ev in self.gw.send(cmd, self.clock()):
+                for ev in await self.gw.send(cmd, self.clock()):
                     self.handle(ev)
         finally:
             self.draining = False
@@ -308,7 +325,7 @@ class Engine:
 
 class Guard:
     """Refuse a foreign Host, and a state-changing request (any method but GET and HEAD, and any WebSocket)
-    without our Origin and session token. Every HTTP response forbids framing."""
+    without our Origin and session token. Every HTTP response carries SECURITY_HEADERS."""
 
     def __init__(self, app, token: str, port: int = PORT) -> None:
         self.app, self.token = app, token
@@ -337,7 +354,7 @@ class Guard:
         if scope["type"] == "http":
             async def framed(msg):
                 if msg["type"] == "http.response.start":
-                    msg = {**msg, "headers": [*msg.get("headers", []), *FRAME_HEADERS]}
+                    msg = {**msg, "headers": [*msg.get("headers", []), *SECURITY_HEADERS]}
                 await send(msg)
             if reason:
                 await PlainTextResponse(reason, status_code=403)(scope, receive, framed)

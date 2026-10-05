@@ -49,7 +49,7 @@ The tests need no network. A recorded sample of the public Kraken feed (`tests/f
 | Simulator | `src/order_chaser/sim.py` | The dry-run gateway and the simulated margin account. It answers the core's commands like an exchange. A later version puts the Kraken gateway in its place. |
 | Feed | `src/order_chaser/feed.py`, `book.py` | Public WebSocket v2 book (depth 10, CRC32 checksum) and trades; REST AssetPairs for minimums, tick size and pair status. |
 | Store | `src/order_chaser/db.py` | SQLite: one row for each chase, an append-only event log, a table that maps each order id (leg) to its chase, and the simulated account. |
-| Server | `src/order_chaser/server.py` | Runs the chase, serves the pages, pushes updates by server-sent events. |
+| Server | `src/order_chaser/server.py` | Runs the chase, serves the pages, pushes updates by server-sent events. It sends the core's commands to the gateway one at a time with an async call (`await gateway.send(command)`), so that a slow call to Kraken does not stop the prices, the timer or Stop. |
 
 Dry-run rules:
 
@@ -88,5 +88,6 @@ Safety:
 - The server refuses a request whose Host is not `127.0.0.1:<port>` or `localhost:<port>`.
 - The tool changes the watched pair at most once each second. A faster change gets 429, so that Kraken does not refuse the subscriptions. If Kraken refuses a subscription, the tool counts the feed as lost and connects again.
 - No page shows inside a frame of another site (`X-Frame-Options: DENY`, CSP `frame-ancestors 'none'`).
+- Every response sends a full Content Security Policy: `script-src 'self'`, `connect-src 'self'`, `object-src 'none'`, `base-uri 'none'`, `form-action 'none'`. Each page runs only from its own script files in `static/` (no inline script, no `eval`). The page tests fail on any CSP refusal in Chrome.
 - A request that changes state needs the tool's own Origin and a session token. Only the pages that the server sends get the token.
 - If the tool stops during a chase, the chase ends at the next start. The tool does not continue it.

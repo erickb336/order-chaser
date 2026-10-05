@@ -271,7 +271,12 @@ class SimGateway:
             return "EOrder:Insufficient margin"
         return None
 
-    def send(self, cmd, now: float) -> list:
+    async def send(self, cmd, now: float) -> list:
+        """The gateway call of the engine (async, as the Kraken gateway). The simulated exchange answers at once."""
+        return self.answer(cmd, now)
+
+    def answer(self, cmd, now: float) -> list:
+        """The simulated exchange's answer to one command of the core."""
         o = self.order
         margin = isinstance(cmd, (core.MarginPlace, core.MarginIoc))
         if margin and (why := self._margin_refusal(cmd, now)):

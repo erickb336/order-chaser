@@ -11,11 +11,23 @@ const spec = JSON.parse(process.argv[2]);
 const BASE = spec.base;
 const out = {};
 let input = null;
+// Poll the predicate from here: page.waitForFunction evaluates a string inside the page, which the CSP (no
+// 'unsafe-eval') refuses; page.evaluate runs through the DevTools protocol and is not a page script.
+async function waitFor(p, expr, timeout) {
+  const end = Date.now() + timeout;
+  while (!(await p.evaluate(expr))) {
+    if (Date.now() > end) throw new Error('waitFor timed out: ' + expr);
+    await p.waitForTimeout(50);
+  }
+}
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 try {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const tabs = [];
   for (let i = 0; i < (spec.tabs || 1); i++) tabs.push(await ctx.newPage());
+  // Every CSP refusal (an inline script, eval, a foreign fetch) is a failure: test_pages.py checks out.csp.
+  out.csp = [];
+  for (const p of tabs) p.on('console', m => { if (/Content Security Policy/i.test(m.text())) out.csp.push(m.text().slice(0, 200)); });
   for (const s of spec.steps) {
     const p = tabs[s.tab || 0];
     console.error('step ' + JSON.stringify(s));
@@ -23,7 +35,7 @@ try {
     else if (s.click) await p.click(s.click);
     else if (s.select) await p.selectOption(s.select[0], s.select[1]);
     else if (s.fill) await p.fill(s.fill[0], s.fill[1]);
-    else if (s.waitFor) await p.waitForFunction(s.waitFor, null, { timeout: s.timeout || 10000 });
+    else if (s.waitFor) await waitFor(p, s.waitFor, s.timeout || 10000);
     else if (s.text) out[s.as] = await p.textContent(s.text);
     else if (s.eval) out[s.as] = await p.evaluate(s.eval);
     else if (s.shot) await p.screenshot({ path: s.shot, fullPage: true });
