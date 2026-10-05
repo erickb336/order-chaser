@@ -272,6 +272,7 @@ table.t tr.click:hover td { background: var(--surface-2); }
   .row { flex-wrap: wrap; }
   .card { padding: 16px; }
   .btn, .seg button, select.input { min-height: 44px; }
+  .btn { white-space: normal; }    /* a long label ("Chase the rest (0.49846501 BTC), new cap") wraps in its button */
   .btn.sm { min-height: 36px; }
   /* A row with a note in its last cell: the note goes under the label and the value. */
   table.t tr:has(> td.tiny:last-child) { display: grid; grid-template-columns: 1fr auto; border-bottom: 1px solid var(--line); }
@@ -281,8 +282,14 @@ table.t tr.click:hover td { background: var(--surface-2); }
   .poslist label { grid-template-columns: 22px 1fr; }
   .poslist .r { grid-column: 2; text-align: left; }
   .num, .mono, .big { overflow-wrap: anywhere; }
+  .big { white-space: normal !important; }   /* "of 0.5000 BTC" goes under a long filled quantity (the markup sets nowrap) */
   /* A table value wraps at its spaces only, so that a number stays whole and the card needs no sideways scroll. */
-  table.t .num, table.t td.r { overflow-wrap: normal; }
+  table.t .num, table.t .mono, table.t td.r { overflow-wrap: normal; }
+  /* A smaller table with narrower cells: the five columns of the fills fit a phone. */
+  table.t { font-size: 13px; }
+  table.t th, table.t td { padding-left: 5px; padding-right: 5px; }
+  table.t :is(th, td):first-child { padding-left: 0; }
+  table.t :is(th, td):last-child { padding-right: 0; }
   /* The history table is wider than a phone: a hint above it, which stays in view when the table scrolls. */
   #out.card:has(> table.t)::before { content: "Scroll sideways to see every column \2192"; display: block; position: sticky; left: 0;
     width: max-content; font-size: 12.5px; color: var(--muted); padding: 4px 0; }
