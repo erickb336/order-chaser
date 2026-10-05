@@ -1142,37 +1142,46 @@ def test_page_a_liquidation_before_the_ioc_fills_ends_liquidated_with_the_positi
 
 # ---------- phone width (T45) ----------
 
-# The page width and each element that goes past the left or right edge of the window (UX R90, QA R91 of T5). An element
-# inside a box that scrolls or clips sideways (such as the history table) does not count; that box itself must fit.
-WIDTH_JS = """() => {
+# The page width, each element that goes past the left or right edge of the window (UX R90, QA R91 of T5), and each box
+# whose content is wider than the box (it scrolls or cuts the content sideways; QA R128). An element inside such a box
+# does not count, because the box is reported. Only a box that matches "scrolls" may scroll: the history table.
+WIDTH_JS = """(scrolls) => {
   const W = innerWidth;
-  const boxed = e => { for (let a = e.parentElement; a && a !== document.body; a = a.parentElement) if (getComputedStyle(a).overflowX !== 'visible') return true; return false; };
   const name = e => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + (typeof e.className === 'string' && e.className.trim() ? '.' + e.className.trim().split(/\\s+/).join('.') : '');
-  const wide = Array.from(document.querySelectorAll('body *')).filter(e => {
-    const r = e.getBoundingClientRect();
-    return r.width > 0 && (r.right > W + 0.5 || r.left < -0.5) && !e.closest('.sr-only') && !boxed(e);
-  }).map(e => name(e) + ' ' + Math.round(e.getBoundingClientRect().left) + '..' + Math.round(e.getBoundingClientRect().right));
-  return { scroll: document.scrollingElement.scrollWidth, wide: wide.slice(0, 12) };
+  const shown = e => e.getBoundingClientRect().width > 0 && !e.closest('.sr-only');
+  const boxed = e => { for (let a = e.parentElement; a && a !== document.body; a = a.parentElement) if (getComputedStyle(a).overflowX !== 'visible') return true; return false; };
+  const all = Array.from(document.querySelectorAll('body *')).filter(shown);
+  const wide = all.filter(e => { const r = e.getBoundingClientRect(); return (r.right > W + 0.5 || r.left < -0.5) && !boxed(e); })
+    .map(e => name(e) + ' ' + Math.round(e.getBoundingClientRect().left) + '..' + Math.round(e.getBoundingClientRect().right));
+  const cut = all.filter(e => getComputedStyle(e).overflowX !== 'visible' && e.scrollWidth > e.clientWidth + 1 && !(scrolls && e.matches(scrolls)))
+    .map(e => name(e) + ' ' + e.scrollWidth + '>' + e.clientWidth);
+  return { scroll: document.scrollingElement.scrollWidth, wide: wide.slice(0, 12), cut: cut.slice(0, 12) };
 }"""
 
 
 def test_page_every_page_fits_a_375_px_phone_with_no_sideways_scroll_and_readable_text(tool):
-    cid = opened_long(tool)                                       # a position to close, a result and a history row
+    opened_long(tool)                                             # a position to close, a result and a history row
     tool.beat(1)
-    phone = lambda name: [{"eval": f"({WIDTH_JS})()", "as": name}, {**ALL_TEXT, "as": name + " contrast"},
-                          {"shot": f"phone-{name.replace('/', '').replace(' ', '-') or 'new'}.png"}]
+    cid = tool.start("close-long", "0.02")                        # a part close: its result has the position and P/L rows
+    tool.trade("buy", "62419.0", "0.012")
+    tool.call(tool.eng.user, "stop")
+    phone = lambda name, scrolls=None: [{"eval": f"({WIDTH_JS})({json.dumps(scrolls)})", "as": name}, {**ALL_TEXT, "as": name + " contrast"},
+                                        {"shot": f"phone-{name.replace('/', '').replace(' ', '-') or 'new'}.png"}]
     got = tool.look([
         {"viewport": [375, 812]},
         {"goto": "/new"}, {"waitFor": "OC.$('ask').textContent === '62,418.50'"}, *phone("/new buy"),
         {"click": "#what button[data-w=long]"}, {"waitFor": "OC.$('mgbox').querySelector('.gauge')"}, *phone("/new open long"),
         {"goto": "/new?what=close&pair=BTC/USD&dir=long"}, {"waitFor": "document.querySelector('.poslist label') && OC.$('mgbox').querySelector('.gauge')"},
         *phone("/new close"),
-        {"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"}, *phone("/result"),
-        {"goto": "/history"}, {"waitFor": "document.querySelector('tr.click')"}, *phone("/history"),
+        {"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('#pl') && document.querySelector('#plan')"}, *phone("/result close"),
+        {"goto": "/history"}, {"waitFor": "document.querySelector('tr.click')"}, *phone("/history", "#out"),
         {"goto": "/setup"}, {"waitFor": "OC.$('mgline').textContent"}, *phone("/setup"),
-        {"signal": "start"}, {"goto": "/chase"}, card_shown("resting"), {"waitFor": "document.querySelector('#statuscard .rail .mk')"}, *phone("/chase")],
+        {"signal": "start"}, {"goto": "/chase"}, card_shown("resting"), {"waitFor": "document.querySelector('#statuscard .rail .mk')"}, *phone("/chase"),
+        {"click": "#stop"}, {"waitFor": "!OC.$('stopdlg').classList.contains('hidden')"}, *phone("/chase stop dialog"),
+        {"eval": "(r => r.right <= innerWidth && r.bottom <= innerHeight)(OC.$('stopyes').getBoundingClientRect())", "as": "stop button in view"}],
         on={"start": lambda: tool.start()})
-    pages = ["/new buy", "/new open long", "/new close", "/result", "/history", "/setup", "/chase"]
-    assert {p: got[p] for p in pages} == {p: {"scroll": 375, "wide": []} for p in pages}
+    pages = ["/new buy", "/new open long", "/new close", "/result close", "/history", "/setup", "/chase", "/chase stop dialog"]
+    assert {p: got[p] for p in pages} == {p: {"scroll": 375, "wide": [], "cut": []} for p in pages}
+    assert got["stop button in view"] is True
     low = {p: got[p + " contrast"] for p in pages if got[p + " contrast"]["c"] < 4.5}
     assert low == {}

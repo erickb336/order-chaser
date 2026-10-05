@@ -254,7 +254,7 @@ table.t tr.click:hover td { background: var(--surface-2); }
 
 /* Modal */
 .scrim { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: grid; place-items: center; z-index: 40; }
-.modal { background: var(--surface); border: 1px solid var(--line-strong); border-radius: 14px; width: 520px; max-width: calc(100% - 32px); padding: 24px; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+.modal { background: var(--surface); border: 1px solid var(--line-strong); border-radius: 14px; width: min(520px, calc(100vw - 32px)); padding: 24px; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
 
 @media (max-width: 960px) {
   .split, .grid2 { grid-template-columns: 1fr; }
@@ -262,7 +262,7 @@ table.t tr.click:hover td { background: var(--surface-2); }
 }
 .mins { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 12.5px; align-items: baseline; }
 
-/* Phone width (T45): no page scrolls sideways at 375 px. A wide table scrolls inside its own card. */
+/* Phone width (T45): no page scrolls sideways at 375 px. A wide table (history) scrolls inside its own card. */
 .card:has(> table.t) { overflow-x: auto; }
 @media (max-width: 600px) {
   .app { padding: 0 16px 40px; }
@@ -281,5 +281,10 @@ table.t tr.click:hover td { background: var(--surface-2); }
   .poslist label { grid-template-columns: 22px 1fr; }
   .poslist .r { grid-column: 2; text-align: left; }
   .num, .mono, .big { overflow-wrap: anywhere; }
-  table.t .num, table.t td.r { overflow-wrap: normal; white-space: nowrap; }
+  /* A table value wraps at its spaces only, so that a number stays whole and the card needs no sideways scroll. */
+  table.t .num, table.t td.r { overflow-wrap: normal; }
+  /* The history table is wider than a phone: a hint above it, which stays in view when the table scrolls. */
+  #out.card:has(> table.t)::before { content: "Scroll sideways to see every column \2192"; display: block; position: sticky; left: 0;
+    width: max-content; font-size: 12.5px; color: var(--muted); padding: 4px 0; }
+  #out.card > table.t td.r { white-space: nowrap; }
 }
