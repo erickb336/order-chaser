@@ -54,16 +54,13 @@ function markNote(a, watched) {
     : `The level uses ${esc(p.pair)} at the last price seen, ${clock(p.mark_at)}.`).join(' ');
 }
 
-// After a margin chase: is a position of this chase still open, and the link to close it.
-// A close: what stays comes from its close plan (c.margin_est, the core's FIFO plan of what filled).
-const positionOpen = c => !['liquidated', 'nopos'].includes(c.outcome) &&
-  (c.margin.close ? Number(c.margin_est.rest) > 0 : Number(c.filled) > 0);
+// After a margin chase: the link to close its position. Whether one is open comes from the account (c.open_now).
 const closeLink = c => `/new?what=close&pair=${encodeURIComponent(c.pair.symbol)}&dir=${c.dir}`;
 const closeText = c => c.margin.close ? `Close the position (${qty(c.margin_est.rest)} ${c.pair.base})` : 'Close this position';
 // The badge of a close on the result and in the history. A close is judged by its order, not by the position (owner, G16):
 // all of the order filled is "Closed as asked", or "Position closed" when nothing stays. rest: what stays of the position.
 function closeBadge(outcome, filled, total, rest) {
-  if (outcome === 'ended') return ['bad', 'Ended at a restart: position open'];
+  if (outcome === 'ended') return ['bad', 'Ended at a restart'];
   if (Number(filled) >= Number(total)) return Number(rest) > 0 ? ['ok', 'Closed as asked'] : ['ok', 'Position closed'];
   return Number(filled) > 0 ? ['bad', 'Part closed'] : ['bad', 'Not closed: position open'];
 }
@@ -188,7 +185,7 @@ function copy(st, c, snap, ageOff) {
     case 'resting':
       if (n(c.price) === n(c.limit)) {
         t.title = `Resting at the ${w.limitWord}`;
-        t.sub = `Your order waits at the ${w.limitWord}, ${p(c.limit)}. The order never goes ${w.above} the ${w.limitWord}, so the tool does not move it when the ${w.best} ${w.rises} further.` + SIM;
+        t.sub = `Your order waits at the ${w.limitWord}, ${p(c.limit)}. The order never goes ${w.above} the ${w.limitWord}, so the tool does not move it when the ${w.best} ${w.rises} further.` + replaceNote(c) + SIM;
         break;
       }
       t.title = `Resting at the ${w.best}`;
@@ -366,7 +363,7 @@ function copy(st, c, snap, ageOff) {
 
 // The cost of a cancel and replace, in plain words (shown while it runs and in the result).
 const REPLACE_COST = 'What a replace costs: each move is a cancel and a new order, not one amend. A cancel adds up to 8 to the rate counter and the new order adds 1, so moves can come less often. The new order also loses its place in the queue at its price, and for a moment no order rests.';
-const replaceNote = c => c.replace ? ` The venue refuses amends of this order, so each move is a cancel and a new order (${c.legs.length - 1} so far).` : '';
+const replaceNote = c => c.replace ? ` ${c.mode === 'live' ? 'Kraken' : 'The simulated exchange'} refuses amends of this order, so each move is a cancel and a new order (${c.legs.length - 1} so far).` : '';
 
 // ---------- The price rail (from the approved prototype) ----------
 function rail(c, bid, ask, stale) {
@@ -447,5 +444,5 @@ function eventLog(c) {
   return `<ul class="log">${c.events.slice().reverse().map(e => `<li><span class="ts">${mmss(e.t)}</span><span class="${kind[e.kind] || ''}">${esc(e.text)}</span></li>`).join('')}</ul>`;
 }
 
-return { closeBadge, planLine, markNote, clock, positionOpen, closeLink, closeText, gauge, orderName, positionLine, MARGIN_FEES, REPLACE_COST, TOKEN, $, esc, beyond, pct, fillWord, againText, restBelowMin, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
+return { closeBadge, planLine, markNote, clock, closeLink, closeText, gauge, orderName, positionLine, MARGIN_FEES, REPLACE_COST, TOKEN, $, esc, beyond, pct, fillWord, againText, restBelowMin, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
 })();

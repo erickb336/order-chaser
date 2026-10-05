@@ -11,7 +11,8 @@
       <p class="muted" id="intro">The tool places a post-only limit at the best bid and moves it up as the bid rises. It never goes above the cap.</p>
       <div id="busy" class="note warn hidden" style="margin-bottom:16px"></div>
       <div id="restnote" class="note info hidden" style="margin-bottom:16px"></div>
-      <div id="oppose" class="note bad hidden" style="margin-bottom:16px"></div>
+      <div id="liqnote" class="note bad hidden" role="status" style="margin-bottom:16px"></div>
+      <div id="oppose" class="note bad hidden" role="alert" style="margin-bottom:16px"></div>
 
       <div class="field"><span class="f" id="whatlabel">What to do</span>
         <div class="what" id="what" role="group" aria-labelledby="whatlabel">
@@ -135,7 +136,13 @@ $('what').onclick = e => {
 $('lev').onclick = e => { const b = e.target.closest('button'); if (b && !b.disabled) { lev = Number(b.dataset.v); draw(); } };
 $('poslist').onclick = e => { const l = e.target.closest('[data-k]'); if (l && l.dataset.k !== posKey) { posKey = l.dataset.k; setPair(l.dataset.k.split('|')[0]); changed(); } };
 // "Close the short first": the link switches the form to a close of that pair and direction.
-$('oppose').onclick = e => { const a = e.target.closest('a[data-k]'); if (a) { e.preventDefault(); what = 'close'; posKey = a.dataset.k; sizeFor = null; setPair(posKey.split('|')[0]); loadAccount(); changed(); } };
+$('oppose').onclick = e => {
+  const a = e.target.closest('a[data-k]');
+  if (!a) return;
+  e.preventDefault(); what = 'close'; posKey = a.dataset.k; sizeFor = null; setPair(posKey.split('|')[0]); loadAccount(); changed();
+  const row = [...$('poslist').querySelectorAll('[data-k]')].find(l => l.dataset.k === posKey);   // the link is gone now: the focus goes to its position
+  if (row) row.querySelector('input').focus();
+};
 $('est').onclick = e => { if (e.target.id === 'whole') { wholeSize(); changed(); } };
 $('ovbtn').onclick = () => { override = true; const s = snap; if (s && s.feed.ask) { const p = pairInfo(); $('ovp').value = (side() === 'buy' ? Number(s.feed.ask) : Number(s.feed.bid)).toFixed(p ? p.price_decimals : 2); } changed(); };
 $('ovoff').onclick = () => { override = false; changed(); };
@@ -222,6 +229,18 @@ function draw() {
   const margin = MARGIN.includes(what), close = what === 'close', open = margin && !close;
   const pos = close ? position() : null;
   if (pos && sizeFor !== posKey) { $('amt').value = OC.qty(pos.qty); sizeFor = posKey; }   // a close starts at the whole position
+  // The last liquidation of the simulated account: which positions, at what mark, when. A liquidation always reads the account.
+  const liq = account && account.liquidation;
+  $('liqnote').classList.toggle('hidden', !liq);
+  if (liq) {
+    const when = new Date(liq.at * 1000).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const row = x => {
+      const [b, q] = x.pair.split('/'), pd = snap && snap.pairs[x.pair] ? snap.pairs[x.pair].price_decimals : 2, pl = Number(x.pl);
+      return `<li>${OC.esc(x.pair)} ${x.dir}, ${OC.qty(x.qty)} ${OC.esc(b)} at ${x.leverage}x: closed at the mark ${OC.px(x.mark, pd)} (entry ${OC.px(x.entry, pd)}), ${pl >= 0 ? '+' : '−'}${OC.usd(Math.abs(pl))} ${OC.esc(q)}</li>`;
+    };
+    put($('liqnote'), `<b>The simulated exchange liquidated ${liq.positions.length > 1 ? `${liq.positions.length} positions` : 'a position'} on ${when}.</b> The account margin level fell to ${Math.round(Number(liq.level))}%, at or below the liquidation mark. Each position closed at the mark of its own pair (estimate, after rollover):` +
+      `<ul id="liqlist" style="margin:4px 0 0;padding-left:18px">${liq.positions.map(row).join('')}</ul><span class="small">A dry run has no position on Kraken.</span>`);
+  }
   const buy = side() === 'buy';
   const d = p ? p.price_decimals : 2;
   const P = v => OC.px(v, d);
@@ -239,7 +258,7 @@ function draw() {
   $('capword').textContent = buy ? 'Cap' : 'Floor';
   $('ovbtn').textContent = buy ? 'Set a higher limit' : 'Set a lower limit';
   $('ovoff').textContent = buy ? 'Use the start ask' : 'Use the start bid';
-  $('tohelp').textContent = `After this time, the tool sends one ${close ? 'reduce-only ' : ''}IOC limit at the ${buy ? 'cap' : 'floor'} for the rest. If the price is ${buy ? 'above the cap' : 'below the floor'}, the rest does not fill.`;
+  $('tohelp').textContent = close && !pos ? 'The timeout counts when a close runs. You have no position to close.' : `After this time, the tool sends one ${close ? 'reduce-only ' : ''}IOC limit at the ${buy ? 'cap' : 'floor'} for the rest. If the price is ${buy ? 'above the cap' : 'below the floor'}, the rest does not fill.`;
   const ioc = '<li>After the timeout: cancels, confirms, re-reads the fill, then sends one IOC at the ' + (buy ? 'cap' : 'floor') + ' for the rest.</li><li>Before the IOC: checks the rest against both Kraken minimums. A rest below a minimum stops as "not filled".</li>';
   const replaceLine = `If Kraken refuses an amend, it cancels and places a new order instead.`;
   $('whatdoes').innerHTML = close && !pos ? '<li>Nothing to close.</li>' : !margin ? (buy

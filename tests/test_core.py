@@ -653,4 +653,4 @@ def test_one_name_for_the_dry_run_venue_in_every_page_and_log():
     src = Path(core.__file__).parent
     files = [*sorted((src / "static").glob("*.*")), src / "core.py", src / "server.py"]
     assert [f.name for f in files if "the simulation" in f.read_text()] == []
-    assert [f.name for f in files if "simulated exchange" in f.read_text()] == ["app.js", "chase.html", "result.html", "core.py"]
+    assert [f.name for f in files if "simulated exchange" in f.read_text()] == ["app.js", "chase.html", "new.html", "result.html", "core.py"]

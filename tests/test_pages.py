@@ -466,7 +466,7 @@ def test_page_cancel_and_replace_shows_its_steps_and_its_costs(tool):
     tool.call(lambda: send(held[0], tool.clock.t) and tool.eng.handle(core.Canceled(tool.clock.t)))
     assert tool.eng.chase.legs[-1].endswith("-1") and tool.eng.chase.phase == "resting"
     got = tool.look([{"goto": "/chase"}, card_shown("partial"), {"text": "#statuscard .sub", "as": "sub"}, {"shot": "m-chase-after-replace.png"}])
-    assert "The venue refuses amends of this order, so each move is a cancel and a new order (1 so far)." in got["sub"]
+    assert "The simulated exchange refuses amends of this order, so each move is a cancel and a new order (1 so far)." in got["sub"]
 
 
 def test_page_a_liquidation_ends_the_chase_on_the_chase_result_and_history_pages(tool):
@@ -552,6 +552,8 @@ def test_page_close_with_no_position_shows_nothing_to_close_and_no_figures(tool)
                      {"eval": "OC.$('start').disabled", "as": "blocked"}, ALL_TEXT, {"shot": "r1-close-no-position.png"}])
     assert got.pop("all")["c"] >= 4.5
     assert (got["does"], got["worst"], got["blocked"]) == ("Nothing to close.", "Nothing to close.", True)
+    # CLOSE-EMPTY-FLOOR-COPY: no IOC at a floor without a position
+    assert got["to"] == "The timeout counts when a close runs. You have no position to close."
 
 
 GAUGE_OVERLAP = """(() => {
@@ -804,9 +806,16 @@ def test_page_a_close_that_closed_nothing_before_a_restart_says_not_closed_on_it
                      {"shot": "r2-killed-close-history.png"}])
     assert got.pop("all")["c"] >= 4.5
     # UX-RESTART-WHAT-TO-DO-IGNORES-POSITION
-    assert got == {"badge": "Ended at a restart: position open", "history": "Ended at a restart: position open",
+    assert got == {"badge": "Ended at a restart", "history": "Ended at a restart",
                    "todo": "Your long is still open: 0.0200 BTC at 3x. Close it from the form.",
                    "button": "Close the position (0.0200 BTC)", "saving": "—", "tone": "v muted"}
+    # RESTART-RESULT-CLAIMS-STILL-OPEN: the result reads the account when it loads. After a liquidation it offers no close.
+    tool.eng.gw.account.cash = D("100")
+    tool.book("BTC/USD", *CRASH)
+    assert tool.eng.gw.account.positions == []
+    got = tool.look([{"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"},
+                     {"eval": "!!document.querySelector('#out .note.info')", "as": "todo"}, {"text": "#out a.btn.primary", "as": "button"}])
+    assert got == {"todo": False, "button": "New chase"}
 
 
 def test_page_a_close_that_filled_its_whole_order_says_closed_as_asked_and_what_stays_is_neutral(tool):
@@ -834,15 +843,19 @@ def test_page_an_open_against_the_other_direction_is_blocked_at_once_at_the_top_
     assert tool.eng.chase.outcome == "filled"
     got = tool.look([{"goto": "/new"}, {"waitFor": "OC.$('ask').textContent === '62,418.50'"},
                      {"click": "#what button[data-w=long]"}, {"waitFor": "!OC.$('oppose').classList.contains('hidden')"},
-                     {"text": "#oppose", "as": "block"}, {"text": "#startnote", "as": "note"}, {"eval": "OC.$('start').disabled", "as": "blocked"},
+                     {"text": "#oppose", "as": "block"}, {"eval": "OC.$('oppose').getAttribute('role')", "as": "role"}, {"text": "#startnote", "as": "note"}, {"eval": "OC.$('start').disabled", "as": "blocked"},
                      {"eval": "OC.$('mgbox').classList.contains('hidden')", "as": "no_figures"}, {"text": "#est", "as": "est"},
                      {"text": "#worst", "as": "worst"}, {"eval": "OC.$('oppose').getBoundingClientRect().top < OC.$('what').getBoundingClientRect().top", "as": "top"},
                      ALL_TEXT, {"shot": "opposite-open-block.png"},
                      {"click": "#toclose"}, {"waitFor": "OC.$('amtlabel').textContent === 'Size to close'"},
                      {"eval": "document.querySelector('#what button[aria-pressed=true]').textContent", "as": "what"},
                      {"eval": "document.querySelector('#poslist label.on b').textContent", "as": "pos"}, {"eval": "OC.$('amt').value", "as": "size"},
-                     {"eval": "OC.$('oppose').classList.contains('hidden')", "as": "gone"}])
+                     {"eval": "OC.$('oppose').classList.contains('hidden')", "as": "gone"},
+                     # CLOSE-LINK-FOCUS-LOST: the focus goes to the chosen position, not to the page
+                     {"eval": "document.activeElement === document.querySelector('#poslist label.on input')", "as": "focus"},
+                     {"shot": "opposite-open-after-link.png"}])
     assert got.pop("all")["c"] >= 4.5
+    assert got.pop("focus") is True and got.pop("role") == "alert"   # OPPOSE-BLOCK-NOT-ANNOUNCED
     assert got == {"block": "Close the short first. You have an open short position on BTC/USD: 0.0100 BTC, 3x (simulated account). "
                             "The tool does not open a position against it. Close the short on BTC/USD",
                    "note": "Close the short first.", "blocked": True, "no_figures": True, "est": "", "worst": "Close the short first.",
@@ -876,3 +889,77 @@ def test_page_an_open_short_shows_its_worst_case_as_the_short_value(tool):
                      {"text": "#worst", "as": "worst"}])
     value = core.worst_case("sell", D("0.01"), D("62417.9"), core.Margin(3))
     assert got == {"head": "The short never sells for less than this, less fees:", "worst": f"Short value: {value:,.2f} USD"}
+
+
+# ---------- repair round 5: liquidation reaches the pages ----------
+
+CRASH = ([("62417.9", "0"), ("52000.0", "1")], [("62418.5", "0"), ("62419.5", "0"), ("52000.6", "3")])   # the mark falls to 52,000.30
+
+
+def test_page_a_liquidation_with_no_chase_shows_on_the_form_and_the_old_result_offers_no_close(tool):
+    # LIQUIDATION-UNSEEN-WITHOUT-A-CHASE
+    tool.eng.gw.account.cash = D("700")                             # a small simulated account
+    cid = opened_long(tool, lev=5)
+    tool.beat(1)
+    assert [p["qty"] for p in tool.eng.account["positions"]] == ["0.05"]
+    tool.book("BTC/USD", *CRASH)                                    # no chase runs
+    assert (tool.eng.account["positions"], tool.eng.account["level"]) == ([], None)
+    got = tool.look([{"goto": "/new"}, {"waitFor": "!OC.$('liqnote').classList.contains('hidden')"},
+                     {"text": "#liqnote b", "as": "head"}, {"text": "#liqlist", "as": "list"},
+                     {"eval": "OC.$('liqnote').getAttribute('role')", "as": "role"},
+                     {"click": "#what button[data-w=close]"}, {"waitFor": "OC.$('poslist').textContent.startsWith('You have no open')"},
+                     ALL_TEXT, {"shot": "liq-no-chase-form.png"},
+                     {"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"}, {"text": "#out .badge", "as": "badge"},
+                     {"text": "#out a.btn.primary", "as": "button"}, {"text": "#out .pstat", "as": "pstat"}])
+    assert got.pop("all")["c"] >= 4.5
+    assert got["head"].startswith("The simulated exchange liquidated a position on ")
+    # (52,000.30 - 62,417.90) x 0.05 = -520.88
+    assert got["list"] == "BTC/USD long, 0.0500 BTC at 5x: closed at the mark 52,000.30 (entry 62,417.90), −520.88 USD"
+    assert (got["role"], got["badge"], got["button"], got["pstat"]) == ("status", "Opened · not open now", "New chase", "Closed")
+
+
+def test_page_a_chase_whose_last_book_fills_the_rest_and_liquidates_says_liquidated(tool):
+    # LIQUIDATION-IN-FINAL-FILL-BOOK-HIDDEN
+    tool.eng.gw.account.cash = D("700")
+    cid = tool.start("long", "0.05", leverage=5)
+    tool.trade("sell", "62417.0", "0.01")                          # a part fill
+    tool.beat(1)
+    tool.book("BTC/USD", *CRASH)                                    # the ask falls through the order: the rest fills, then the account is liquidated
+    assert (tool.eng.chase.filled, tool.eng.chase.outcome, tool.eng.gw.account.positions) == (D("0.05"), "liquidated", [])
+    got = tool.look([{"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"},
+                     {"text": "#out .badge", "as": "badge"}, {"text": "#out h1", "as": "head"}, {"text": "#notclosed", "as": "note"},
+                     {"text": "#out a.btn.primary", "as": "button"}, TEXTS("#out .log li"), ALL_TEXT,
+                     {"shot": "liq-same-book-result.png"}])
+    assert got.pop("all")["c"] >= 4.5
+    assert (got["badge"], got["head"], got["button"]) == ("Liquidated", "Liquidated: the simulated exchange closed the long (simulated)", "New chase")
+    assert got["note"] == "Liquidated by the simulated exchange: 0.0500 BTC, at the mark. A dry run has no position on Kraken."
+    log = " ".join(got["#out .log li"])
+    assert "Order complete. Position now: 0.0500 BTC long, 5x." in log
+    assert "The simulated exchange liquidated the position on the same book: the account margin level fell to 40%." in log
+
+
+def test_page_resting_at_the_cap_after_a_cancel_and_replace_names_the_simulated_exchange(tool):
+    # REPLACE-NOTE-COPY: the note also shows when the order rests at the cap
+    tool.eng.gw.refuse_margin_amends = True
+    tool.start("long", leverage=3)
+    tool.book("BTC/USD", [("62420.0", "1")], [("62418.5", "0"), ("62419.5", "0"), ("62421.0", "3")])
+    for _ in range(4):
+        tool.timeout(6)                                             # the amend is refused: cancel, read, a new order at the cap
+    c = tool.eng.chase
+    assert (c.phase, c.price, len(c.legs)) == ("resting", c.limit, 2)
+    got = tool.look([{"goto": "/chase"}, card_shown("resting"), {"text": "#statuscard .head", "as": "head"},
+                     {"text": "#statuscard .sub", "as": "sub"}])
+    assert got["head"] == "Resting at the cap"
+    assert "The simulated exchange refuses amends of this order, so each move is a cancel and a new order (1 so far)." in got["sub"]
+
+
+def test_page_a_close_that_filled_nothing_gives_the_one_cause_on_its_result(tool):
+    # RESULT-NOTCLOSED-VAGUE: the cause that the tool knows, as the chase page states it
+    opened_long(tool, "0.02", 3)
+    tool.beat(1)
+    cid = tool.start("close-long", "0.02")
+    tool.book("BTC/USD", [("62417.9", "0"), ("62400.0", "1")], [])   # the bid falls below the floor, 62,417.90
+    tool.timeout(121)
+    assert (tool.eng.chase.outcome, tool.eng.chase.filled) == ("notfilled", 0)
+    got = tool.look([{"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"}, {"text": "#out h1 + p", "as": "line"}])
+    assert got["line"] == "The price fell below your floor before the rest could close. The reduce-only IOC at the floor filled nothing."
