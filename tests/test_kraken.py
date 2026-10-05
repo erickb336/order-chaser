@@ -247,7 +247,7 @@ def test_the_safety_timer_fires_when_it_is_not_renewed_and_the_chase_ends_with_n
         clock.t += 20
         call(eng.tick)
     fake.run(fake.fire_timer)                                                # Kraken's cancel-all at the deadline
-    wait_for(lambda: eng.chase.phase == "done")
+    wait_for(lambda: eng.chase.phase == "done" and texts(eng)[-1].startswith("Kraken cancelled"))   # the log follows the phase
     assert eng.chase.outcome == "timer"
     assert texts(eng)[-1] == "Kraken cancelled the order: the safety timer fired. Filled 0.0000 BTC. Chase ended. No IOC sent."
     wait_for(lambda: not eng.kgw.renewing)                                   # no renewal in flight (it would set a timer)
@@ -344,10 +344,13 @@ def test_kraken_not_answering_ends_the_chase_in_a_clear_state_keeps_the_timer_an
         return eng.chase.phase == "done"
     wait_for(later)
     assert eng.chase.outcome == "noanswer", texts(eng)
-    assert texts(eng)[-1].startswith("Kraken did not"), (texts(eng), fake.calls)
-    assert texts(eng)[-1] == ("Kraken did not answer for 60 s. The chase ended. The safety timer cancels the order "
-                              "on Kraken within 60 s. Check Kraken Pro for fills.")
-    wait_for(lambda: eng.kgw.task is None)
+    wait_for(lambda: not eng.tasks)                                          # the end: no 0, so the log says so
+    assert texts(eng)[-2:] == [
+        "Kraken did not answer for 60 s. The chase ended. The safety timer cancels the order on Kraken within 60 s. "
+        "Check Kraken Pro for fills.",
+        "The safety timer can still be on: within 60 s Kraken cancels ALL open orders on this account, "
+        "also stop-loss and take-profit orders."], (texts(eng), fake.calls)
+    assert eng.kgw.task is None
     fake.rest_down = False
     assert fake.calls_of("CancelAllOrdersAfter") == [{"timeout": "60"}]     # the timer stays: no "0"
     assert not eng.draining and not eng.queue
@@ -758,3 +761,81 @@ def test_a_renewal_on_its_way_when_the_chase_ends_reaches_kraken_before_the_0(fa
     asyncio.run(run())
     assert fake.calls_of("CancelAllOrdersAfter") == [{"timeout": "60"}, {"timeout": "60"}, {"timeout": "0"}]
     assert fake.timer is None
+
+
+KEY_CALLS = {"remove": ("/api/key/remove", None, "delete_password"),              # each waits on the Keychain
+             "save": ("/api/key", {"api_key": API, "private_key": SECRET}, "set_password"),
+             "test": ("/api/key/test", None, "r_Balance")}                         # or on Kraken
+
+
+@pytest.mark.parametrize("which", KEY_CALLS)
+def test_a_live_start_while_the_key_is_saved_tested_or_removed_is_refused_and_sends_nothing(live, fake, memory_keyring,
+                                                                                          monkeypatch, which):
+    """KEY-CHANGE-DURING-LIVE-CHASE (a): a key call waits on the Keychain; a live start in that wait gets 409."""
+    import threading
+    from test_server import ORIGIN, token_of
+    eng, f, clock, call, client = live
+    ready(client, f, call, fake)
+    path, body, method = KEY_CALLS[which]
+    entered, release = threading.Event(), threading.Event()
+    where = type(fake) if method.startswith("r_") else type(memory_keyring)
+    slow = getattr(where, method)
+    monkeypatch.setattr(where, method, lambda *a: (entered.set(), release.wait(5), slow(*a))[2])
+    h, got = {**ORIGIN, "X-Session-Token": token_of(client)}, []
+    t = threading.Thread(target=lambda: got.append(client.post(path, json=body or {}, headers=h)))
+    t.start()
+    assert entered.wait(5)
+    r = post(client, "/api/chase", {**LIVE, "first_ok": True})
+    release.set()
+    t.join()
+    assert (r.status_code, r.json()) == (409, {"errors": ["Setup changes the Kraken API key now. Try again when that ends."]})
+    assert got[0].status_code == 200 and eng.chase is None
+    assert [c for c in fake.calls_of("AddOrder") if not c.get("validate")] == []   # the key test only validates
+    assert fake.calls_of("CancelAllOrdersAfter") == [] and fake.timer is None
+
+
+def test_the_key_cannot_change_while_the_end_of_a_live_chase_still_runs(live, fake, memory_keyring, monkeypatch):
+    """KEY-CHANGE-DURING-LIVE-CHASE (b): the chase is done, its end (cancel the leg, timer 0) still waits on Kraken."""
+    import threading
+    eng, f, clock, call, client = live
+    ready(client, f, call, fake)
+    assert call(eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
+    wait_for(lambda: eng.chase.phase == "resting")
+    fake.ws_down = True
+    fake.run(fake.drop_ws)
+    wait_for(lambda: not eng.chase.pfeed_ok)
+    entered, release = threading.Event(), threading.Event()
+    slow = type(fake).r_CancelOrder
+    monkeypatch.setattr(type(fake), "r_CancelOrder", lambda self, p: (entered.set(), release.wait(5), slow(self, p))[2])
+    fake.errors["QueryOrders"] = ["EGeneral:Permission denied"]             # the read: a permanent error, no answer
+    clock.t += 6
+    call(eng.tick)
+    wait_for(lambda: eng.chase.phase == "done")
+    assert eng.chase.outcome == "noanswer" and entered.wait(5)               # the end cancels the leg: Kraken waits
+    busy = {"errors": ["A live chase runs now. It uses the saved key. Change, test or remove the key when the chase ends."]}
+    for path, body in (("/api/key/remove", None), ("/api/key", {"api_key": API, "private_key": SECRET}), ("/api/key/test", None)):
+        r = post(client, path, body)
+        assert (r.status_code, r.json()) == (409, busy)
+    release.set()
+    wait_for(lambda: not eng.tasks)
+    assert fake.calls_of("CancelAllOrdersAfter")[-1] == {"timeout": "0"} and fake.timer is None
+    assert eng.kgw.rest.key == KEY and list(memory_keyring.items) == [(keys.SERVICE, keys.ACCOUNT)]
+    assert post(client, "/api/key/remove").json() == {"removed": True}       # after the end, the key can change
+
+
+def test_when_the_0_fails_at_the_end_of_a_live_chase_the_chase_log_says_the_timer_can_still_be_on(live, fake, monkeypatch):
+    """Any failure of the end (not only a Kraken or HTTP error) is caught, and the user sees it in the chase log."""
+    eng, f, clock, call, client = live
+    ready(client, f, call, fake)
+    assert call(eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
+    wait_for(lambda: eng.chase.phase == "resting")
+    calls = eng.kgw.rest.call
+    async def broken(method, **p):
+        if method == "CancelAllOrdersAfter" and p == {"timeout": 0}:
+            raise AttributeError("'NoneType' object has no attribute 'api_key'")
+        return await calls(method, **p)
+    monkeypatch.setattr(eng.kgw.rest, "call", broken)
+    assert post(client, "/api/chase/stop").status_code == 200
+    wait_for(lambda: eng.chase.phase == "done" and not eng.tasks)
+    assert texts(eng)[-1] == ("The safety timer can still be on: within 60 s Kraken cancels ALL open orders on this "
+                              "account, also stop-loss and take-profit orders.")

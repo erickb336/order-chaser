@@ -54,6 +54,7 @@ FIRST_TICK_TEXT = "Tick the box for your first live order."
 BUSY_TEXT = "A chase runs now. You can start a new chase when it ends."
 TIMER_LEFT_TEXT = ("The safety timer can still be on: within 60 s Kraken cancels ALL open orders on this account, "
                    "also stop-loss and take-profit orders.")
+KEYING_TEXT = "Setup changes the Kraken API key now. Try again when that ends."
 KEY_BUSY_TEXT = "A live chase runs now. It uses the saved key. Change, test or remove the key when the chase ends."
 NOFUNDS_NOT_REMOVED = ("This key does not have Query Funds, so the tool cannot check that it cannot withdraw. The tool "
                        "refused it, but macOS did not let it remove the key. Delete the item \"Kraken API key "
@@ -382,11 +383,17 @@ class Engine:
         c, cmds = core.step(self.chase, ev)
         self._apply(c, cmds)
         if not c.dry and c.phase == "done" and was != "done":
-            self._spawn(self.kgw.close(noanswer=c.outcome == "noanswer"))   # timer 0, no private feed, caffeinate off
+            self._spawn(self._end_live(c))
         if c.margin is not None and isinstance(ev, core.Filled):
             self.account_due = True               # tick() reads it, at most every 3 s
         if c.margin is not None and c.phase == "done" and was != "done":
             self.read_account(force=True)         # at the end of a margin chase
+
+    async def _end_live(self, c: core.Chase) -> None:
+        """Timer 0, no private feed, caffeinate off. The chase log says so when the timer can still be on."""
+        if not await self.kgw.close(noanswer=c.outcome == "noanswer"):
+            self.db.log(c.id, core.Log(self.clock() - c.started, TIMER_LEFT_TEXT, "bad"), self.clock())
+            self.version += 1
 
     def _spawn(self, coro) -> None:
         task = asyncio.get_running_loop().create_task(coro)
@@ -556,6 +563,7 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
     eng.kgw.on_event, eng.kgw.on_link, eng.kgw.on_txid = eng.on_private, eng.on_private_link, db.set_txid
     page_cache: dict[str, str] = {}
     watched_at = [float("-inf")]
+    keying = [False]   # a key save, test or remove runs (key_call): a live start is refused until it ends
 
     def page(name: str) -> str:
         if name not in page_cache:
@@ -634,6 +642,8 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         if error:
             return JSONResponse({"errors": [error]}, status_code=400)
         mode = d.get("mode", "dry")
+        if mode == "live" and keying[0]:
+            return JSONResponse({"errors": [KEYING_TEXT]}, status_code=409)
         if mode == "live":
             errors = await live_start(d, pair, what, qty, limit, timeout)
         elif mode == "dry":
@@ -764,15 +774,24 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
 
     # ----- the Kraken API key (T4 U2): token + Origin guard (Guard), JSON only, never logged or sent back -----
 
-    def key_busy() -> JSONResponse | None:
-        """A live chase (or its start) uses the key in memory: no save, test or remove changes it under the chase."""
-        if eng.starting or eng.active and not eng.chase.dry:
-            return JSONResponse({"errors": [KEY_BUSY_TEXT]}, status_code=409)
-        return None
+    def key_call(handler):
+        """A key save, test or remove changes the key in memory. It is refused while a live chase starts, runs or
+        ends (its end task cancels the leg and sets the timer to 0), and while another key call runs. A live start
+        is refused while it runs. So the key never changes under a live chase."""
+        async def run(request: Request):
+            if keying[0]:
+                return JSONResponse({"errors": [KEYING_TEXT]}, status_code=409)
+            if eng.starting or eng.tasks or eng.active and not eng.chase.dry:
+                return JSONResponse({"errors": [KEY_BUSY_TEXT]}, status_code=409)
+            keying[0] = True   # no wait between the check and this line: one key call at a time
+            try:
+                return await handler(request)
+            finally:
+                keying[0] = False
+        return run
 
+    @key_call
     async def key_save(request: Request):
-        if busy := key_busy():
-            return busy
         d = await body(request)
         key = keys.parse(d.get("api_key"), d.get("private_key"))
         if key is None:
@@ -785,9 +804,8 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         key_state(saved=eng.clock(), tested=None, verdict=None, permissions=None)
         return JSONResponse({"saved": True})
 
+    @key_call
     async def key_remove(request: Request):
-        if busy := key_busy():
-            return busy
         try:
             await asyncio.to_thread(store.remove)
         except Exception:
@@ -796,11 +814,10 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         key_state()
         return JSONResponse({"removed": True})
 
+    @key_call
     async def key_test(request: Request):
         """Test each permission of the saved key with calls that change nothing. A key that can withdraw is
         removed from the Keychain at once (Q4). So is a key with Query Funds off: the tool cannot check it."""
-        if busy := key_busy():
-            return busy
         try:
             kraken.key = await asyncio.to_thread(store.read)
         except Exception:

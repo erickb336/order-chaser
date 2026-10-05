@@ -263,7 +263,7 @@ class KrakenGateway:
         try:
             await self.rest.call("CancelAllOrdersAfter", timeout=0)
             return True
-        except (KrakenError, httpx.HTTPError) as e:   # Kraken cancels all orders when the 60 s end
+        except Exception as e:   # any failure: Kraken cancels all orders when the 60 s end; the caller says so
             log.warning(f"The safety timer was not set to 0: {e}")
             return False
 
@@ -274,7 +274,7 @@ class KrakenGateway:
             return True
         except KrakenError as e:
             return _reason(e.errors) == "not_open"
-        except httpx.HTTPError:
+        except Exception:
             return False
 
     async def _token(self) -> str:
@@ -298,7 +298,7 @@ class KrakenGateway:
         async def renew():
             try:
                 await self._set_timer(TIMER)
-            except (KrakenError, httpx.HTTPError) as e:
+            except Exception as e:   # any failure: the next tick tries again; close() still sends 0
                 log.warning(f"The safety timer was not renewed: {e}")
             finally:
                 self.renewing = None
