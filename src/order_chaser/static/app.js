@@ -8,7 +8,7 @@ const esc = s => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;
 // ---------- Formatting ----------
 const n = v => v == null ? null : Number(v);
 const px = (v, d) => v == null ? '—' : Number(v).toLocaleString('en-US', { minimumFractionDigits: Math.max(2, d || 2), maximumFractionDigits: Math.max(2, d || 2) });
-const usd = v => Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const usd = v => (Number(v) < 0 ? '−' : '') + Math.abs(Number(v)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });   // the minus sign −, as every page
 const qty = v => { const s = Number(v).toFixed(8).replace(/0+$/, ''); const [w, f] = s.split('.'); return w + '.' + (f || '').padEnd(4, '0'); };
 const mmss = s => { s = Math.max(0, Math.floor(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
 const timeoutWords = s => s % 60 === 0 ? (s / 60) + ' min' : s + ' s';
@@ -29,11 +29,11 @@ const orderName = c => !c.margin ? `${c.side === 'buy' ? 'Buy' : 'Sell'} ${qty(c
 const MARGIN_FEES = 'Kraken US margin fees are 0.01% to 0.05% of the position cost. Kraken can change them without notice, and no API gives them, so the tool counts the stated maximum, 0.05%.';
 // The account margin level on a scale of 0% to 300%, with the call and liquidation marks of the pair (AssetPairs).
 // now, after: percent or null (no position). after === undefined: only "now".
+// No position (null): no dot, as there is no level; the aria label and the text beside it say "no position".
 function gauge(now, after, call, stop, afterWord) {
   const x = v => Math.min(100, Math.max(0, v / 300 * 100)).toFixed(2) + '%';
   const lab = v => v == null ? 'no position' : Math.round(v) + '%';
-  const pos = v => v == null ? '100%' : x(v);
-  const rt = v => (v == null || v > 255) ? ' rt' : '';
+  const rt = v => v > 255 ? ' rt' : '';
   const one = after === undefined;
   const shown = one ? now : after;
   const aria = one ? `Margin level now ${lab(now)}.` : `Margin level now ${lab(now)}, ${afterWord || 'after'} ${lab(after)}.`;
@@ -41,9 +41,9 @@ function gauge(now, after, call, stop, afterWord) {
     <div class="track"></div>
     <div class="mk l" style="left:${x(stop)}"><span>${stop}% liquidation</span></div>
     <div class="mk r" style="left:${x(call)}"><span>${call}% call</span></div>
-    ${one ? '' : `<div class="pt now${rt(now)}" style="left:${pos(now)}"><i></i>now ${lab(now)}</div>`}
-    <div class="pt after${shown != null && shown <= stop ? ' bad' : ''}${rt(shown)}" style="left:${pos(shown)}">${one ? 'now' : (afterWord || 'after')} ${lab(shown)}<i></i></div>
-  </div>`;
+    ${one || now == null ? '' : `<div class="pt now${rt(now)}" style="left:${x(now)}"><i></i>now ${lab(now)}</div>`}
+    ${shown == null ? '' : `<div class="pt after${shown <= stop ? ' bad' : ''}${rt(shown)}" style="left:${x(shown)}">${one ? 'now' : (afterWord || 'after')} ${lab(shown)}<i></i></div>`}
+  </div>` + (one && now == null ? '<p class="tiny muted" style="margin:4px 0 0">Now: no position, so no margin level.</p>' : '');
 }
 
 // The prices behind the account margin level. The tool watches one pair: another pair uses the last price seen
@@ -277,7 +277,8 @@ function copy(st, c, snap, ageOff) {
       const end = c.end_ask;
       const iocGot = c.fills.filter(f => f.order === 'ioc').reduce((a, f) => a + Number(f.qty), 0);
       const diff = end == null ? null : Math.abs(Number(end) - Number(c.limit));
-      t.title = filled > 0 ? 'Stopped: the rest did not fill' : 'Stopped: nothing filled';
+      t.title = w.close ? closeBadge(c.outcome, filled, c.qty, c.margin_est.rest)[1]   // a close: the words of the result and the history
+        : filled > 0 ? 'Stopped: the rest did not fill' : 'Stopped: nothing filled';
       const done = `You ${w.bought} ${qty(filled)} of ${qty(c.qty)} ${B}. No order of yours rests on the simulated exchange.`;
       if (end == null) {   // the chase ended with no valid price: the feed was lost or the book was not valid
         t.sub = `${c.feed_ok ? 'The order book was not valid at the end' : `The ${timeout} timeout passed while the public Kraken price feed was lost`}. With no valid price, the tool sent no IOC. It cancelled the order. ` + done;
@@ -325,9 +326,10 @@ function copy(st, c, snap, ageOff) {
         ['todo', 'Kraken rejects an amend with "EOrder:Rate limit exceeded": the tool also switches to 15 s amends.'], ['todo', 'Counter below 40 again: amends every 5 s.']];
       break;
     case 'ended': {
-      const off = c.off_from == null ? null : c.off_from - c.started, on = c.ended_at - c.started;
+      // One gap, one number: the whole seconds off, as the event log says it (core: int(now - last seen)).
+      const off = c.off_from == null ? null : Math.floor(c.ended_at - c.off_from);
       t.title = 'Ended: the tool stopped or restarted';
-      t.sub = (off == null ? 'The tool stopped and started again.' : `The tool stopped at ${mmss(off)} and started again at ${mmss(on)}.`) + ' After a restart the tool does not continue a dry run. It did these steps:';
+      t.sub = (off == null ? 'The tool stopped and started again.' : `The tool stopped and started again after ${off} s off.`) + ' After a restart the tool does not continue a dry run. It did these steps:';
       t.steps = [['done', 'Ended the simulated order. No order was on Kraken.'], ['done', `Recorded the simulated fills: ${qty(filled)} of ${qty(c.qty)} ${B}.`], ['done', 'Did not continue the dry run.']];
       t.todo = [DRY_TODO, w.m && c.open_now ? stillOpen(c) : 'To test again, start a new dry run.'];
       if (w.m) t.note = 'A restart does not close a position. The simulated position stays in the simulated account.' + positionLine(c);

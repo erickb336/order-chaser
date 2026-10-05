@@ -139,7 +139,7 @@ $('poslist').onclick = e => { const l = e.target.closest('[data-k]'); if (l && l
 $('oppose').onclick = e => {
   const a = e.target.closest('a[data-k]');
   if (!a) return;
-  e.preventDefault(); what = 'close'; posKey = a.dataset.k; sizeFor = null; setPair(posKey.split('|')[0]); loadAccount(); changed();
+  e.preventDefault(); what = 'close'; posKey = a.dataset.k || null; sizeFor = null; if (posKey) setPair(posKey.split('|')[0]); loadAccount(); changed();
   const row = [...$('poslist').querySelectorAll('[data-k]')].find(l => l.dataset.k === posKey);   // the link is gone now: the focus goes to its position
   if (row) row.querySelector('input').focus();
 };
@@ -321,7 +321,13 @@ function draw() {
   }
   // An open against an open position of the other direction: blocked at the top of the form, with no figures.
   const other = open ? positions().find(x => x.pair === pair && x.dir === (what === 'long' ? 'short' : 'long')) : null;
-  $('oppose').classList.toggle('hidden', !other);
+  // No free margin for new orders: no amount can open, so the way on is a close.
+  const noFree = open && !other && account && Number(account.free_orders) <= 0;
+  $('oppose').classList.toggle('hidden', !other && !noFree);
+  if (noFree) {
+    put($('oppose'), `<b>No free margin for a new open. Close a position first.</b> Free margin for new orders: ${OC.usd(account.free_orders)} ${Q} (simulated account). <a href="/new?what=close" data-k="" id="toclose">Close a position</a>`);
+    block('Close a position first.');
+  }
   if (other) {
     put($('oppose'), `<b>Close the ${other.dir} first.</b> You have an open ${other.dir} position on ${OC.esc(pair)}: ${OC.qty(other.qty)} ${B}, ${other.leverage}x (simulated account). The tool does not open a position against it. <a href="/new?what=close" data-k="${OC.esc(pair + '|' + other.dir)}" id="toclose">Close the ${other.dir} on ${OC.esc(pair)}</a>`);
     block(`Close the ${other.dir} first.`);
@@ -434,7 +440,7 @@ function draw() {
         <p class="tiny muted" style="margin:6px 0 0">${OC.MARGIN_FEES}</p>
         ${gaugeHead}${OC.gauge(lvlNow, after, p.margin_call, p.margin_stop)}
         <p class="small" style="margin:14px 0 0" id="lvlline">${after <= p.margin_stop ? `<b class="tone-bad">After this open: ${level(after)}, at or below the ${p.margin_stop}% liquidation mark.</b>` : `Now ${level(lvlNow)}. After this open: <b>${level(after)}</b>.`} The tool does not stop an open for its margin level. It shows the level so that you decide.</p>`;
-      if (lack) {
+      if (lack && !noFree) {
         amtErr = `This open needs ${OC.usd(collat)} ${Q} of collateral. Your free margin for new orders is ${OC.usd(freeOrders)} ${Q}. Kraken refuses an open without enough margin. Make the amount smaller.`;
         block('Fix the amount to start.');
       }

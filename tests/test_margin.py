@@ -881,6 +881,44 @@ def test_random_margin_runs_keep_every_rule():
     assert counts["fillnow_runs"] > 30 and counts["stop_runs"] > 15 and counts["asks_while_a_new_leg_is_in_flight"] > 0
 
 
+def test_an_ioc_that_fills_after_a_liquidation_ends_liquidated_and_names_only_what_stays():
+    # LATE-IOC-AFTER-LIQUIDATION-SAYS-FILLED: the core decides the IOC, the exchange liquidates, then the IOC fills.
+    pair = core.Pair("BTC/USD", "BTC", "USD", D("0.1"), D("0.0001"), D("0.5"), 1, 8, "online",
+                     leverage_buy=(2, 3, 4, 5), leverage_sell=(2, 3, 4, 5), margin_call=80, margin_stop=40)
+    gw = SimGateway()
+    gw.pair, gw.account.cash = pair, D(1500)
+    gw.on_book([(D(60000), D(5))], [(D("60000.1"), D(5))], 0.0, "BTC/USD")
+    c, cmds = core.begin("oc000000000001", pair, "buy", D("0.105"), D(60000), D("60000.1"), 30, 0.0, core.SIM_VENUE, margin=Margin(5))
+    logs, held = [], []
+
+    def run(c, evs_or_cmds, now, hold=False):
+        q = list(evs_or_cmds)
+        while q:
+            x = q.pop(0)
+            if isinstance(x, core.Log):
+                logs.append(x.text)
+            elif isinstance(x, core.MarginIoc) and hold:
+                held.append(x)
+            elif hasattr(x, "now"):                     # an event of the exchange
+                c, more = core.step(c, x)
+                q += more
+            else:
+                q += gw.send(x, now)
+        return c
+    c = run(c, cmds, 0.1)
+    c = run(c, gw.on_trade("sell", D(59990), D("0.10"), 1.0), 1.0)     # 0.10 of 0.105 fills as maker
+    c = run(c, [Book(30.9, D(60000), D("60000.1"), True), Tick(31.0)], 31.0, hold=True)
+    assert (c.phase, len(held)) == ("ioc", 1)
+    c = run(c, gw.on_book([(D(47000), D(5))], [(D("47000.1"), D(5))], 31.05, "BTC/USD"), 31.05)   # liquidated
+    assert (c.exit, gw.account.positions) == ("liquidated", [])
+    logs.clear()
+    c = run(c, gw.send(held[0], 31.15), 31.15)                         # the IOC reaches the exchange after it
+    assert (c.outcome, c.filled, [p["qty"] for p in gw.account.positions]) == ("liquidated", D("0.105"), [D("0.005")])
+    assert logs == ["Filled 0.0050 BTC at 47,000.10 (taker, IOC). Order complete. Position now: 0.0050 BTC long, 5x."]
+    est = core.margin_summary(c)                                       # collateral and rollover of the 0.005 that stays
+    assert (est["collateral"], est["rollover_4h"]) == (D("47.0001"), D("0.11750025"))
+
+
 if __name__ == "__main__":   # uv run python tests/test_margin.py 5000: the counts of a larger probe
     import json
     import sys

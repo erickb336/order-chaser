@@ -10,6 +10,7 @@ import os
 import shutil
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 import zlib
@@ -125,14 +126,31 @@ class Tool:
         self.beat(seconds)
         self.call(self.eng.tick)
 
-    def look(self, steps, tabs=1):
-        """Run the steps in Chrome; return what the steps read."""
+    def look(self, steps, tabs=1, on=None):
+        """Run the steps in Chrome; return what the steps read. on: {name: fn}, run at the step {"signal": name}."""
         steps = [{**s, "shot": str(self.shots / s["shot"])} if "shot" in s else s for s in steps]
         env = {**os.environ, "HOME": str(self.shots.parent), "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1"}
-        p = subprocess.run(["node", str(PAGES / "look.mjs"), json.dumps({"base": f"http://127.0.0.1:{self.port}", "tabs": tabs, "steps": steps})], cwd=PAGES, env=env,
-                           capture_output=True, text=True, timeout=120)
-        result = [x for x in p.stdout.splitlines() if x.startswith("RESULT ")]
-        assert result, p.stderr
+        with tempfile.TemporaryFile("w+") as err:
+            p = subprocess.Popen(["node", str(PAGES / "look.mjs"), json.dumps({"base": f"http://127.0.0.1:{self.port}", "tabs": tabs, "steps": steps})],
+                                 cwd=PAGES, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, text=True)
+            kill = threading.Timer(120, p.kill)
+            kill.start()
+            result = []
+            try:
+                for line in p.stdout:
+                    if line.startswith("SIGNAL "):
+                        on[line[7:].strip()]()
+                        p.stdin.write("go\n")
+                        p.stdin.flush()
+                    elif line.startswith("RESULT "):
+                        result.append(line)
+                p.wait()
+            finally:
+                kill.cancel()
+                if p.poll() is None:
+                    p.kill()
+            err.seek(0)
+            assert result, err.read()
         return json.loads(result[0][7:])
 
     def stop(self):
@@ -734,13 +752,10 @@ def test_page_the_close_list_profit_follows_the_mark_of_each_price_with_no_new_a
     def move():                                      # the mid moves from 62,000.30 to 61,900.30
         at_move.append(len(reads))
         tool.book("BTC/USD", [("62000.0", "0"), ("61900.0", "1")], [("62000.6", "0"), ("61900.6", "3")])
-    th = threading.Timer(2.0, move)
-    th.start()
     pl = "document.querySelector('#poslist label .r').textContent"
     got = tool.look([{"goto": "/new?what=close&pair=BTC/USD&dir=long"}, {"waitFor": "document.querySelector('#poslist input')"},
-                     {"eval": pl, "as": "before"}, {"waitFor": f"{pl}.startsWith('+12.83')", "timeout": 8000}, {"sleep": 500},
-                     {"eval": pl, "as": "after"}, {"shot": "r3-close-list-pl-follows-the-mark.png"}])
-    th.join()
+                     {"eval": pl, "as": "before"}, {"signal": "move"}, {"waitFor": f"{pl}.startsWith('+12.83')", "timeout": 8000}, {"sleep": 500},
+                     {"eval": pl, "as": "after"}, {"shot": "r3-close-list-pl-follows-the-mark.png"}], on={"move": move})   # the page read "before" first
     # (62,000.30 - 62,417.90) x 0.01 + (62,000.30 - 61,000.00) x 0.02 = +15.83; at 61,900.30: -5.18 + 18.01 = +12.83
     assert got["before"] == "+15.83 USDprofit or loss now, at the mark (estimate)"
     assert got["after"] == "+12.83 USDprofit or loss now, at the mark (estimate)"
@@ -781,12 +796,10 @@ def test_page_the_close_list_shows_the_profit_when_the_first_price_of_a_pair_arr
     got = tool.look([{"goto": "/new?what=close&pair=BTC/USD&dir=long"}, {"waitFor": "document.querySelector('#poslist input')"},
                      {"eval": pl, "as": "before"}, {"shot": "r2-close-list-no-price.png"}])
     assert got["before"].startswith("no price yet")
-    th = threading.Timer(2.0, tool.beat, (1,))      # the first book of BTC/USD after the restart, while the form is open
-    th.start()
+    # the first book of BTC/USD after the restart, while the form is open and after it read "before"
     got = tool.look([{"goto": "/new?what=close&pair=BTC/USD&dir=long"}, {"waitFor": "document.querySelector('#poslist input')"},
-                     {"eval": pl, "as": "before"}, {"waitFor": f"!{pl}.startsWith('no price yet')", "timeout": 8000}, {"eval": pl, "as": "after"},
-                     {"shot": "r2-close-list-first-price.png"}])
-    th.join()
+                     {"eval": pl, "as": "before"}, {"signal": "price"}, {"waitFor": f"!{pl}.startsWith('no price yet')", "timeout": 8000},
+                     {"eval": pl, "as": "after"}, {"shot": "r2-close-list-first-price.png"}], on={"price": lambda: tool.beat(1)})
     assert got["before"].startswith("no price yet")
     assert got["after"] == "+0.01 USDprofit or loss now, at the mark (estimate)"      # (62,418.20 - 62,417.90) x 0.02
 
@@ -1027,3 +1040,105 @@ def test_page_the_chase_page_judges_a_whole_close_order_by_the_order_and_what_st
     assert got == {"pstat": "Closed as asked", "tone": "pstat tone-fill",
                    "pdet": f"Closed: the 2x position opened {t1} (0.0100 BTC) and 0.0050 BTC of the 4x position opened {t2}. "
                            "Stays open: 0.0150 BTC at 4x. (simulated)"}
+
+
+# ---------- repair round r92 ----------
+
+CARD = "document.querySelector('#statuscard').innerText"
+
+
+def test_page_an_open_with_no_free_margin_says_close_a_position_first_and_links_the_close(tool):
+    # NO-FREE-MARGIN-DEAD-END: no amount can open, so the form does not ask for a smaller amount.
+    opened_long(tool, "0.02", 3)
+    tool.eng.gw.account.cash = D(300)       # collateral in use 416.12 USD > equity: free margin for new orders below 0
+    tool.eng.account = None
+    got = tool.look([{"goto": "/new"}, {"waitFor": "OC.$('ask').textContent === '62,418.50'"}, {"click": "#what button[data-w=long]"},
+                     {"waitFor": "!OC.$('oppose').classList.contains('hidden')"}, {"text": "#oppose", "as": "oppose"}, {"text": "#amterr", "as": "amterr"},
+                     ALL_TEXT, {"shot": "r92-no-free-margin.png"}, {"click": "#toclose"},
+                     {"waitFor": "document.querySelector('#what button[data-w=close][aria-pressed=true]') && document.querySelector('#poslist input')"},
+                     {"eval": "OC.$('oppose').classList.contains('hidden')", "as": "gone"}])
+    assert got.pop("all")["c"] >= 4.5
+    head, rest = got.pop("oppose").split(" Free margin for new orders: ")
+    assert head == "No free margin for a new open. Close a position first."
+    assert rest.startswith("−") and rest.endswith(" USD (simulated account). Close a position"), rest
+    assert got == {"amterr": "", "gone": True}
+
+
+def test_page_a_close_that_ends_with_nothing_closed_has_the_close_title_on_the_chase_page(tool):
+    # CLOSE-END-TITLE-STOPPED: the words of the result and the history
+    opened_long(tool, "0.02", 3)
+    tool.beat(1)
+    tool.start("close-long", "0.02", timeout=30)
+    tool.book("BTC/USD", [("62417.9", "0"), ("60000.0", "1")], [])     # the bid falls below the floor: the IOC fills nothing
+    tool.timeout(31)
+    assert (tool.eng.chase.outcome, tool.eng.chase.filled) == ("notfilled", 0)
+    got = tool.look([{"goto": "/chase"}, card_shown("notfilled"), {"eval": "OC.$('live').textContent", "as": "title"}])
+    assert got == {"title": "Not closed: position open"}
+
+
+def test_page_the_chase_page_after_a_restart_gives_one_number_for_the_gap(tool):
+    # RESTART-GAP-NUMBERS: the last event at 0:09.7, the new start at 0:21.4: 11 s off, as the event log says
+    tool.start()
+    t0 = tool.clock.t
+    tool.call(tool.eng.handle, core.Restarted(t0 + 21.4, t0 + 9.7))
+    got = tool.look([{"goto": "/chase"}, card_shown("ended"), {"eval": CARD, "as": "card"}, {"text": "#log", "as": "log"}])
+    assert "The tool stopped and started again after 11 s off." in got["card"]
+    assert "Tool started again after 11 s off." in got["log"]
+    assert " 0:09 " not in got["card"] + " " and "0:21" not in got["card"]
+
+
+def test_page_the_result_of_an_open_whose_position_closed_later_shows_no_present_costs(tool):
+    # CLOSED-POSITION-PRESENT-TENSE: the rows "Collateral it uses" and "Rollover, each 4 h while open" only while it is open
+    cid = opened_long(tool, "0.02", 3)
+    rows = {"eval": "['collat', 'rollnow'].map(id => !!OC.$(id))", "as": "rows"}
+    open_now = tool.look([{"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"}, rows])
+    tool.beat(1)
+    tool.start("close-long", "0.02")
+    tool.trade("buy", "62419.0", "0.02")
+    assert tool.eng.chase.outcome == "filled"
+    got = tool.look([{"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"}, rows,
+                     {"eval": "document.body.innerText.includes('Collateral it uses') || document.body.innerText.includes('while open')", "as": "words"},
+                     {"text": ".pstat", "as": "pstat"}, ALL_TEXT, {"shot": "r92-open-result-position-closed.png"}])
+    assert got.pop("all")["c"] >= 4.5
+    assert open_now == {"rows": [True, True]}
+    assert got == {"rows": [False, False], "words": False, "pstat": "Closed"}
+
+
+def test_page_the_gauge_has_no_now_dot_when_there_is_no_position(tool):
+    # NO-POSITION-GAUGE-MARKER
+    tool.start("long", "0.02", leverage=3)
+    tool.call(tool.eng.user, "stop")
+    assert tool.eng.chase.outcome == "stopped"
+    gauge = {"eval": "[document.querySelectorAll('#pgauge .pt').length, OC.$('pgauge').innerText.trim().split('\\n').pop()]", "as": "gauge"}
+    got = tool.look([{"goto": "/chase"}, card_shown("stopped"), {"waitFor": "document.querySelector('#pgauge .gauge')"}, gauge,
+                     ALL_TEXT, {"shot": "r92-gauge-no-position.png"}])
+    assert got.pop("all")["c"] >= 4.5
+    assert got == {"gauge": [0, "Now: no position, so no margin level."]}
+    opened_long(tool, "0.02", 3)                       # with a position: the dot is there
+    got = tool.look([{"goto": "/chase"}, card_shown("filled"), {"waitFor": "document.querySelector('#pgauge .pt')"}, gauge])
+    assert got["gauge"][0] == 1
+
+
+def test_page_a_liquidation_before_the_ioc_fills_ends_liquidated_with_the_position_that_stays(tool):
+    # LATE-IOC-AFTER-LIQUIDATION-SAYS-FILLED: the IOC that the core sent before the liquidation fills after it.
+    send, held = tool.eng.gw.send, []
+    tool.eng.gw.send = lambda cmd, now: held.append(cmd) or [] if isinstance(cmd, core.MarginIoc) and not held else send(cmd, now)
+    tool.eng.gw.account.cash = D(1500)
+    cid = tool.start("long", "0.105", timeout=30, leverage=5)
+    tool.trade("sell", "62417.0", "0.10")
+    tool.timeout(31)
+    assert (tool.eng.chase.phase, len(held)) == ("ioc", 1)
+    tool.book("BTC/USD", [("62417.9", "0"), ("49000.0", "5")], [("62418.5", "0"), ("62419.5", "0"), ("49000.6", "5")])   # liquidates
+    assert tool.eng.chase.exit == "liquidated"
+    tool.call(lambda: [tool.eng.handle(ev) for ev in send(held[0], tool.clock())])
+    c = tool.eng.chase
+    assert (c.outcome, c.filled, [str(p["qty"]) for p in tool.eng.gw.account.positions]) == ("liquidated", D("0.105"), ["0.005"])
+    got = tool.look([{"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"}, {"text": "#out .badge", "as": "badge"},
+                     {"text": "#notclosed", "as": "note"}, {"text": ".pstat", "as": "pstat"}, {"text": ".log li", "as": "last"},
+                     ALL_TEXT, {"shot": "r92-late-ioc-after-liquidation-result.png"}])
+    assert got.pop("all")["c"] >= 4.5
+    assert got == {"badge": "Liquidated",
+                   "note": "Liquidated by the simulated exchange: 0.1000 BTC, at the mark. A dry run has no position on Kraken. "
+                           "The 0.0050 BTC that filled after it stays open as a position.",
+                   "pstat": "Open: 0.0050 BTC long, 5x",
+                   "last": "0:31Filled 0.0050 BTC at 49,000.60 (taker, IOC). Order complete. Position now: 0.0050 BTC long, 5x."}

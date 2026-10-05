@@ -159,6 +159,7 @@ class Chase:
     legs: tuple[str, ...] = ()        # cl_ord_ids of the chase legs, oldest first; the last one is the current leg
     margin: Margin | None = None
     replace: bool = False             # margin: the venue refused an amend, so moves are cancel and replace
+    gone_qty: Decimal = ZERO          # margin: the qty filled when the position was gone; later fills open a new one
 
     @property
     def buy(self) -> bool:
@@ -510,7 +511,7 @@ def _position_text(c: Chase) -> str:
     m, base = c.margin, c.pair.base
     if not m.close:
         word = "Position opened" if len(c.fills) == 1 else "Position now"   # one chase makes one position
-        return f" {word}: {fmt_qty(c.filled)} {base} {c.dir}, {m.leverage}x."
+        return f" {word}: {fmt_qty(c.filled - c.gone_qty)} {base} {c.dir}, {m.leverage}x."   # what stays after a liquidation
     stays = plan_words(m.positions, c.filled, c.pair, c.started)["stays"]
     return f" Stays open: {stays}." if stays else " Position closed."
 
@@ -612,7 +613,7 @@ def step(c: Chase, ev) -> tuple[Chase, list]:
         out.append(Log(t, f"{venue} liquidated the position: the account margin level fell to {c.pair.margin_stop}%."
                           if ev.reason == "liquidated" else
                           f"The {c.dir} position on {c.pair.symbol} is closed. The reduce-only order has nothing left to close.", "bad"))
-        c = replace(c, exit=ev.reason)
+        c = replace(c, exit=ev.reason, gone_qty=c.filled)
         if c.phase in ("resting", "feed_lost"):
             c, more = _settle(c, ev.now)
             out += more
@@ -661,7 +662,7 @@ def _liquidated_after_end(c: Chase, ev) -> tuple[Chase, list]:
         return c, []
     if m.close and not close_plan(m.positions, c.filled)[1]:
         return c, []
-    return replace(c, exit="liquidated", outcome="liquidated"), [
+    return replace(c, exit="liquidated", outcome="liquidated", gone_qty=c.filled), [
         Log(ev.now - c.started, f"{_venue(c)} liquidated the position on the same book: the account margin level fell to "
                                 f"{c.pair.margin_stop}%.", "bad")]
 
@@ -901,8 +902,8 @@ def _restarted(c: Chase, ev: Restarted, t: float) -> tuple[Chase, list]:
 
 
 def _end(c: Chase, now: float, outcome: str) -> tuple[Chase, list]:
-    if c.exit in GONE and outcome != "filled":
-        outcome = c.exit         # the position is gone: that ends the chase, whatever the path to the end
+    if c.exit in GONE:
+        outcome = c.exit         # the position is gone: that ends the chase, also when an IOC in flight fills after it
     end_px = (c.ask if c.buy else c.bid) if c.fresh(now) else None   # no valid price: feed lost or book stale
     return replace(c, phase="done", outcome=outcome, ended_at=now, price=None, pending=None, end_ask=end_px), []   # no order rests
 
@@ -1028,8 +1029,12 @@ def margin_summary(c: Chase) -> dict | None:
     if m is None:
         return None
     gross = sum((f.qty * f.price for f in c.fills), ZERO)
-    if not m.close:
-        return {"collateral": gross / m.leverage, "open_fee": gross * OPEN_FEE, "rollover_4h": gross * ROLLOVER}
+    if not m.close:   # the open fee is paid on every fill; collateral and rollover only on what stays after a liquidation
+        held, gone = ZERO, c.gone_qty
+        for f in c.fills:
+            held += max(f.qty - gone, ZERO) * f.price
+            gone = max(gone - f.qty, ZERO)
+        return {"collateral": held / m.leverage, "open_fee": gross * OPEN_FEE, "rollover_4h": held * ROLLOVER}
     sign = 1 if c.dir == "long" else -1
     takes, stays = close_plan(m.positions, c.filled)
     rows = [{"qty": ZERO, "value": ZERO, "pl": ZERO, "fee": ZERO, "rollover": ZERO} for _ in takes]
@@ -1091,6 +1096,7 @@ def from_json(s: str) -> Chase:
             Part(p["id"], p["opened"], p["leverage"], Decimal(p["entry"]), Decimal(p["qty"]), Decimal(p["margin"]))
             for p in m["positions"]))
     d.pop("order_cum", None)   # a field of the first build; the fills hold the venue's qty now
+    d["gone_qty"] = Decimal(d.get("gone_qty", 0))   # absent in a state saved before this field
     for k in ("qty", "limit", "start_bid", "start_ask"):
         d[k] = Decimal(d[k])
     for k in ("price", "pending", "bid", "ask", "end_ask", "reject_price"):

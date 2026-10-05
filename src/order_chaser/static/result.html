@@ -20,7 +20,7 @@ function mrender(c, acct) {
   const w = OC.words(c), P = w.p, B = c.pair.base, Q = c.pair.quote, s = c.summary, m = c.margin, e = c.margin_est;
   const filled = Number(s.filled), total = Number(c.qty), pct = filled / total * 100, pctM = filled ? Math.round(Number(s.maker_qty) / filled * 100) : 0;
   const dur = OC.mmss(c.ended_at - c.started), D = c.dir === 'long' ? 'Long' : 'Short';
-  const posRest = m.close ? Number(e.rest) : filled;
+  const posRest = m.close ? Number(e.rest) : filled - Number(c.gone_qty);   // an open: what filled after a liquidation stays
   const open = c.open_now;   // a position of this chase is open in the account now (read when the page loads)
   const gone = c.outcome === 'liquidated' ? 'Liquidated by the simulated exchange' : c.outcome === 'nopos' ? 'Closed another way' : null;
   let badge, head, line, rest = null, todo = null;
@@ -50,7 +50,8 @@ function mrender(c, acct) {
   }
   if (c.outcome === 'liquidated') {
     head = `Liquidated: the simulated exchange closed the ${m.close && filled > 0 ? 'rest of the ' : ''}${c.dir}`;
-    rest = `Liquidated by the simulated exchange: ${OC.qty(m.close ? posRest : filled)} ${B}, at the mark. A dry run has no position on Kraken.`;
+    rest = `Liquidated by the simulated exchange: ${OC.qty(m.close ? posRest : Number(c.gone_qty))} ${B}, at the mark. A dry run has no position on Kraken.`
+      + (!m.close && open ? ` The ${OC.qty(posRest)} ${B} that filled after it stays open as a position.` : '');
   } else if (!m.close && filled < total) rest = `Not opened: ${OC.qty(total - filled)} ${B}.` + (filled > 0 && open ? ` The ${OC.qty(filled)} ${B} that filled stays open as a position.` : '');
   else if (m.close && !gone && filled < total) rest = `Not closed: ${OC.qty(total - filled)} ${B}.`;
   // What stays of the position: a fact, not a failure.
@@ -80,9 +81,9 @@ function mrender(c, acct) {
   </div>
   <div class="grid2" style="margin-top:16px">
     <div class="card"><h2>Position (simulated)</h2>
-      <div class="pstat ${gone ? 'tone-bad' : open ? 'tone-fill' : ''}" style="font-size:17px"><i></i>${gone || (!open ? (!m.close && !filled ? 'Nothing opened' : 'Closed') : m.close ? `Open: ${e.stays}` : `Open: ${OC.qty(posRest)} ${B} ${c.dir}, ${m.leverage}x`)}</div>
+      <div class="pstat ${gone ? 'tone-bad' : open ? 'tone-fill' : ''}" style="font-size:17px"><i></i>${(!open && gone) || (!open ? (!m.close && !filled ? 'Nothing opened' : 'Closed') : m.close ? `Open: ${e.stays}` : `Open: ${OC.qty(posRest)} ${B} ${c.dir}, ${m.leverage}x`)}</div>
       <table class="t small" style="margin-top:10px">
-        ${!m.close ? `<tr><td>Leverage</td><td class="r num">${m.leverage}x</td></tr><tr><td>Entry price, average</td><td class="r num">${filled ? P(s.avg) : '—'}</td></tr><tr><td>Collateral it uses <span class="badge plain">estimate</span></td><td class="r num">${OC.usd(e.collateral)} ${Q}</td></tr>`
+        ${!m.close ? `<tr><td>Leverage</td><td class="r num">${m.leverage}x</td></tr><tr><td>Entry price, average</td><td class="r num">${filled ? P(s.avg) : '—'}</td></tr>${open ? `<tr id="collat"><td>Collateral it uses <span class="badge plain">estimate</span></td><td class="r num">${OC.usd(e.collateral)} ${Q}</td></tr>` : ''}`
           : `<tr><td>${m.positions.length > 1 ? 'Positions' : 'Position'} at the start</td><td class="r num" id="pstart">${e.start}</td></tr><tr><td>Closed by this chase</td><td class="r num">${OC.qty(filled)} ${B}${filled ? ' at ' + P(s.avg) : ''}</td></tr>
              <tr><td colspan="2" id="plan">${OC.planLine(c)}</td></tr>`}
         <tr><td>Account margin level now</td><td class="r num">${level}</td></tr>
@@ -92,7 +93,7 @@ function mrender(c, acct) {
     <div class="card"><h2>Margin costs (simulated) <span class="badge plain">estimate</span></h2>
       <table class="t small">
         <tr><td>Trading fees</td><td class="r num">${OC.usd(s.fee)} ${Q}</td></tr>
-        ${!m.close ? `<tr><td>Opening fee, charged at the open</td><td class="r num">up to ${OC.usd(e.open_fee)} ${Q}</td></tr><tr><td>Rollover, each 4 h while open</td><td class="r num">up to ${OC.usd(e.rollover_4h)} ${Q}</td></tr>`
+        ${!m.close ? `<tr><td>Opening fee, charged at the open</td><td class="r num">up to ${OC.usd(e.open_fee)} ${Q}</td></tr>${open ? `<tr id="rollnow"><td>Rollover, each 4 h while open</td><td class="r num">up to ${OC.usd(e.rollover_4h)} ${Q}</td></tr>` : ''}`
           : `${!filled ? '<tr><td>Profit or loss of the part closed</td><td class="r muted">nothing closed</td></tr>' : `<tr><td>Profit or loss of the part closed, after the close fee</td><td class="r num ${Number(e.pl) >= 0 ? 'tone-fill' : 'tone-bad'}" id="pl"><b>${signed(e.pl)} ${Q}</b></td></tr>
              ${e.parts.map(x => `<tr class="plpart"><td class="tiny muted">${x.name}: ${c.dir === 'long' ? `(${P(x.avg)} − ${P(x.entry)})` : `(${P(x.entry)} − ${P(x.avg)})`} × ${OC.qty(x.qty)} − fee</td><td class="r num tiny">${signed(x.pl)}</td></tr>`).join('')}
              <tr><td class="tiny muted" colspan="2">Each closed unit counts against the position it closes, oldest first. Close fees: ${OC.usd(e.close_fee)} ${Q}. The opening fee and the rollover are not in it.</td></tr>
