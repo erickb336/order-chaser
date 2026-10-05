@@ -4,7 +4,8 @@ The executions channel (wss://ws-auth.kraken.com/v2) reports each change of our 
 GetWebSocketsToken. Each (re)subscribe asks for snap_orders and snap_trades, so a link that comes back first gives
 the open orders and the last trades. exec_events() maps the reports of one chase to the core's events.
 
-Nothing here reads the key: the REST client has it.
+Nothing here reads a key or signs a call (R1). Each private call goes through `rest.call(method, **params)`: the
+signed helper (coming) signs it. The tests give a reference signed client (tests/signed_client.py) and a fake Kraken.
 """
 from __future__ import annotations
 
@@ -22,14 +23,20 @@ import httpx
 import websockets
 
 from . import core
-from .keys import NoKey
-from .rest import KrakenError, KrakenRest
 
 WS_AUTH = "wss://ws-auth.kraken.com/v2"
 STABLE = 10           # s: the backoff starts again only after a link stayed up this long with no refusal
 REQUEST_WAIT = 5      # s: the answer to a request on the link (amend_order)
 OPEN_STATES = ("pending", "pending_new", "open", "new", "partially_filled")   # REST and WS v2 order states
 log = logging.getLogger("order_chaser")
+
+
+class KrakenError(Exception):
+    """Kraken answered with errors (its list, such as ["EGeneral:Permission denied"])."""
+
+    def __init__(self, errors: list[str]) -> None:
+        super().__init__(", ".join(errors))
+        self.errors = errors
 
 
 def _dec(v) -> Decimal | None:
@@ -193,9 +200,9 @@ class KrakenGateway:
       caffeinate -i keeps the Mac awake while the chase runs.
     on_event(ev) and on_link(up) go to the engine; the engine keeps .chase up to date."""
 
-    def __init__(self, rest: KrakenRest, read_key, ws_url: str = WS_AUTH, clock=time.time,
+    def __init__(self, rest, ws_url: str = WS_AUTH, clock=time.time,
                  awake_cmd: list[str] | None = None) -> None:
-        self.rest, self.read_key, self.ws_url, self.clock = rest, read_key, ws_url, clock
+        self.rest, self.ws_url, self.clock = rest, ws_url, clock
         self.awake_cmd = ["caffeinate", "-i"] if awake_cmd is None else awake_cmd
         self.on_event = lambda ev: None
         self.on_link = lambda up: None
@@ -212,13 +219,6 @@ class KrakenGateway:
         self.timer = {"on": False, "renewed_at": None, "deadline": None, "tried_at": None}
         self.renewing: asyncio.Task | None = None   # a renewal on its way: close() waits for it, then sends 0
         self.bg: set[asyncio.Task] = set()   # the read of the orders that the timer cancelled (C8)
-
-    async def open_key(self) -> None:
-        """The key, from memory or from the Keychain (Q9: macOS asks one time at each start of the tool)."""
-        if self.rest.key is None:
-            self.rest.key = await asyncio.to_thread(self.read_key)
-        if self.rest.key is None:
-            raise NoKey()
 
     # ----- the life of a live chase -----
     async def open(self) -> None:

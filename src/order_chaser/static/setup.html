@@ -7,7 +7,7 @@
 <main class="app">
   <div style="max-width:840px">
     <h1>Setup for live chases</h1>
-    <p class="muted">A live chase needs one answer about your Kraken account, a tested Kraken API key in the macOS Keychain, and the safety timer. A dry run needs none of them.</p>
+    <p class="muted">A live order needs one answer about your Kraken account and the signed helper, which holds the key. A dry run needs neither of them.</p>
     <div class="row" style="margin-bottom:22px"><a class="btn drybtn" href="/new">Skip setup: start a dry run</a><span class="small muted">You can come back here at any time.</span></div>
     <div class="steps">
       <div class="step done"><div class="no">✓</div><div class="card" style="padding:16px">
@@ -18,26 +18,10 @@
         <div class="row"><h2 style="margin:0">2. Other tools on this account</h2><span class="spacer"></span><span id="bA"></span></div>
         <div id="acctbody"></div>
       </div></div>
-      <div class="step" id="sK"><div class="no" id="nK">3</div><div class="card" style="padding:16px">
-        <div class="row"><h2 style="margin:0">3. Kraken API key</h2><span class="spacer"></span><span id="bK"></span></div>
-        <div id="keybody"></div>
-        <div id="keyform" class="hidden">
-          <div class="note warn small" style="margin:10px 0"><b>Warning: do not turn on Withdraw Funds.</b> The tool refuses a key that can withdraw and removes it from the Keychain.</div>
-          <ol class="how small">
-            <li>In Kraken Pro, open <b>Settings</b>, then <b>API</b>, then <b>Create API key</b>.</li>
-            <li>Turn on <b>Query Funds</b>, <b>Modify Orders</b>, <b>Cancel/Close Orders</b>, <b>Query Open Orders &amp; Trades</b>, <b>Query Closed Orders &amp; Trades</b> and <b>Access WebSockets API</b>.</li>
-            <li>Leave <b>Withdraw Funds</b> off.</li>
-            <li>Recommended: set <b>IP whitelisting</b> to the IP address of this Mac.</li>
-            <li>Save the key. Kraken shows the private key one time only.</li></ol>
-          <p class="tiny muted" style="margin:-4px 0 10px">Check these names against your Kraken key page. They come from the Kraken support article.</p>
-          <div class="grid2"><div class="field"><label class="f" for="k1">API key</label><input class="input mono" id="k1" autocomplete="off" spellcheck="false" placeholder="Paste the API key"></div>
-          <div class="field"><label class="f" for="k2">Private key</label><input class="input mono" id="k2" type="password" autocomplete="off" spellcheck="false" placeholder="Paste the private key"></div></div>
-          <div class="row"><button class="btn primary" id="save" type="button">Save in Keychain and test</button><span class="small muted">The page sends the key one time to the tool on this Mac and clears the fields. The tool keeps it only in the macOS Keychain, never in a file or a log.</span></div>
-        </div>
-        <div id="perms"></div>
-        <div class="row" id="keyacts" style="margin-top:10px"></div>
-        <div class="small" id="keymsg" role="status" aria-live="polite" style="margin-top:8px"></div>
-        <p class="small" style="margin:10px 0 0" id="mgline"><span class="badge mg">margin</span> Margin uses the same key and needs no new permission. Modify Orders opens and closes positions, and Query Open Orders &amp; Trades reads them. Live margin comes only after your go-ahead. A margin dry run reads no key: it uses a simulated account of 5,000 USD.</p>
+      <div class="step" id="sK"><div class="no">3</div><div class="card" style="padding:16px">
+        <div class="row"><h2 style="margin:0">3. Signed helper</h2><span class="spacer"></span><span class="badge plain">Coming</span></div>
+        <p class="small" style="margin:6px 0 0" id="helperline">The signed helper holds your Kraken API key and signs each private call. It places a staged order only after a Touch ID. This tool never receives the key, so it has no key field. Until the helper comes, a live order is only staged. Live is spot only.</p>
+        <p class="small" style="margin:10px 0 0" id="mgline"><span class="badge mg">margin</span> Live is spot only: the tool refuses a live margin order. A margin dry run reads no key: it uses a simulated account of 5,000 USD.</p>
       </div></div>
       <div class="step" id="sT"><div class="no" id="nT">4</div><div class="card" style="padding:16px">
         <div class="row"><h2 style="margin:0">4. Safety timer</h2><span class="spacer"></span><span id="bT"></span></div>

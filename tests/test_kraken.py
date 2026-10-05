@@ -9,14 +9,18 @@ from pathlib import Path
 import httpx
 import pytest
 
+import base64
+from types import SimpleNamespace
+
+import signed_client as rest
 from fake_kraken import API, SECRET, FakeKraken
-from order_chaser import core, feed, keys, rest
+from order_chaser import core, feed
 from order_chaser.kraken import PrivateFeed, exec_events
 
 FIXTURE = Path(__file__).parent / "fixtures" / "kraken-executions.json"
 PAIR = feed.parse_pairs({"BTC/USD": {"tick_size": "0.1", "ordermin": "0.00005", "costmin": "0.5", "pair_decimals": 1,
                                      "lot_decimals": 8, "status": "online", "altname": "XBTUSD"}})["BTC/USD"]
-KEY = keys.Key(API, SECRET)
+KEY = SimpleNamespace(api_key=API, secret=base64.b64decode(SECRET))   # a dummy key of the fake Kraken
 ID = "ocfix00000001"
 
 
@@ -151,7 +155,7 @@ def test_the_gateway_maps_margin_orders_a_refused_margin_amend_and_an_unknown_or
 
     async def run():
         async with httpx.AsyncClient() as http:
-            gw = KrakenGateway(rest.KrakenRest(KEY, http, url=fake.url), lambda: KEY, fake.ws_url, lambda: 1000.0, AWAKE)
+            gw = KrakenGateway(rest.KrakenRest(KEY, http, url=fake.url), fake.ws_url, lambda: 1000.0, AWAKE)
             gw.chase = c
             await gw.open()
             place = [x for x in cmds if isinstance(x, core.MarginPlace)][0]
@@ -177,7 +181,7 @@ def test_the_gateway_maps_margin_orders_a_refused_margin_amend_and_an_unknown_or
 
 def gateway(fake, http, clock=lambda: 1000.0):
     from order_chaser.kraken import KrakenGateway
-    gw = KrakenGateway(rest.KrakenRest(KEY, http, url=fake.url), lambda: KEY, fake.ws_url, clock, AWAKE)
+    gw = KrakenGateway(rest.KrakenRest(KEY, http, url=fake.url), fake.ws_url, clock, AWAKE)
     gw.chase = chase()
     return gw
 

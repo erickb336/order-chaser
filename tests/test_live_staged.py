@@ -85,3 +85,40 @@ def test_a_live_margin_short_or_leverage_request_is_refused_before_staging(setup
 def test_the_live_check_endpoint_is_gone(setup):
     client, eng, h = ready(setup)
     assert client.post("/api/live/check", headers=h, json={"pair": "BTC/USD"}).status_code in (404, 405)
+
+
+# ---------- R1: no Python code path reads a key ----------
+
+ROOT = __import__("pathlib").Path(__file__).parent.parent
+SRC = ROOT / "src" / "order_chaser"
+KEY_READ = __import__("re").compile(r"\bkeyring\b|Keychain|private_key|api_key")
+
+
+def key_reads(text: str) -> list[str]:
+    return KEY_READ.findall(text)
+
+
+def test_no_file_of_the_tool_reads_or_stores_a_key_and_keyring_is_not_a_dependency():
+    assert key_reads("import keyring\nkey = store.read(private_key)") == ["keyring", "private_key"]   # the check finds one
+    files = sorted(p for p in SRC.rglob("*") if p.suffix in (".py", ".js", ".html"))
+    assert len(files) > 20
+    assert {p.relative_to(SRC).as_posix(): key_reads(p.read_text()) for p in files if key_reads(p.read_text())} == {}
+    assert key_reads((ROOT / "pyproject.toml").read_text()) == [] and key_reads((ROOT / "uv.lock").read_text()) == []
+
+
+@pytest.mark.parametrize("path", ["/api/key", "/api/key/test", "/api/key/remove"])
+def test_the_key_endpoints_are_gone(setup, path):
+    client, eng, h = ready(setup)
+    assert client.post(path, headers=h, json={"api_key": "A" * 56, "private_key": "B" * 88}).status_code in (404, 405)
+    assert "key" not in client.get("/api/setup").json()
+
+
+SIGNS = __import__("re").compile(r"API-Sign|API-Key|\bhmac\b|/0/private/")
+
+
+def test_no_file_of_the_tool_signs_a_private_call_only_the_reference_client_of_the_tests_does():
+    # R1: the signed helper (coming) signs every private call. The signing code stays only as a reference in tests.
+    files = sorted(p for p in SRC.rglob("*") if p.suffix in (".py", ".js", ".html"))
+    assert {p.name: SIGNS.findall(p.read_text()) for p in files if SIGNS.findall(p.read_text())} == {}
+    reference = (ROOT / "tests" / "signed_client.py").read_text()
+    assert set(SIGNS.findall(reference)) == {"API-Sign", "API-Key", "hmac", "/0/private/"}   # the check finds it there

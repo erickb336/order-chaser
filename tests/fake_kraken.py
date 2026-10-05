@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import os
 import socket
 import threading
 import time
@@ -23,11 +22,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from order_chaser import keys, rest
-
-# A probe that imports this file without tests/conftest.py still gets the tool's memory mode: each key call then
-# refuses the real Keychain (keys.RealKeyring) instead of using it.
-os.environ[keys.MODE] = "memory"
+import signed_client as rest
 
 # A dummy key (never a real one): Kraken's published example secret and a made-up API key.
 SECRET = "kQH5HW/8p1uGOVjbgWA7FunAmGO8lsSUXNsu3eow76sz84Q18fWxnyRzBHCd3pd5nE9qa99HAZtuZuj6F1huXg=="

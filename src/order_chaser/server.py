@@ -24,7 +24,7 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, R
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import core, feed, keys, rest
+from . import core, feed
 from .db import DEFAULT_DIR, Db, lock_folder
 from .sim import SimAccount, SimGateway
 
@@ -45,9 +45,6 @@ SECURITY_HEADERS = [(b"x-frame-options", b"DENY"), (b"content-security-policy", 
 
 
 AMOUNT_TEXT = "Enter the amount as a plain number, such as 0.0500."
-WITHDRAW_NOT_REMOVED = ("This key can withdraw funds. The tool refused it, but macOS did not let it remove the key. "
-                        "Delete the item \"Kraken API key (order-chaser)\" in Keychain Access, and delete the key in Kraken Pro.")
-KEYCHAIN_TEXT = keys.KEYCHAIN_TEXT
 ACCOUNT_ANSWERS = ("no", "yes", "sub")   # Q10: no other tool; another tool (live stays off); "I use a sub-account" (G19 P2)
 FIRST_TICK_TEXT = "Tick the box for your first live order."
 # R2, R7: POST /api/chase in live mode only stages a spot order. The signed helper (coming) places it after a Touch ID.
@@ -56,10 +53,6 @@ SPOT_ONLY_TEXT = "A live order is spot only: buy or sell, with no leverage and n
 MARGIN_FIELDS = ("leverage", "reduce_only", "margin")
 HELPER_TEXT = "The signed helper (coming) reads Kraken for this check. Until then, check the order in Kraken Pro."
 BUSY_TEXT = "A chase runs now. You can start a new chase when it ends."
-KEYING_TEXT = "Setup changes the Kraken API key now. Try again when that ends."
-NOFUNDS_NOT_REMOVED = ("This key does not have Query Funds, so the tool cannot check that it cannot withdraw. The tool "
-                       "refused it, but macOS did not let it remove the key. Delete the item \"Kraken API key "
-                       "(order-chaser)\" in Keychain Access.")
 
 
 def number(v) -> Decimal | None:
@@ -215,7 +208,6 @@ class Engine:
     def setup_state(self) -> dict:
         """What Setup recorded, and why a live chase cannot start now (empty: it can)."""
         a = json.loads(self.db.setting("account") or "null")    # {"answer", "at"}
-        k = json.loads(self.db.setting("key") or "null")        # {"saved", "tested", "verdict", "permissions"}
         why = []
         if a is None:
             why.append("Answer Setup, step 2: does another bot or API tool use this Kraken account?")
@@ -223,7 +215,7 @@ class Engine:
             why.append("Setup, step 2: use a Kraken sub-account for this tool. Live chases stay off until you confirm it.")
         if self.blocked:
             why.append(self.blocked)
-        return {"account": a, "key": k, "ready": not why, "why": why, "first": not self.db.any_live()}
+        return {"account": a, "ready": not why, "why": why, "first": not self.db.any_live()}
 
     def start(self, symbol: str, what: str, qty: Decimal, limit: Decimal | None, timeout: int,
               leverage: int | None = None, venue: str = core.SIM_VENUE, check_only: bool = False) -> list[str]:
@@ -442,20 +434,14 @@ class Guard:
 # ---------- App ----------
 
 def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, clock=time.time, latency: float = 0.15,
-               port: int = PORT, refuse_margin_amends: bool = False, kraken_transport: httpx.AsyncBaseTransport | None = None,
-               kraken_url: str = rest.URL):
+               port: int = PORT, refuse_margin_amends: bool = False):
     """connect=False leaves out the Kraken feed and the pair list: tests drive the engine.
-    kraken_transport, kraken_url: where the key test's private calls go (tests give a local fake Kraken)."""
-    keys.backend()   # ORDER_CHASER_KEYRING=memory with a real keyring: the tool does not start (keys.RealKeyring)
+    R1: no code of this tool reads, stores or receives a Kraken API key. The signed helper (coming) holds it."""
     token = secrets.token_urlsafe(32)
     db = Db(data_dir)
     eng = Engine(db, clock=clock, latency=latency, rate_start=rate_start, refuse_margin_amends=refuse_margin_amends)
-    # One REST client for each process: the nonce and the rate counter belong to the key.
-    store = keys.KeyStore()
-    kraken = rest.KrakenRest(None, httpx.AsyncClient(transport=kraken_transport, timeout=10), url=kraken_url)
     page_cache: dict[str, str] = {}
     watched_at = [float("-inf")]
-    keying = [False]   # a key save, test or remove runs (key_call): a live start is refused until it ends
 
     def page(name: str) -> str:
         if name not in page_cache:
@@ -614,7 +600,6 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         for t in tasks:
             with contextlib.suppress(BaseException):
                 await t
-        await kraken.http.aclose()
 
     async def account(request: Request):
         return JSONResponse(eng.read_account())
@@ -647,78 +632,6 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         eng.version += 1
         return JSONResponse(eng.setup_state())
 
-    def key_state(**k) -> None:
-        db.set_setting("key", json.dumps(k) if k else None)
-        eng.version += 1
-
-    # ----- the Kraken API key (T4 U2): token + Origin guard (Guard), JSON only, never logged or sent back -----
-
-    def key_call(handler):
-        """A key save, test or remove changes the key in memory. It is refused while a live chase starts, runs or
-        ends (its end task cancels the leg and sets the timer to 0), and while another key call runs. A live start
-        is refused while it runs. So the key never changes under a live chase."""
-        async def run(request: Request):
-            if keying[0]:
-                return JSONResponse({"errors": [KEYING_TEXT]}, status_code=409)
-            keying[0] = True   # no wait between the check and this line: one key call at a time
-            try:
-                return await handler(request)
-            finally:
-                keying[0] = False
-        return run
-
-    @key_call
-    async def key_save(request: Request):
-        d = await body(request)
-        key = keys.parse(d.get("api_key"), d.get("private_key"))
-        if key is None:
-            return JSONResponse({"errors": [keys.SHAPE_TEXT]}, status_code=400)
-        try:
-            await asyncio.to_thread(store.save, key)   # a macOS prompt must not stop the chase loop
-        except Exception:   # the text of a Keychain error is not shown: say what to do
-            return JSONResponse({"errors": [KEYCHAIN_TEXT]}, status_code=503)
-        kraken.key = None                              # the next live call takes the new key (from memory)
-        key_state(saved=eng.clock(), tested=None, verdict=None, permissions=None)
-        return JSONResponse({"saved": True})
-
-    @key_call
-    async def key_remove(request: Request):
-        try:
-            await asyncio.to_thread(store.remove)
-        except Exception:
-            return JSONResponse({"errors": [KEYCHAIN_TEXT]}, status_code=503)
-        kraken.key = None
-        key_state()
-        return JSONResponse({"removed": True})
-
-    @key_call
-    async def key_test(request: Request):
-        """Test each permission of the saved key with calls that change nothing. A key that can withdraw is
-        removed from the Keychain at once (Q4). So is a key with Query Funds off: the tool cannot check it."""
-        try:
-            kraken.key = await asyncio.to_thread(store.read)
-        except Exception:
-            return JSONResponse({"errors": [KEYCHAIN_TEXT]}, status_code=503)
-        if kraken.key is None:
-            key_state()
-            return JSONResponse({"errors": ["No key is saved. Paste the key first."]}, status_code=409)
-        p = await rest.check(kraken)
-        removed = False
-        if p.verdict in ("withdraw", "nofunds"):
-            kraken.key = None
-            try:
-                await asyncio.to_thread(store.remove)
-                removed = True
-            except Exception:
-                key_state(saved=eng.clock(), tested=eng.clock(), verdict=p.verdict, permissions=p.on)
-                text = WITHDRAW_NOT_REMOVED if p.verdict == "withdraw" else NOFUNDS_NOT_REMOVED
-                return JSONResponse({"errors": [text]}, status_code=503)
-            key_state(saved=None, tested=eng.clock(), verdict=p.verdict, permissions=p.on)   # the page says why
-        else:
-            saved = (eng.setup_state()["key"] or {}).get("saved", eng.clock())
-            key_state(saved=saved, tested=eng.clock(), verdict=p.verdict, permissions=p.on)
-        return JSONResponse({"verdict": p.verdict, "permissions": p.on, "error": p.error, "removed": removed})
-
     async def no_icon(request: Request):
         return PlainTextResponse("", status_code=204)
 
@@ -726,14 +639,12 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         Route("/api/state", state), Route("/api/stream", stream),
         Route("/api/watch", watch, methods=["POST"]), Route("/api/chase", start, methods=["POST"]),
         Route("/api/chase/stop", action, methods=["POST"]), Route("/api/chase/fillnow", action, methods=["POST"]),
-        Route("/api/key", key_save, methods=["POST"]), Route("/api/key/remove", key_remove, methods=["POST"]),
-        Route("/api/key/test", key_test, methods=["POST"]),
         Route("/api/setup", setup_get), Route("/api/setup", setup_post, methods=["POST"]),
         Route("/api/chase/{id:str}", one), Route("/api/history", history), Route("/api/account", account), Route("/api/plan", plan),
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
-    app.state.engine, app.state.token, app.state.keys = eng, token, store
+    app.state.engine, app.state.token = eng, token
     return Guard(app, token, port)
 
 
@@ -782,9 +693,6 @@ def main() -> None:
     except BlockingIOError:
         raise SystemExit(f"Another order chaser runs on {a.data_dir}. Stop it first.")
     print(f"Order chaser on http://{HOST}:{a.port}  data: {a.data_dir}  (a chase is a dry run unless you choose Live)")
-    try:
-        app = create_app(a.data_dir, rate_start=a.rate_start, port=a.port, refuse_margin_amends=a.refuse_margin_amends)
-    except keys.RealKeyring as e:
-        raise SystemExit(str(e))
+    app = create_app(a.data_dir, rate_start=a.rate_start, port=a.port, refuse_margin_amends=a.refuse_margin_amends)
     # A short graceful shutdown: an open page (SSE) must not keep a stopped tool alive.
     uvicorn.run(app, host=HOST, port=a.port, log_level="warning", timeout_graceful_shutdown=2)

@@ -516,7 +516,7 @@ def test_page_a_liquidation_ends_the_chase_on_the_chase_result_and_history_pages
     assert got["badge"] == "Liquidated" and got["spot_rows"] == 0
     assert got["tr.click td:nth-child(3)"] == ["Margin Close long", "Margin Open long · 5x"]
     assert got["tr.click td:last-child .badge"] == ["Liquidated", "Position opened"]
-    assert got["setup"].startswith("margin Margin uses the same key and needs no new permission.")
+    assert got["setup"].startswith("margin Live is spot only: the tool refuses a live margin order.")
 
 
 # ---------- repair round 1 of the margin build ----------
@@ -1256,47 +1256,37 @@ def fake():
 
 
 def live_tool(tmp_path, fake, ready=True):
-    """The tool with the fake Kraken. ready: Setup is complete (account answered, the key saved and tested)."""
-    from fake_kraken import API, SECRET
-    from order_chaser import keys
+    """The tool, and the fake Kraken that no request should reach. ready: Setup is complete (the account answered)."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     shots = Path(os.environ.get("OC_SHOTS", tmp_path / "shots"))
     shots.mkdir(parents=True, exist_ok=True)
-    if ready:
-        keys.KeyStore().save(keys.Key(API, SECRET))    # the in-memory keyring of conftest.py
-    t = Tool(tmp_path, shots, kraken_url=fake.url)
+    t = Tool(tmp_path, shots)
     fake.clock = t.clock
     if ready:
         t.eng.db.set_setting("account", json.dumps({"answer": "no", "at": t.clock()}))
-        t.eng.db.set_setting("key", json.dumps({"saved": t.clock(), "tested": t.clock(), "verdict": "ok", "permissions": {}}))
     return t
 
 
-def test_page_setup_asks_the_account_question_then_saves_and_tests_the_key(tmp_path, fake):
-    from fake_kraken import API, SECRET
+def test_page_setup_asks_the_account_question_and_has_no_key_field(tmp_path, fake):
+    # R1: the key lives only in the signed helper. Setup has no key field.
     t = live_tool(tmp_path, fake, ready=False)
     try:
         got = t.look([{"goto": "/setup"}, {"waitFor": "document.getElementById('ano')"}, {"shot": "live-setup-account-question.png"},
                       {"text": "#acctbody", "as": "question"}, ALL_TEXT,
-                      {"click": "#ano"}, {"waitFor": "!document.getElementById('keyform').classList.contains('hidden')"},
-                      {"fill": ["#k1", API]}, {"fill": ["#k2", SECRET]}, {"click": "#save"},
-                      {"eval": "[OC.$('k1').value, OC.$('k2').value]", "as": "fields"},
-                      {"waitFor": "OC.$('bK').textContent === 'Ready'"}, {"shot": "live-setup-key-tested.png"},
-                      {"text": "#keybody", "as": "key"}, {"text": "#perms", "as": "perms"}, {"text": "#finish", "as": "finish"},
-                      {"text": "#host", "as": "host"},
-                      {"eval": "document.body.innerText.includes(" + json.dumps(SECRET[:12]) + ")", "as": "shown"},
+                      {"click": "#ano"}, {"waitFor": "OC.$('finish').textContent.includes('Setup complete')"},
+                      {"shot": "live-setup-complete.png"}, {"text": "#helperline", "as": "helper"}, {"text": "#finish", "as": "finish"},
+                      {"text": "#host", "as": "host"}, {"eval": "document.querySelectorAll('input').length", "as": "inputs"},
                       {**ALL_TEXT, "as": "all2"}])
     finally:
         t.stop()
     assert "Does another bot or API tool use this Kraken account?" in got["question"]
-    assert got["fields"] == ["", ""]                                           # C6: cleared after the send
-    assert "Saved in your macOS Keychain. The tool never shows it again." in got["key"]
-    assert "At each start of the tool, macOS asks one time." in got["key"]     # Q9
-    assert "Check these names against your Kraken key page." in got["perms"]  # C9
-    assert "Withdraw Funds" in got["perms"] and "Setup complete. Live chases are possible." in got["finish"]
-    assert got["host"] == f"127.0.0.1:{t.port}" and got["shown"] is False
+    assert "This tool never receives the key, so it has no key field." in got["helper"] and got["inputs"] == 0
+    assert "Setup complete. Live orders can be staged." in got["finish"]
+    assert got["host"] == f"127.0.0.1:{t.port}"
     assert got["all"]["c"] >= 4.5 and got["all2"]["c"] >= 4.5, (got["all"], got["all2"])
 
+
+# ---------- phone width (T45) ----------
 
 # The page width, each element that goes past the left or right edge of the window, or into the 16 px gutter of the
 # page (UX R90, QA R91 of T5, QA R138), and each box
@@ -1351,7 +1341,7 @@ def test_page_every_page_fits_a_375_px_phone_with_no_sideways_scroll_and_readabl
         {"viewport": [375, 812]},
         {"goto": "/history"}, {"waitFor": "document.querySelector('tr.click')"}, *phone("/history", "#out"),
         {"eval": "getComputedStyle(OC.$('out'), '::before').content", "as": "hint"},
-        {"goto": "/setup"}, {"waitFor": "OC.$('mgline').textContent"}, *phone("/setup"),
+        {"goto": "/setup"}, {"waitFor": "OC.$('finish').textContent"}, *phone("/setup"),
         {"signal": "start"}, {"goto": "/chase"}, card_shown("resting"), {"waitFor": "document.querySelector('#statuscard .rail .mk')"}, *phone("/chase"),
         {"click": "#stop"}, {"waitFor": "!OC.$('stopdlg').classList.contains('hidden')"}, *phone("/chase stop dialog"),
         {"eval": "(r => r.right <= innerWidth && r.bottom <= innerHeight)(OC.$('stopyes').getBoundingClientRect())", "as": "stop button in view"},
