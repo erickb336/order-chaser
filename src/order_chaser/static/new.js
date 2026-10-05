@@ -111,7 +111,7 @@ function drawPositions(s) {
     row.classList.toggle('on', on);
     if (radio.checked !== on) radio.checked = on;
     // Each open of a pair and direction is its own position with its own leverage (as Kraken).
-    put($(`pos${i}t`), `${OC.esc(x.pair)} <span class="badge ${x.dir}">${x.dir === 'long' ? 'Long' : 'Short'}</span> ${OC.qty(x.qty)} ${xb}`);
+    put($(`pos${i}t`), `${OC.esc(x.pair)} <span class="badge ${x.dir === 'long' ? 'long' : 'short'}">${x.dir === 'long' ? 'Long' : 'Short'}</span> ${OC.qty(x.qty)} ${OC.esc(xb)}`);
     text($(`pos${i}d`), x.count > 1 ? `· ${x.count} positions · average ${x.leverage}x · average entry ${OC.px(x.entry, pd)} · oldest opened ${when(x.opened)}`
       : `· ${x.leverage}x · opened ${when(x.opened)} at ${OC.px(x.entry, pd)}`);
     text($(`pos${i}r`), `Rollover so far: ${OC.usd(x.rollover)} USD (estimate)`);
@@ -136,7 +136,7 @@ function draw() {
     const when = new Date(liq.at * 1000).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const row = x => {
       const [b, q] = x.pair.split('/'), pd = snap && snap.pairs[x.pair] ? snap.pairs[x.pair].price_decimals : 2, pl = Number(x.pl);
-      return `<li>${OC.esc(x.pair)} ${x.dir}, ${OC.qty(x.qty)} ${OC.esc(b)} at ${x.leverage}x: closed at the mark ${OC.px(x.mark, pd)} (entry ${OC.px(x.entry, pd)}), ${pl >= 0 ? '+' : '−'}${OC.usd(Math.abs(pl))} ${OC.esc(q)}</li>`;
+      return `<li>${OC.esc(x.pair)} ${OC.esc(x.dir)}, ${OC.qty(x.qty)} ${OC.esc(b)} at ${OC.esc(x.leverage)}x: closed at the mark ${OC.px(x.mark, pd)} (entry ${OC.px(x.entry, pd)}), ${pl >= 0 ? '+' : '−'}${OC.usd(Math.abs(pl))} ${OC.esc(q)}</li>`;
     };
     put($('liqnote'), `<b>The simulated exchange liquidated ${liq.positions.length > 1 ? `${liq.positions.length} positions` : 'a position'} on ${when}.</b> The account margin level fell to ${Math.round(Number(liq.level))}%, at or below the liquidation mark. Each position closed at the mark of its own pair (estimate, after rollover):` +
       `<ul id="liqlist" style="margin:4px 0 0;padding-left:18px">${liq.positions.map(row).join('')}</ul><span class="small">A dry run has no position on Kraken.</span>`);

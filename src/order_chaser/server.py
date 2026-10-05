@@ -23,7 +23,7 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, R
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import core, feed, keys
+from . import core, feed, keys, rest
 from .db import DEFAULT_DIR, Db, lock_folder
 from .sim import SimAccount, SimGateway
 
@@ -45,6 +45,8 @@ SECURITY_HEADERS = [(b"x-frame-options", b"DENY"), (b"content-security-policy", 
 
 
 AMOUNT_TEXT = "Enter the amount as a plain number, such as 0.0500."
+WITHDRAW_NOT_REMOVED = ("This key can withdraw funds. The tool refused it, but macOS did not let it remove the key. "
+                        "Delete the item \"Kraken API key (order-chaser)\" in Keychain Access, and delete the key in Kraken Pro.")
 KEYCHAIN_TEXT = ("macOS did not let the tool use the Keychain. Unlock the Keychain, click Allow in the macOS prompt, "
                  "and try again.")
 
@@ -371,8 +373,9 @@ class Guard:
 # ---------- App ----------
 
 def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, clock=time.time, latency: float = 0.15,
-               port: int = PORT, refuse_margin_amends: bool = False):
-    """connect=False leaves out the Kraken feed and the pair list: tests drive the engine."""
+               port: int = PORT, refuse_margin_amends: bool = False, kraken_transport: httpx.AsyncBaseTransport | None = None):
+    """connect=False leaves out the Kraken feed and the pair list: tests drive the engine.
+    kraken_transport: the HTTP transport of the private REST calls (tests give a fake one)."""
     token = secrets.token_urlsafe(32)
     db = Db(data_dir)
     eng = Engine(db, clock=clock, latency=latency, rate_start=rate_start, refuse_margin_amends=refuse_margin_amends)
@@ -502,6 +505,7 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         for t in tasks:
             with contextlib.suppress(BaseException):
                 await t
+        await kraken.http.aclose()
 
     async def account(request: Request):
         return JSONResponse(eng.read_account())
@@ -523,6 +527,7 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
 
     # ----- the Kraken API key (T4 U2): token + Origin guard (Guard), JSON only, never logged or sent back -----
     store = keys.KeyStore()
+    kraken = rest.KrakenRest(None, httpx.AsyncClient(transport=kraken_transport, timeout=10))
 
     async def key_save(request: Request):
         d = await body(request)
@@ -542,6 +547,26 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
             return JSONResponse({"errors": [KEYCHAIN_TEXT]}, status_code=503)
         return JSONResponse({"removed": True})
 
+    async def key_test(request: Request):
+        """Test each permission of the saved key with calls that change nothing. A key that can withdraw is
+        removed from the Keychain at once (Q4)."""
+        try:
+            kraken.key = await asyncio.to_thread(store.read)
+        except Exception:
+            return JSONResponse({"errors": [KEYCHAIN_TEXT]}, status_code=503)
+        if kraken.key is None:
+            return JSONResponse({"errors": ["No key is saved. Paste the key first."]}, status_code=409)
+        p = await rest.check(kraken)
+        removed = False
+        if p.verdict == "withdraw":
+            kraken.key = None
+            try:
+                await asyncio.to_thread(store.remove)
+                removed = True
+            except Exception:
+                return JSONResponse({"errors": [WITHDRAW_NOT_REMOVED]}, status_code=503)
+        return JSONResponse({"verdict": p.verdict, "permissions": p.on, "error": p.error, "removed": removed})
+
     async def no_icon(request: Request):
         return PlainTextResponse("", status_code=204)
 
@@ -550,6 +575,7 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         Route("/api/watch", watch, methods=["POST"]), Route("/api/chase", start, methods=["POST"]),
         Route("/api/chase/stop", action, methods=["POST"]), Route("/api/chase/fillnow", action, methods=["POST"]),
         Route("/api/key", key_save, methods=["POST"]), Route("/api/key/remove", key_remove, methods=["POST"]),
+        Route("/api/key/test", key_test, methods=["POST"]),
         Route("/api/chase/{id:str}", one), Route("/api/history", history), Route("/api/account", account), Route("/api/plan", plan),
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]

@@ -757,11 +757,14 @@ def test_start_takes_one_action_field_and_leverage_only_for_an_open(setup, body,
     assert eng.chase is None
 
 
-def test_the_dry_run_has_no_code_that_reads_a_key_or_calls_a_private_endpoint():
-    # DRY-RUN-READS-KEY (PE): no Kraken key and no private request in this version.
+def test_only_the_rest_client_signs_and_the_dry_run_reaches_no_key():
+    # DRY-RUN-READS-KEY (PE), T4: the signed private calls are only in rest.py (used by POST /api/key/test);
+    # the dry run (core, sim, feed, book, db) imports neither the key store nor the REST client.
     from pathlib import Path
-    src = " ".join(f.read_text() for f in (Path(__file__).parent.parent / "src" / "order_chaser").glob("*.py"))
-    assert [w for w in ("API-Key", "API-Sign", "/0/private", "KRAKEN_KEY", "KRAKEN_API") if w in src] == []
+    files = sorted((Path(__file__).parent.parent / "src" / "order_chaser").glob("*.py"))
+    assert [f.name for f in files if any(w in f.read_text() for w in ("API-Key", "API-Sign", "/0/private"))] == ["rest.py"]
+    dry = ("core.py", "sim.py", "feed.py", "book.py", "db.py")
+    assert [f.name for f in files if f.name in dry and re.search(r"^(from|import) .*\b(keys|rest|keyring)\b", f.read_text(), re.M)] == []
 
 
 def test_an_open_against_a_short_while_its_chase_runs_says_a_chase_runs_first(setup):
