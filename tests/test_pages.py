@@ -1007,6 +1007,36 @@ def test_page_an_open_refused_with_nothing_filled_says_nothing_opened_in_the_pos
     assert got == {"pstat": "Nothing opened"}
 
 
+def test_page_a_first_order_refused_as_would_cross_says_so_and_goes_out_again_at_the_new_bid(tool):
+    # T44 (owner G21 B): the first order waits and goes out again, it does not end the chase at 0:00.
+    send, refused = tool.eng.gw.send, []
+    tool.eng.gw.send = lambda cmd, now: (refused.append(cmd) or [core.Rejected(now, "place", "would_cross")]) \
+        if isinstance(cmd, core.Place) and not refused else send(cmd, now)
+    tool.start()
+    assert (tool.eng.chase.phase, tool.eng.chase.price, len(refused)) == ("resting", None, 1)
+
+    def bid_rises():
+        tool.book("BTC/USD", [("62418.1", "1")], [])
+        tool.beat(5)                                     # the wait from the first order ends: the new order goes out
+
+    log = "Array.from(document.querySelectorAll('#log li')).map(x => x.textContent)"
+    got = tool.look([{"goto": "/chase"}, card_shown("placeagain"), {"text": "#statuscard .head", "as": "head"},
+                     {"text": "#statuscard .sub", "as": "sub"}, {"eval": log, "as": "log"},
+                     {"eval": "[!!OC.$('stop'), !!OC.$('fillnow')]", "as": "buttons"}, ALL_TEXT, {"shot": "t44-first-order-refused.png"},
+                     {"signal": "bid"}, card_shown("resting"), {"text": "#statuscard .head", "as": "after"},
+                     {"eval": log, "as": "log_after"}, {"shot": "t44-placed-again.png"}], on={"bid": bid_rises})
+    assert got.pop("all")["c"] >= 4.5
+    assert got["head"] == "Order rejected: placing it again at the best bid"
+    assert got["sub"] == ("The simulated exchange rejected the order: would cross the ask (post-only). The tool places it again at "
+                          "the best bid after the wait. No order rests now. The new order never goes above the cap, 62,418.50. "
+                          "At the timeout, the tool sends one IOC at the cap for the rest. (Simulated. No order goes to Kraken.)")
+    assert got["buttons"] == [True, True]
+    assert got["log"][0].endswith("The tool places it again at the best bid after the wait.")
+    assert got["after"] == "Resting at the best bid"
+    assert got["log_after"][0].endswith("Placed a post-only buy, 0.0500 BTC at 62,418.10.")
+    tool.eng.gw.send = send
+
+
 def test_page_a_close_ended_by_a_restart_names_the_open_position_on_the_chase_page(tool):
     # RESTART-CLOSE-SAYS-TEST-AGAIN: the chase page says what the result page says.
     opened_long(tool, "0.02", 3)

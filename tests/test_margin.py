@@ -240,7 +240,7 @@ def test_a_new_leg_refused_for_the_rate_limit_waits_then_goes_out_again():
     c, _ = replacing()
     c, out = core.step(c, core.Rejected(T0 + 6, "place", "rate_limit"))
     assert (c.phase, c.rate, out[0].text) == ("resting", 60.0, "The simulated exchange rejected the new order: "
-                                              "EOrder:Rate limit exceeded. The tool places it again after the wait.")
+                                              "EOrder:Rate limit exceeded. The tool places it again at the best bid after the wait.")
     placed = []
     for s in range(7, 30):
         c, out = core.step(c, Book(T0 + s, BID + D("0.1"), ASK + D("0.1"), True))
@@ -640,7 +640,7 @@ def probe(seed: int) -> dict:
     eng = server.Engine(Db(Path(tmp.name)), clock=lambda: now[0], latency=0)
     eng.gw = gw = SimGateway(acc)
     gw.refuse_margin_amends = rnd.random() < 0.5
-    cross = rnd.random() < 0.3          # new legs are often refused would_cross (the book moved while they were in flight)
+    cross = rnd.random() < 0.3          # orders are often refused would_cross (the book moved while they were in flight)
     bid = D("100.0")
     gw.pair = pair = core.Pair("X/USD", "X", "USD", D("0.1"), D("0.001"), D("0.01"), 1, 8, "online",
                                (2, 3, 4, 5), (2, 3, 4, 5), 80, 40)
@@ -665,7 +665,8 @@ def probe(seed: int) -> dict:
     cash0 = acc.cash
     eng.read_account(force=True)
     sent = []
-    stats = {"replaces": 0, "rate_max": 0.0, "id_max": 0, "cross": 0, "legs_min_gap": None, "liquidated": False, "in_flight": 0,
+    stats = {"replaces": 0, "rate_max": 0.0, "id_max": 0, "cross": 0, "first_refused": 0, "first_in_flight": 0,
+             "legs_min_gap": None, "liquidated": False, "in_flight": 0,
              "liquidations": 0, "same_book": False, "no_chase_liquidations": 0}
     legs_at: list[float] = []
     late: list = []          # a refusal of a new leg that arrives after the next event
@@ -678,14 +679,17 @@ def probe(seed: int) -> dict:
         c = eng.chase
         sent.append(cmd)
         stats["id_max"] = max(stats["id_max"], len(cmd.id))
-        new_leg = isinstance(cmd, core.MarginPlace) and cmd.id != c.id
+        place = isinstance(cmd, core.MarginPlace)
+        new_leg = place and cmd.id != c.id
+        if place:
+            legs_at.append(t)                                                           # the first order is a move too
         if new_leg:
             stats["replaces"] += 1
-            legs_at.append(t)
             assert c.rate <= core.RATE_MAX - core.cancel_cost(0), seed                 # room for its cancel
-        if new_leg and cross and rnd.random() < 0.6:
-            # The venue refuses the new leg: at once, or after the next event (Fill now or Stop can come first).
-            stats["cross"] += 1
+        if place and cross and rnd.random() < 0.6:
+            # The venue refuses the order (the first one or a new leg): at once, or after the next event
+            # (Fill now or Stop can come first).
+            stats["cross" if new_leg else "first_refused"] += 1
             refusal = core.Rejected(t, "place", rnd.choice(["would_cross", "would_cross", "rate_limit"]))
             if rnd.random() < 0.5:
                 return [refusal]
@@ -735,6 +739,7 @@ def probe(seed: int) -> dict:
         late.clear()
         if pending and rnd.random() < 0.5:     # Fill now or Stop while the new leg is in flight
             stats["in_flight"] += c.phase == "placing" and len(c.legs) > 1
+            stats["first_in_flight"] += c.phase == "placing" and len(c.legs) == 1
             user(rnd.choice(["fillnow", "stop"]))
         elif r < 0.45:
             bid = max(D("20"), bid + D(rnd.choice(moves)))
@@ -767,6 +772,9 @@ def probe(seed: int) -> dict:
         assert view["outcome"] != "liquidated" or not view["open_now"], seed
         stats["same_book"] = any("on the same book" in e["text"] for e in view["events"])
     assert c.filled <= c.qty, seed                                                  # never more than asked
+    # A first order refused as would-cross or for the rate limit waits and goes out again: only the venue's own text ends
+    # a chase as "refused".
+    assert c.outcome != "refused" or gw_refused, (seed, stats["first_refused"])
     assert sum((x.qty for x in sent if isinstance(x, core.Ioc)), D(0)) <= c.qty, seed
     assert all((f.price <= c.limit) if c.buy else (f.price >= c.limit) for f in c.fills), seed   # never past the cap/floor
     assert all(c.leg_cum(leg) == gw.orders[leg]["cum"] for leg in c.legs if leg in gw.orders), seed   # legs = the venue
@@ -841,7 +849,9 @@ def probe_counts(n: int, first: int = 0) -> dict:
                     "legs_min_gap_s": None, "rate_max": 0.0, "id_max": 0, "close_runs_over_2_or_more_positions": 0,
                     "open_runs_beside_other_positions": 0, "liquidated_runs": 0, "liquidations_checked": 0, "of_which_with_no_chase": 0,
                     "of_which_on_the_book_of_the_last_fill": 0, "close_runs_pages_agree_with_the_account": 0,
-                    "of_which_part_closes": 0, "fillnow_runs": 0, "stop_runs": 0, "asks_while_a_new_leg_is_in_flight": 0, "outcomes": {}}
+                    "of_which_part_closes": 0, "fillnow_runs": 0, "stop_runs": 0, "asks_while_a_new_leg_is_in_flight": 0,
+                    "first_order_refusals": 0, "runs_with_first_order_refusal": 0, "asks_while_the_first_order_is_in_flight": 0,
+                    "outcomes": {}}
     for seed in range(first, first + n):
         r = probe(seed)
         counts["runs"] += 1
@@ -864,6 +874,9 @@ def probe_counts(n: int, first: int = 0) -> dict:
         counts["fillnow_runs"] += r["asked"] == "fillnow"
         counts["stop_runs"] += r["asked"] == "stop"
         counts["asks_while_a_new_leg_is_in_flight"] += r["in_flight"]
+        counts["first_order_refusals"] += r["first_refused"]
+        counts["runs_with_first_order_refusal"] += r["first_refused"] > 0
+        counts["asks_while_the_first_order_is_in_flight"] += r["first_in_flight"]
         key = ("close " if r["close"] else "open ") + r["outcome"]
         counts["outcomes"][key] = counts["outcomes"].get(key, 0) + 1
     return counts
@@ -879,6 +892,7 @@ def test_random_margin_runs_keep_every_rule():
     assert counts["outcomes"].get("open liquidated", 0) > 3 and counts["outcomes"].get("close liquidated", 0) > 10
     assert counts["close_runs_pages_agree_with_the_account"] > 150 and counts["of_which_part_closes"] > 30
     assert counts["fillnow_runs"] > 30 and counts["stop_runs"] > 15 and counts["asks_while_a_new_leg_is_in_flight"] > 0
+    assert counts["runs_with_first_order_refusal"] > 50 and counts["asks_while_the_first_order_is_in_flight"] > 5
 
 
 def test_an_ioc_that_fills_after_a_liquidation_ends_liquidated_and_names_only_what_stays():

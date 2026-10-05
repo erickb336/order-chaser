@@ -130,6 +130,8 @@ function stateOf(c, now) {
   if (c.phase === 'done') return c.outcome;
   // A cancel and replace in flight (or waiting for a price for the new leg).
   if (c.replace && c.exit == null && (['cancelling', 'reread', 'placing'].includes(c.phase) || (c.phase === 'resting' && c.price == null))) return 'replacing';
+  // The exchange refused a new order (it would cross, or the rate limit): no order rests until the tool places it again.
+  if (c.exit == null && c.phase === 'resting' && c.price == null) return 'placeagain';
   if (c.phase === 'placing') return 'placing';
   if (c.phase === 'amending') return 'amending';
   if (c.phase === 'feed_lost' || (c.phase === 'reconcile' && c.reconcile_for === 'feed')) return 'disconnected';
@@ -144,12 +146,12 @@ const LABEL = {
   notfilled: 'Rest not filled', belowmin: 'Rest below the minimum', rejected: 'Amend rejected', disconnected: 'Disconnected',
   ratenear: 'Rate limit near', ended: 'Ended: tool stopped or restarted', stopped: 'Stopped by you', stopping: 'Stopping', refused: 'Order rejected',
   pageoffline: 'Page lost the tool', cancelfail: 'Cancel failed',
-  replacing: 'Amend refused: cancel and replace', liquidated: 'Liquidated', nopos: 'Ended: position closed',
+  replacing: 'Amend refused: cancel and replace', placeagain: 'Order rejected: placing again', liquidated: 'Liquidated', nopos: 'Ended: position closed',
 };
 const TONE = {
   placing: 'you', resting: 'you', amending: 'you', partial: 'fill', filled: 'fill', fallback: 'warn', notfilled: 'bad', belowmin: 'bad',
   rejected: 'warn', disconnected: 'bad', ratenear: 'warn', ended: 'bad', stopped: 'muted', stopping: 'muted', refused: 'bad', pageoffline: 'bad', cancelfail: 'bad',
-  replacing: 'warn', liquidated: 'bad', nopos: 'warn',
+  replacing: 'warn', placeagain: 'warn', liquidated: 'bad', nopos: 'warn',
 };
 const DONE = ['filled', 'notfilled', 'belowmin', 'stopped', 'ended', 'refused', 'cancelfail', 'liquidated', 'nopos'];
 const SIM = ' (Simulated. No order goes to Kraken.)';
@@ -226,6 +228,13 @@ function copy(st, c, snap, ageOff) {
         [mark(3), waiting ? `Place a new post-only ${c.side} for the rest, ${qty(rest)} ${B}, when the price is valid.`
           : `Place a new post-only ${c.side} for the rest, ${qty(rest)} ${B}${c.pending ? ' at ' + p(c.pending) : ''}${w.close ? ', reduce-only' : ', leverage ' + w.lev + 'x'}.`]];
       t.note = REPLACE_COST;
+      break;
+    }
+    case 'placeagain': {
+      const last = c.events.filter(e => e.kind === 'warn' && e.text.includes(' rejected ')).pop();
+      t.title = `Order rejected: placing it again at the ${w.best}`;
+      t.sub = (last ? last.text + ' ' : '') + `No order rests now. The new order never goes ${w.above} the ${w.limitWord}, ${p(c.limit)}. ` +
+        `At the timeout, the tool sends one IOC at the ${w.limitWord} for the rest.` + SIM;
       break;
     }
     case 'filled': {
