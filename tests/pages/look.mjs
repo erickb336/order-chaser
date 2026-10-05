@@ -15,7 +15,9 @@ let input = null;
 // 'unsafe-eval') refuses; page.evaluate runs through the DevTools protocol and is not a page script.
 async function waitFor(p, expr, timeout) {
   const end = Date.now() + timeout;
-  while (!(await p.evaluate(expr))) {
+  // A navigation destroys the page's context during an evaluate: the new page is not ready yet, so poll again.
+  const ok = () => p.evaluate(expr).catch(e => { if (/Execution context was destroyed/.test(e.message)) return false; throw e; });
+  while (!(await ok())) {
     if (Date.now() > end) throw new Error('waitFor timed out: ' + expr);
     await p.waitForTimeout(50);
   }
