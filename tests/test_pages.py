@@ -1314,3 +1314,28 @@ def test_page_every_page_fits_a_375_px_phone_with_no_sideways_scroll_and_readabl
     assert (got["hint"], got["desktop hint"]) == ('"Scroll sideways to see every column \u2192"', "none")
     low = {p: got[p + " contrast"] for p in pages if got[p + " contrast"]["c"] < 4.5}
     assert low == {}
+
+
+def test_page_the_t44_states_fit_a_375_px_phone(tool):
+    # T44 at phone width: the chase page while the first order waits to go out again, and the result with its note.
+    refuse_first_place(tool)
+    cid = tool.start("long", leverage=3)                          # a margin open: its result has the note
+    assert (tool.eng.chase.phase, tool.eng.chase.price) == ("resting", None)
+
+    def again_and_stop():
+        tool.book("BTC/USD", [("62418.1", "1")], [])
+        tool.beat(5)                                                # the first order goes out again
+        tool.call(tool.eng.user, "stop")
+
+    fit = lambda name: [{"eval": f"({WIDTH_JS})(null)", "as": name}, {**ALL_TEXT, "as": name + " contrast"},
+                        {"shot": f"phone-t44-{name.split()[0].strip('/')}.png"}]
+    got = tool.look([{"viewport": [375, 812]},
+                     {"goto": "/chase"}, card_shown("placeagain"), {"text": "#statuscard .head", "as": "head"}, *fit("/chase placeagain"),
+                     {"signal": "again"},
+                     {"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"},
+                     {"text": "#againnote", "as": "note"}, *fit("/result again")], on={"again": again_and_stop})
+    assert got["head"] == "Order rejected: placing it again at the best bid"
+    assert got["note"].startswith("First order placed again: 1 time.")
+    pages = ["/chase placeagain", "/result again"]
+    assert {p: got[p] for p in pages} == {p: {"scroll": 375, "wide": [], "cut": [], "split": []} for p in pages}
+    assert {p: got[p + " contrast"]["c"] >= 4.5 for p in pages} == {p: True for p in pages}
