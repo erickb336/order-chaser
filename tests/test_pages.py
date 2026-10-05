@@ -154,8 +154,9 @@ def card_shown(state):
 
 
 # The lowest WCAG contrast of the texts that match sel, against the background they sit on (the first ancestor
-# with a background colour; the page is dark), with the opacity of every ancestor. A disabled control is left out.
-CONTRAST_JS = """(sel) => {
+# with a background colour; the page is dark), with the opacity of every ancestor. A disabled control is left out,
+# unless disabled is true.
+CONTRAST_JS = """(sel, disabled) => {
   const rgb = s => s.match(/[\\d.]+/g).map(Number);
   const lum = c => c.slice(0, 3).map(v => v / 255).map(v => v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
     .reduce((a, v, i) => a + v * [0.2126, 0.7152, 0.0722][i], 0);
@@ -167,13 +168,13 @@ CONTRAST_JS = """(sel) => {
     const [l1, l2] = [lum(mix), lum(b)].sort((x, y) => y - x);
     return { c: Math.round((l1 + 0.05) / (l2 + 0.05) * 100) / 100, t: el.textContent.trim().slice(0, 40) };
   };
-  const els = Array.from(document.querySelectorAll(sel)).filter(el => el.offsetParent && el.textContent.trim() && !el.closest('[disabled]'));
+  const els = Array.from(document.querySelectorAll(sel)).filter(el => el.offsetParent && el.textContent.trim() && (disabled || !el.closest('[disabled]')));
   return els.map(one).sort((x, y) => x.c - y.c)[0] || { c: 99, t: '' };
 }"""
 
 
-def contrast(sel):
-    return {"eval": f"({CONTRAST_JS})({json.dumps(sel)}).c", "as": "contrast"}
+def contrast(sel, disabled=False):
+    return {"eval": f"({CONTRAST_JS})({json.dumps(sel)}, {json.dumps(disabled)}).c", "as": "contrast"}
 
 
 # Every visible text on the page: its lowest contrast and that text (to find it).
@@ -666,9 +667,17 @@ def test_page_a_part_close_says_which_positions_it_takes_and_what_stays_at_their
     tool.call(tool.eng.user, "stop")
     got = tool.look([{"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"},
                      {"text": "#out .badge", "as": "badge"}, {"text": "#out .pstat", "as": "pstat"}, {"text": "#pstart", "as": "start"},
-                     {"text": "#plan", "as": "plan"}, {"text": "#pl", "as": "pl"}, TEXTS("tr.plpart"), ALL_TEXT, {"shot": "r2-result-part-close.png"}])
+                     {"text": "#plan", "as": "plan"}, {"text": "#pl", "as": "pl"}, TEXTS("tr.plpart"), ALL_TEXT,
+                     {"text": "#out h1", "as": "head"}, {"text": "#out .facts .s", "as": "share"}, {"text": "#notclosed", "as": "notclosed"},
+                     {"text": "#stays", "as": "stays"}, {"shot": "r2-result-part-close.png"},
+                     {"goto": "/history"}, {"waitFor": "document.querySelectorAll('tr.click').length === 3"},
+                     {"eval": "document.querySelector('tr.click td:last-child .badge').textContent", "as": "history"},
+                     {"shot": "g16-history-stopped-part-close.png"}])
     assert got.pop("all")["c"] >= 4.5
-    assert (got["badge"], got["pstat"]) == ("Part closed: rest open", "Open: 0.0180 BTC at 4x")
+    # UX-PLANNED-PART-CLOSE-SHOWN-AS-FAILURE (G16 = A): the order decides; what stays of the position is a neutral fact.
+    assert (got["head"], got["share"], got["notclosed"], got["stays"]) == (
+        "Closed 0.0120 of 0.0150 BTC (simulated)", "80% of 0.0150", "Not closed: 0.0030 BTC.", "Stays open: 0.0180 BTC at 4x.")
+    assert (got["badge"], got["history"], got["pstat"]) == ("Part closed", "Part closed", "Open: 0.0180 BTC at 4x")
     assert got["start"] == "0.0300 BTC in 2 positions · average 3x · average entry 61,472.63"
     assert got["plan"] == f"Closed: the 2x position opened {t1} (0.0100 BTC) and 0.0020 BTC of the 4x position opened {t2}. Stays open: 0.0180 BTC at 4x."
     # (62,000.60 - 62,417.90) x 0.01 + (62,000.60 - 61,000.00) x 0.002 - 2.98 fee = -5.15; the account books the same.
@@ -787,7 +796,83 @@ def test_page_a_close_that_closed_nothing_before_a_restart_says_not_closed_on_it
     cid = tool.start("close-long", "0.02")
     tool.call(tool.eng.handle, core.Restarted(tool.clock.t + 30, tool.clock.t))
     got = tool.look([{"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"}, {"text": "#out .badge", "as": "badge"},
+                     {"text": "#out .note.info li", "as": "todo"}, {"text": "#out a.btn.primary", "as": "button"},
+                     {"text": "#saving", "as": "saving"}, {"eval": "OC.$('saving').className", "as": "tone"}, ALL_TEXT,
                      {"shot": "r2-killed-close-result.png"},
                      {"goto": "/history"}, {"waitFor": "document.querySelectorAll('tr.click').length === 2"},
-                     {"eval": "document.querySelector('tr.click td:last-child .badge').textContent", "as": "history"}])
-    assert got["badge"] == got["history"] == "Not closed: position open"
+                     {"eval": "document.querySelector('tr.click td:last-child .badge').textContent", "as": "history"},
+                     {"shot": "r2-killed-close-history.png"}])
+    assert got.pop("all")["c"] >= 4.5
+    # UX-RESTART-WHAT-TO-DO-IGNORES-POSITION
+    assert got == {"badge": "Ended at a restart: position open", "history": "Ended at a restart: position open",
+                   "todo": "Your long is still open: 0.0200 BTC at 3x. Close it from the form.",
+                   "button": "Close the position (0.0200 BTC)", "saving": "—", "tone": "v muted"}
+
+
+def test_page_a_close_that_filled_its_whole_order_says_closed_as_asked_and_what_stays_is_neutral(tool):
+    # UX-PLANNED-PART-CLOSE-SHOWN-AS-FAILURE (G16 = A): a planned part close is not a failure.
+    two_longs(tool)
+    cid = tool.start("close-long", "0.015")
+    tool.trade("buy", "62001.0", "0.015")
+    assert tool.eng.chase.outcome == "filled"
+    got = tool.look([{"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"},
+                     {"text": "#out .badge", "as": "badge"}, {"eval": "document.querySelector('#out .badge').className", "as": "tone"},
+                     {"text": "#out h1", "as": "head"}, {"text": "#stays", "as": "stays"}, {"eval": "OC.$('stays').className", "as": "stays_tone"},
+                     {"eval": "!!OC.$('notclosed')", "as": "red"}, ALL_TEXT, {"shot": "g16-result-planned-part-close.png"},
+                     {"goto": "/history"}, {"waitFor": "document.querySelectorAll('tr.click').length === 3"},
+                     {"eval": "document.querySelector('tr.click td:last-child .badge').textContent", "as": "history"},
+                     {"shot": "g16-history-planned-part-close.png"}])
+    assert got.pop("all")["c"] >= 4.5
+    assert got == {"badge": "Closed as asked", "tone": "badge ok", "head": "Closed 0.0150 BTC of the long (simulated)",
+                   "stays": "Stays open: 0.0150 BTC at 4x.", "stays_tone": "note plain", "red": False, "history": "Closed as asked"}
+
+
+def test_page_an_open_against_the_other_direction_is_blocked_at_once_at_the_top_with_a_link_to_the_close(tool):
+    # UX-OPPOSING-OPEN-BLOCK-LATE
+    tool.start("short", "0.01", leverage=3)
+    tool.trade("buy", "62419.0", "0.01")
+    assert tool.eng.chase.outcome == "filled"
+    got = tool.look([{"goto": "/new"}, {"waitFor": "OC.$('ask').textContent === '62,418.50'"},
+                     {"click": "#what button[data-w=long]"}, {"waitFor": "!OC.$('oppose').classList.contains('hidden')"},
+                     {"text": "#oppose", "as": "block"}, {"text": "#startnote", "as": "note"}, {"eval": "OC.$('start').disabled", "as": "blocked"},
+                     {"eval": "OC.$('mgbox').classList.contains('hidden')", "as": "no_figures"}, {"text": "#est", "as": "est"},
+                     {"text": "#worst", "as": "worst"}, {"eval": "OC.$('oppose').getBoundingClientRect().top < OC.$('what').getBoundingClientRect().top", "as": "top"},
+                     ALL_TEXT, {"shot": "opposite-open-block.png"},
+                     {"click": "#toclose"}, {"waitFor": "OC.$('amtlabel').textContent === 'Size to close'"},
+                     {"eval": "document.querySelector('#what button[aria-pressed=true]').textContent", "as": "what"},
+                     {"eval": "document.querySelector('#poslist label.on b').textContent", "as": "pos"}, {"eval": "OC.$('amt').value", "as": "size"},
+                     {"eval": "OC.$('oppose').classList.contains('hidden')", "as": "gone"}])
+    assert got.pop("all")["c"] >= 4.5
+    assert got == {"block": "Close the short first. You have an open short position on BTC/USD: 0.0100 BTC, 3x (simulated account). "
+                            "The tool does not open a position against it. Close the short on BTC/USD",
+                   "note": "Close the short first.", "blocked": True, "no_figures": True, "est": "", "worst": "Close the short first.",
+                   "top": True, "what": "Close a position", "pos": "BTC/USD Short 0.0100 BTC", "size": "0.0100", "gone": True}
+
+
+def test_page_a_lower_limit_at_the_bid_shows_no_tick_box_and_starts(tool):
+    # UX-ZERO-LOSS-ACCEPT-CHECKBOX: "Set a lower limit" fills in the bid; the worst loss is 0.00, so nothing to accept.
+    got = tool.look([{"goto": "/new"}, {"waitFor": "OC.$('ask').textContent === '62,418.50'"},
+                     {"click": "#what button[data-w=sell]"}, {"click": "#ovbtn"}, {"waitFor": "OC.$('ovp').value === '62417.9'"},
+                     {"text": "#ovwarn", "as": "warn"}, {"eval": "OC.$('ovokrow').classList.contains('hidden')", "as": "no_box"},
+                     {"eval": "OC.$('start').disabled", "as": "blocked"}, {"shot": "zero-loss-limit.png"},
+                     {"click": "#start"}, {"waitFor": "location.pathname === '/chase'"}])
+    assert got == {"warn": "Your limit is the bid now. Worst loss against a market sell now: 0.00 USD.", "no_box": True, "blocked": False}
+    assert (tool.eng.chase.side, tool.eng.chase.limit) == ("sell", D("62417.9"))
+
+
+def test_page_a_disabled_start_keeps_a_readable_label(tool):
+    # UX-DISABLED-START-CONTRAST: no opacity fade; the label keeps 4.5:1 in dark mode.
+    got = tool.look([{"goto": "/new"}, {"click": "#what button[data-w=close]"},
+                     {"waitFor": "OC.$('start').disabled && OC.$('startnote').textContent === 'Nothing to close.'"},
+                     contrast("#start", disabled=True), {"eval": "getComputedStyle(OC.$('start')).opacity", "as": "opacity"},
+                     {"shot": "disabled-start.png"}])
+    assert got["contrast"] >= 4.5 and got["opacity"] == "1", got
+
+
+def test_page_an_open_short_shows_its_worst_case_as_the_short_value(tool):
+    # UX-SHORT-OPEN-WORST-CASE-WORDS-DIFFER: a margin short gives no cash, so no "received".
+    tool.start("short", "0.01", leverage=3)
+    got = tool.look([{"goto": "/chase"}, {"waitFor": "OC.$('worst').textContent"}, {"text": "#worsthead", "as": "head"},
+                     {"text": "#worst", "as": "worst"}])
+    value = core.worst_case("sell", D("0.01"), D("62417.9"), core.Margin(3))
+    assert got == {"head": "The short never sells for less than this, less fees:", "worst": f"Short value: {value:,.2f} USD"}

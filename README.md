@@ -60,6 +60,7 @@ Dry-run rules:
 - If the timeout comes while the price feed is lost, the tool cancels and sends no IOC: there is no valid price.
 - A post-only place or amend at or above the best ask is rejected (sell: at or below the best bid).
 - The IOC fills against the public book up to the cap.
+- A limit past the price now (a higher cap, a lower floor) needs a tick box that accepts the worst extra cost. A limit at the price now (the ask for a buy, the bid for a sell) needs none.
 - Fees: 0.40% maker and 0.80% taker, the highest Kraken rates.
 - The rate counter copies Kraken's Starter tier (maximum 60, falls 1 each second). Above 40 the tool amends every 15 s, not 5 s.
 
@@ -73,7 +74,9 @@ Margin (dry run):
 - Start needs enough free margin for orders: cost ÷ leverage. An open against an open position of the other direction is blocked: "Close the long first" (or the short).
 - A close is reduce-only: the order can only make the position smaller. It starts at the whole position; you can make it smaller. A rest below the Kraken minimum gets a warning, not a block.
 - The simulated exchange refuses with Kraken's texts: "Insufficient margin", "Margin allowance exceeded", "Margin position size exceeded" (AssetPairs position limits), "Cannot open opposing position", and "Reduce only:No position exists".
-- If the exchange refuses an amend of a margin order, the tool cancels and replaces for the rest of the chase: cancel, wait for the confirmation, read the filled quantity of that order, place a new order for the rest at the bid. A move (a cancel or a new order) comes at most every 5 s (15 s above 40 on the rate counter), also when the exchange refuses a new order because it would cross. A new order goes out only when the rate counter keeps room for its cancel.
+- If the exchange refuses an amend of a margin order, the tool cancels and replaces for the rest of the chase: cancel, wait for the confirmation, read the filled quantity of that order, place a new order for the rest at the bid. A move (a cancel or a new order) comes at most every 5 s (15 s above 40 on the rate counter). A new order goes out only when the rate counter keeps room for its cancel.
+- If the exchange refuses a new order because it would cross, or for the rate limit (this sets the counter to 60), no order rests: the tool places it again after the wait, until the timeout. "Fill the rest now" and the timeout then read the filled quantity again and send one IOC at the cap for the rest; Stop ends the chase as stopped. Another refusal (for example "EOrder:Insufficient margin") ends the chase with the exchange's text.
+- The result and the history judge a close by its order, not by the position. When the whole order fills, they say "Closed as asked" ("Position closed" when nothing stays), and what stays open is a plain fact: "Stays open: 0.0150 BTC at 4x". Only the part of the order that did not fill is red: "Not closed: 0.0030 BTC". The numbers and the bar use the order size.
 - `POST /api/chase` takes what to do in one field, `what` (buy, sell, long, short, close-long, close-short), and `leverage` only for long and short. A request with `side`, with leverage for buy, sell or a close, or with no leverage for an open gets 400 and a message.
 - Each order of a chase has its own client order id of at most 18 characters (Kraken's limit): `oc` + 12 hex for the first order, `-1`, `-2`, … for the new orders of a cancel and replace, and `-i` for the IOC. The filled quantity is the sum of what the exchange reports for each order, so a fill never counts twice.
 - The tool reads the account and the positions at the start of a chase, after fills (at most every 3 s), at the end, and when the form opens. It never reads them every second.

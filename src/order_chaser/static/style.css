@@ -117,7 +117,8 @@ p { margin: 0 0 .7em; }
 .btn.drybtn { background: var(--dry-strong); border-color: var(--dry-strong); color: #fff; }
 .btn.livebtn { background: var(--live-strong); border-color: var(--live-strong); color: #fff; }
 .btn.danger { color: var(--bad); border-color: #7a3a33; }
-.btn[disabled] { opacity: .45; cursor: not-allowed; }
+/* No opacity fade: a disabled button keeps a muted label that passes 4.5:1 on its own surface (dark). */
+.btn[disabled], .btn.drybtn[disabled], .btn.primary[disabled] { background: var(--surface-2); border-color: var(--line); color: var(--muted); cursor: not-allowed; }
 .btn.sm { padding: 4px 10px; font-size: 13px; }
 .check { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
 .check input { margin-top: 4px; }

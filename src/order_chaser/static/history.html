@@ -40,7 +40,7 @@ function moutcome(r) {
   if (r.outcome === 'liquidated') return ['bad', 'Liquidated'];
   if (r.outcome === 'nopos') return ['warn', 'Ended: position closed'];
   if (r.outcome === 'refused') return ['bad', 'Order rejected'];
-  if (r.close) return Number(r.pos_rest) <= 0 ? ['ok', 'Position closed'] : Number(r.filled) > 0 ? ['bad', 'Part closed: rest open'] : ['bad', 'Not closed: position open'];
+  if (r.close) return OC.closeBadge(r.outcome, r.filled, r.qty, r.pos_rest);
   if (Number(r.filled) <= 0) return ['bad', 'Nothing opened'];
   return Number(r.filled) >= Number(r.qty) ? ['ok', 'Position opened'] : ['warn', 'Part opened: position open'];
 }

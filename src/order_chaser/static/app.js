@@ -59,7 +59,14 @@ function markNote(a, watched) {
 const positionOpen = c => !['liquidated', 'nopos'].includes(c.outcome) &&
   (c.margin.close ? Number(c.margin_est.rest) > 0 : Number(c.filled) > 0);
 const closeLink = c => `/new?what=close&pair=${encodeURIComponent(c.pair.symbol)}&dir=${c.dir}`;
-const closeText = c => c.margin.close ? `Close the rest (${qty(c.margin_est.rest)} ${c.pair.base}), new ${c.side === 'buy' ? 'cap' : 'floor'}` : 'Close this position';
+const closeText = c => c.margin.close ? `Close the position (${qty(c.margin_est.rest)} ${c.pair.base})` : 'Close this position';
+// The badge of a close on the result and in the history. A close is judged by its order, not by the position (owner, G16):
+// all of the order filled is "Closed as asked", or "Position closed" when nothing stays. rest: what stays of the position.
+function closeBadge(outcome, filled, total, rest) {
+  if (outcome === 'ended') return ['bad', 'Ended at a restart: position open'];
+  if (Number(filled) >= Number(total)) return Number(rest) > 0 ? ['ok', 'Closed as asked'] : ['ok', 'Position closed'];
+  return Number(filled) > 0 ? ['bad', 'Part closed'] : ['bad', 'Not closed: position open'];
+}
 // A close in plain words, from its close plan: which positions it takes and what stays.
 // Before a fill: the plan for the whole close. Then: what the fills took so far, or at the end.
 function planLine(c) {
@@ -440,5 +447,5 @@ function eventLog(c) {
   return `<ul class="log">${c.events.slice().reverse().map(e => `<li><span class="ts">${mmss(e.t)}</span><span class="${kind[e.kind] || ''}">${esc(e.text)}</span></li>`).join('')}</ul>`;
 }
 
-return { planLine, markNote, clock, positionOpen, closeLink, closeText, gauge, orderName, positionLine, MARGIN_FEES, REPLACE_COST, TOKEN, $, esc, beyond, pct, fillWord, againText, restBelowMin, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
+return { closeBadge, planLine, markNote, clock, positionOpen, closeLink, closeText, gauge, orderName, positionLine, MARGIN_FEES, REPLACE_COST, TOKEN, $, esc, beyond, pct, fillWord, againText, restBelowMin, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
 })();

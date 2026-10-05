@@ -20,7 +20,7 @@ function mrender(c, acct) {
   const w = OC.words(c), P = w.p, B = c.pair.base, Q = c.pair.quote, s = c.summary, m = c.margin, e = c.margin_est;
   const filled = Number(s.filled), total = Number(c.qty), pct = filled / total * 100, pctM = filled ? Math.round(Number(s.maker_qty) / filled * 100) : 0;
   const dur = OC.mmss(c.ended_at - c.started), D = c.dir === 'long' ? 'Long' : 'Short';
-  const posRest = m.close ? Number(e.rest) : filled, posStart = m.close ? Number(e.rest) + filled : 0;
+  const posRest = m.close ? Number(e.rest) : filled;
   const open = OC.positionOpen(c);
   const gone = c.outcome === 'liquidated' ? 'Liquidated by the simulated exchange' : c.outcome === 'nopos' ? 'Closed another way' : null;
   let badge, head, line, rest = null, todo = null;
@@ -28,10 +28,9 @@ function mrender(c, acct) {
     head = filled >= total ? `Opened a ${m.leverage}x ${c.dir}: ${OC.qty(filled)} ${B}` : `Opened a ${m.leverage}x ${c.dir}: ${OC.qty(filled)} of ${OC.qty(total)} ${B}`;
     badge = gone ? ['bad', 'Liquidated'] : filled >= total ? ['ok', 'Position open'] : filled > 0 ? ['plain', OC.LABEL[c.outcome] + ' · position open'] : ['bad', 'Nothing opened'];
   } else {
-    head = posRest <= 0 ? `Closed the ${c.dir}: ${OC.qty(filled)} ${B}` : `Closed ${OC.qty(filled)} of ${OC.qty(posStart)} ${B} of the ${c.dir}`;
-    // The same words as the history: nothing closed is "Not closed", not a part close.
-    badge = gone ? ['bad', c.outcome === 'liquidated' ? 'Liquidated' : 'Position closed'] : posRest <= 0 ? ['ok', 'Position closed']
-      : filled > 0 ? ['bad', 'Part closed: rest open'] : ['bad', 'Not closed: position open'];
+    // A close is judged by its order (owner, G16): the head, the bar and the numbers use the order size.
+    head = filled < total ? `Closed ${OC.qty(filled)} of ${OC.qty(total)} ${B}` : posRest <= 0 ? `Closed the ${c.dir}: ${OC.qty(filled)} ${B}` : `Closed ${OC.qty(filled)} ${B} of the ${c.dir}`;
+    badge = gone ? ['bad', c.outcome === 'liquidated' ? 'Liquidated' : 'Position closed'] : OC.closeBadge(c.outcome, filled, total, posRest);
   }
   switch (c.outcome) {
     case 'filled': line = `All of it filled${pctM === 100 ? ' as maker' : ''} in ${dur}${m.close ? ', reduce-only' : ''}. The tool never moved ${w.above} the ${w.limitWord}.`; break;
@@ -46,8 +45,11 @@ function mrender(c, acct) {
     head = `Liquidated: the simulated exchange closed the ${m.close && filled > 0 ? 'rest of the ' : ''}${c.dir}`;
     rest = `Liquidated by the simulated exchange: ${OC.qty(m.close ? posRest : filled)} ${B}, at the mark. A dry run has no position on Kraken.`;
   } else if (!m.close && filled < total) rest = `Not opened: ${OC.qty(total - filled)} ${B}.` + (filled > 0 && open ? ` The ${OC.qty(filled)} ${B} that filled stays open as a position.` : '');
-  else if (m.close && posRest > 0 && open) rest = `Not closed: ${OC.qty(posRest)} ${B}. Stays open: ${e.stays}, with rollover fees and liquidation risk.`;
+  else if (m.close && !gone && filled < total) rest = `Not closed: ${OC.qty(total - filled)} ${B}.`;
+  // What stays of the position: a fact, not a failure.
+  const stays = m.close && open ? `Stays open: ${e.stays}.` : null;
   if (gone === 'Liquidated by the simulated exchange') todo = ['The margin level is for the whole account: the form lists the positions that are left, under "Close a position".'];
+  if (c.outcome === 'ended' && open) todo = [`Your ${c.dir} is still open: ${m.close ? e.stays : `${OC.qty(filled)} ${B} at ${m.leverage}x`}. Close it from the form.`];
   const level = acct && acct.level != null ? Math.round(Number(acct.level)) + '%' : 'no position';
   $('out').innerHTML = `
   <div class="mgstrip" style="margin-bottom:16px">MARGIN · ${m.close ? `close ${c.dir}, reduce-only` : `open ${c.dir}, ${m.leverage}x`} · simulated account: no position is on Kraken</div>
@@ -59,11 +61,12 @@ function mrender(c, acct) {
       <div><div class="k">${m.close ? 'Closed' : 'Opened'}</div><div class="v">${OC.qty(filled)} ${B}</div><div class="s">${Math.round(pct)}% of ${OC.qty(total)}</div></div>
       <div><div class="k">Average price</div><div class="v">${filled ? P(s.avg) : '—'}</div><div class="s">${w.limitWord} was ${P(c.limit)}</div></div>
       <div><div class="k">Trading fees</div><div class="v">${OC.usd(s.fee)} ${Q}</div><div class="s">${!filled ? 'no fills' : pctM === 100 ? 'all at 0.40% maker' : pctM === 0 ? 'all at 0.80% taker' : 'mixed 0.40% / 0.80%'}</div></div>
-      <div style="background:var(--fill-bg)"><div class="k">Saving vs a market order at the start</div><div class="v ${Number(s.saving) >= 0 ? 'tone-fill' : 'tone-bad'}">${OC.usd(Math.abs(Number(s.saving)))} ${Q}</div><div class="s">for the ${OC.qty(filled)} ${B} that filled</div></div>
+      <div style="background:var(--fill-bg)"><div class="k">Saving vs a market order at the start</div>${!filled ? '<div class="v muted" id="saving">—</div><div class="s">nothing filled</div>' : `<div class="v ${Number(s.saving) >= 0 ? 'tone-fill' : 'tone-bad'}" id="saving">${OC.usd(Math.abs(Number(s.saving)))} ${Q}</div><div class="s">for the ${OC.qty(filled)} ${B} that filled</div>`}</div>
     </div>
     <div style="margin-top:18px"><div class="row small"><b>Maker ${pctM}%</b>${pct < 100 ? `<span class="muted">· Not ${m.close ? 'closed' : 'opened'} ${Math.round(100 - pct)}%</span>` : ''}<span class="spacer"></span><span class="tiny muted">share of ${OC.qty(total)} ${B}</span></div>
       <div class="bar" style="margin-top:6px;height:14px"><i class="m" style="width:${filled ? Number(s.maker_qty) / total * 100 : 0}%"></i><i class="tk" style="width:${filled ? Number(s.taker_qty) / total * 100 : 0}%"></i><i class="nf" style="width:${100 - pct}%"></i></div></div>
-    ${rest ? `<div class="note ${m.close || c.outcome === 'liquidated' ? 'bad' : 'warn'}" style="margin-top:16px"><b>${rest}</b></div>` : ''}
+    ${rest ? `<div class="note ${m.close || c.outcome === 'liquidated' ? 'bad' : 'warn'}" style="margin-top:16px" id="notclosed"><b>${rest}</b></div>` : ''}
+    ${stays ? `<div class="note plain" style="margin-top:${rest ? 8 : 16}px" id="stays">${stays}</div>` : ''}
     ${todo ? `<div class="note info small" style="margin-top:12px"><b>What to do now</b><ul style="margin:4px 0 0;padding-left:18px">${todo.map(x => `<li>${x}</li>`).join('')}</ul></div>` : ''}
     ${c.legs.length > 1 ? `<p class="small" id="replacenote" style="margin:12px 0 0"><b>Cancel and replace: ${c.legs.length - 1} time${c.legs.length > 2 ? 's' : ''}.</b> The simulated exchange refused to amend this margin order, so the tool cancelled and placed a new order for each move. ${OC.REPLACE_COST}</p>` : ''}
     <div class="row" style="margin-top:18px">${open ? `<a class="btn primary" href="${OC.closeLink(c)}">${OC.closeText(c)}</a>` : '<a class="btn primary" href="/new">New chase</a>'}<a class="btn" href="/history">History</a></div>

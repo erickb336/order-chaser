@@ -11,6 +11,7 @@
       <p class="muted" id="intro">The tool places a post-only limit at the best bid and moves it up as the bid rises. It never goes above the cap.</p>
       <div id="busy" class="note warn hidden" style="margin-bottom:16px"></div>
       <div id="restnote" class="note info hidden" style="margin-bottom:16px"></div>
+      <div id="oppose" class="note bad hidden" style="margin-bottom:16px"></div>
 
       <div class="field"><span class="f" id="whatlabel">What to do</span>
         <div class="what" id="what" role="group" aria-labelledby="whatlabel">
@@ -133,6 +134,8 @@ $('what').onclick = e => {
 };
 $('lev').onclick = e => { const b = e.target.closest('button'); if (b && !b.disabled) { lev = Number(b.dataset.v); draw(); } };
 $('poslist').onclick = e => { const l = e.target.closest('[data-k]'); if (l && l.dataset.k !== posKey) { posKey = l.dataset.k; setPair(l.dataset.k.split('|')[0]); changed(); } };
+// "Close the short first": the link switches the form to a close of that pair and direction.
+$('oppose').onclick = e => { const a = e.target.closest('a[data-k]'); if (a) { e.preventDefault(); what = 'close'; posKey = a.dataset.k; sizeFor = null; setPair(posKey.split('|')[0]); loadAccount(); changed(); } };
 $('est').onclick = e => { if (e.target.id === 'whole') { wholeSize(); changed(); } };
 $('ovbtn').onclick = () => { override = true; const s = snap; if (s && s.feed.ask) { const p = pairInfo(); $('ovp').value = (side() === 'buy' ? Number(s.feed.ask) : Number(s.feed.bid)).toFixed(p ? p.price_decimals : 2); } changed(); };
 $('ovoff').onclick = () => { override = false; changed(); };
@@ -296,11 +299,13 @@ function draw() {
       mnote = ['bad', `<b>Kraken allows no ${what} on ${pair}.</b> The pair has no ${buy ? 'buy' : 'sell'} leverage (AssetPairs <span class="mono">leverage_${buy ? 'buy' : 'sell'}</span> is empty). ${buy ? 'Open short' : 'Open long'} and Close may work.`];
       block(`Pick another pair, or ${buy ? 'Open short' : 'Open long'}.`);
     }
-    const other = positions().find(x => x.pair === pair && x.dir === (what === 'long' ? 'short' : 'long'));
-    if (other) {
-      mnote = ['bad', `<b>Close the ${other.dir} first.</b> You have an open ${other.dir} position on ${pair}: ${OC.qty(other.qty)} ${B}, ${other.leverage}x (simulated account). The tool does not open a position against it.`];
-      block(`Close the ${other.dir} first.`);
-    }
+  }
+  // An open against an open position of the other direction: blocked at the top of the form, with no figures.
+  const other = open ? positions().find(x => x.pair === pair && x.dir === (what === 'long' ? 'short' : 'long')) : null;
+  $('oppose').classList.toggle('hidden', !other);
+  if (other) {
+    put($('oppose'), `<b>Close the ${other.dir} first.</b> You have an open ${other.dir} position on ${OC.esc(pair)}: ${OC.qty(other.qty)} ${B}, ${other.leverage}x (simulated account). The tool does not open a position against it. <a href="/new?what=close" data-k="${OC.esc(pair + '|' + other.dir)}" id="toclose">Close the ${other.dir} on ${OC.esc(pair)}</a>`);
+    block(`Close the ${other.dir} first.`);
   }
   if (close) {
     drawPositions(s);
@@ -316,6 +321,7 @@ function draw() {
   let est = ref && q > 0 ? (open ? `≈ ${OC.usd(q * ref)} ${Q} position cost` : `≈ ${OC.usd(q * ref)} ${Q} at the ${buy ? 'ask' : 'bid'} now`) : `≈ … ${Q}`;
   const closeAll = close && pos ? `<button class="btn sm" id="whole" type="button">Close all: ${OC.qty(pos.qty)} ${B}</button>` : '';
   if (close && pos) est = q === Number(pos.qty) ? '<span class="badge ok">Whole position</span>' : closeAll;
+  if (other) est = '';
   let amtErr = '';
   $('amthelp').innerHTML = !margin ? 'Dry run: no balance check. A live chase reads your balance from Kraken.'
     : open ? (account ? `Free margin: ${OC.usd(account.free)} ${Q} (simulated account, read at ${readAt(account)}).` : 'Reading the simulated account…')
@@ -363,11 +369,15 @@ function draw() {
   } else {
     $('capline').textContent = 'Your limit: ' + (lim != null ? P(lim) : '…');
     $('capsub').textContent = !ref || lim == null ? '' : `${lim > ref ? 'Higher than' : lim < ref ? 'Lower than' : 'The same as'} the ${buy ? 'ask' : 'bid'} now (${P(ref)}).`;
+    $('ovwarn').className = 'note small ' + (ok && amtOk && lim === ref ? 'plain' : 'warn');
     if (!ok) {
       $('ovwarn').innerHTML = lim == null ? `<b>Enter the limit as a plain number above 0, such as ${ref ? ref.toFixed(d) : '62480.0'}.</b>`
         : !onTick ? `<b>Enter a limit that is a multiple of ${p.tick} ${Q}.</b>`
         : `<b>Enter a limit ${buy ? 'at or above the ask' : 'at or below the bid'} now${ref ? ' (' + P(ref) + ')' : ''}.</b>`;
       block('Fix the limit to start.');
+    } else if (amtOk && lim === ref) {
+      // A limit at the price now (the server's rule too): no extra cost and no loss, so no tick box.
+      $('ovwarn').innerHTML = `<b>Your limit is the ${buy ? 'ask' : 'bid'} now.</b> ${buy ? 'Worst extra' : 'Worst loss'} against a market ${buy ? 'order' : 'sell'} now: <b class="num">0.00 ${Q}</b>.`;
     } else if (amtOk) {
       tickShown = true;
       const worst = buy ? q * lim * 1.008 : q * lim * 0.992, market = buy ? q * ref * 1.008 : q * ref * 0.992;
@@ -384,8 +394,9 @@ function draw() {
   if (!tickShown) $('ovok').checked = false;
   // margin: what an open uses and costs, and the account margin level now and after
   const L = lim || ref;
-  $('mgbox').classList.toggle('hidden', !(margin && p && account && (open || pos)));
-  if (margin && p && account && (open || pos)) {
+  const mg = margin && p && account && (open || pos) && !other;
+  $('mgbox').classList.toggle('hidden', !mg);
+  if (mg) {
     const lvlNow = account.level == null ? null : Number(account.level), eq = Number(account.equity), used = Number(account.used);
     const head = `<div class="small" style="margin-bottom:6px"><span class="badge plain">simulated account</span> Equity ${OC.usd(eq)} ${Q} · free margin ${OC.usd(account.free)} ${Q} · read at ${readAt(account)}</div>`;
     const marks = OC.markNote(account, s && s.watched);
@@ -425,6 +436,7 @@ function draw() {
   if ($('amterr').textContent !== amtErr) $('amterr').textContent = amtErr;
   // worst case
   if (close && !pos) $('worst').textContent = 'Nothing to close.';
+  else if (other) $('worst').textContent = `Close the ${other.dir} first.`;
   else if (ref && amtOk && ok) {
     if (open) {
       const cost = q * L, tf = cost * 0.008, of = cost * FEE_HI;

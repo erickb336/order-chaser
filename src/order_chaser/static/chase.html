@@ -132,8 +132,9 @@ function margin(c, w, snap) {
     : '<b>If the tool stops:</b> the simulated position stays in the simulated account. No order and no position is on Kraken.';
   const Q = c.pair.quote;
   if (!m.close) {
-    $('worsthead').textContent = w.buy ? 'The open never costs more than this in price and fees:' : 'The open never brings less than this in price, less fees:';
-    $('worst').textContent = OC.usd(c.worst) + ' ' + Q + (w.buy ? '' : ' received');
+    // A margin short gives no cash: its worst case is the value of the short, less fees.
+    $('worsthead').textContent = w.buy ? 'The open never costs more than this in price and fees:' : 'The short never sells for less than this, less fees:';
+    $('worst').textContent = (w.buy ? '' : 'Short value: ') + OC.usd(c.worst) + ' ' + Q;
     $('worstwhy').textContent = `${OC.qty(c.qty)} × ${w.p(c.limit)} (${w.limitWord}) ${w.buy ? '+' : '−'} 0.80% taker fee ${w.buy ? '+' : '−'} 0.05% opening fee, the stated maximum (estimate). Not included: rollover, up to ${OC.usd(Number(c.qty) * Number(c.limit) * 0.0005)} ${Q} per 4 h. The position can also lose value as the price moves. That loss has no limit before liquidation.`;
   } else {
     $('worsthead').textContent = w.buy ? 'The close never pays more than this in price and fees:' : 'The close never brings less than this in price, less fees:';
