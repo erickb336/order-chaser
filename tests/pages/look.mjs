@@ -2,6 +2,7 @@
 // Usage: node look.mjs '<spec>'. Spec: {"base": "http://127.0.0.1:port", "tabs": n, "steps": [step, ...]}. Each step acts on tab "tab" (default 0):
 //   {"goto": "/path"} {"click": sel} {"select": [sel, value]} {"fill": [sel, text]}
 //   {"waitFor": "js predicate"} {"text": sel, "as": name} {"eval": "js expression", "as": name}
+//   {"viewport": [width, height]} (the size of the tab)
 //   {"shot": path} {"sleep": ms} {"front": true} (the tab gets the focus) {"press": key} (a key, such as "Tab")
 //   {"signal": name}: print "SIGNAL name" and wait for one line on stdin (the test acts at that point of the page's state)
 import { chromium } from 'playwright-core';
@@ -40,6 +41,7 @@ try {
     else if (s.waitFor) await waitFor(p, s.waitFor, s.timeout || 10000);
     else if (s.text) out[s.as] = await p.textContent(s.text);
     else if (s.eval) out[s.as] = await p.evaluate(s.eval);
+    else if (s.viewport) await p.setViewportSize({ width: s.viewport[0], height: s.viewport[1] });
     else if (s.shot) await p.screenshot({ path: s.shot, fullPage: true });
     else if (s.sleep) await p.waitForTimeout(s.sleep);
     else if (s.front) await p.bringToFront();

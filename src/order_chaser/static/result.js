@@ -194,7 +194,7 @@ function render(c) {
   </div>
   <div class="grid2" style="margin-top:16px">
     <div class="card"><h2>Fills (simulated)</h2>
-      ${c.fills.length ? `<table class="t"><tr><th>Time</th><th class="r">${B}</th><th class="r">Price</th><th>Type</th><th class="r">Fee ${Q}</th></tr>
+      ${c.fills.length ? `<table class="t fills"><tr><th>Time</th><th class="r">${B}</th><th class="r">Price</th><th>Type</th><th class="r">Fee ${Q}</th></tr>
       ${c.fills.map(f => `<tr><td class="mono">${OC.mmss(f.t)}</td><td class="r num">${OC.qty(f.qty)}</td><td class="r num">${P(f.price)}</td><td>${f.maker ? '<span class="badge ok">maker</span>' : '<span class="badge warn">taker (IOC)</span>'}</td><td class="r num">${OC.usd(fee(f))}</td></tr>`).join('')}
       </table>` : '<p class="muted small">No fills.</p>'}</div>
     <div class="card"><h2>How the saving is counted</h2>

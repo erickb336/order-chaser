@@ -1426,3 +1426,105 @@ def test_page_a_kraken_text_with_html_shows_as_text(tmp_path, fake):
         t.stop()
     assert f"Kraken rejected the order: {evil}." in got["card"]
     assert got["html"] is False and got["html2"] is False
+
+
+# ---------- phone width (T45) ----------
+
+# The page width, each element that goes past the left or right edge of the window, or into the 16 px gutter of the
+# page (UX R90, QA R91 of T5, QA R138), and each box
+# whose content is wider than the box (it scrolls or cuts the content sideways; QA R128). An element inside such a box
+# does not count, because the box is reported. Only a box that matches "scrolls" may scroll: the history table.
+# A pill or a time that breaks over two lines is reported too (QA R138).
+WIDTH_JS = """(scrolls) => {
+  const W = innerWidth;
+  const name = e => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + (typeof e.className === 'string' && e.className.trim() ? '.' + e.className.trim().split(/\\s+/).join('.') : '');
+  const shown = e => e.getBoundingClientRect().width > 0 && !e.closest('.sr-only');
+  const boxed = e => { for (let a = e.parentElement; a && a !== document.body; a = a.parentElement) if (getComputedStyle(a).overflowX !== 'visible') return true; return false; };
+  const all = Array.from(document.querySelectorAll('body *')).filter(shown);
+  const gutter = e => e.parentElement.closest('.app') && !e.closest('.scrim') ? 16 : 0;
+  const wide = all.filter(e => { const r = e.getBoundingClientRect(), g = gutter(e); return (r.right > W - g + 0.5 || r.left < g - 0.5) && !boxed(e); })
+    .map(e => name(e) + ' ' + Math.round(e.getBoundingClientRect().left) + '..' + Math.round(e.getBoundingClientRect().right));
+  const cut = all.filter(e => getComputedStyle(e).overflowX !== 'visible' && e.scrollWidth > e.clientWidth + 1 && !(scrolls && e.matches(scrolls)))
+    .map(e => name(e) + ' ' + e.scrollWidth + '>' + e.clientWidth);
+  const lines = e => { const g = document.createRange(); g.selectNodeContents(e); return new Set(Array.from(g.getClientRects()).map(r => Math.round(r.top))).size; };
+  const split = all.filter(e => e.matches('.badge, td.mono') && lines(e) > 1).map(e => name(e) + ' ' + e.textContent.trim());
+  return { scroll: document.scrollingElement.scrollWidth, wide: wide.slice(0, 12), cut: cut.slice(0, 12), split: split.slice(0, 12) };
+}"""
+
+
+def test_page_every_page_fits_a_375_px_phone_with_no_sideways_scroll_and_readable_text(tool):
+    spot = tool.start(qty="0.5", timeout=30)                      # the widest fills: 8-decimal quantities and a taker (IOC) fill
+    tool.trade("sell", "62417.0", "0.49345678")                   # the IOC fills the rest, 0.00654322
+    tool.timeout(30)
+    assert [f.maker for f in tool.eng.chase.fills] == [True, False]
+    tool.beat(1)
+    opened_long(tool)                                             # a position to close, a result and a history row
+    tool.beat(1)
+    cid = tool.start("close-long", "0.02")                        # a part close: its result has the position and P/L rows
+    tool.trade("buy", "62419.0", "0.012")
+    tool.call(tool.eng.user, "stop")
+    def rest():                                                   # a stopped chase with a long rest: a long button
+        tool.call(tool.eng.user, "stop")
+        tool.start(qty="0.5")
+        tool.trade("sell", "62417.0", "0.00153499")
+        tool.call(tool.eng.user, "stop")
+    phone = lambda name, scrolls=None: [{"eval": f"({WIDTH_JS})({json.dumps(scrolls)})", "as": name}, {**ALL_TEXT, "as": name + " contrast"},
+                                        {"shot": f"phone-{name.replace('/', '').replace(' ', '-') or 'new'}.png"}]
+    got = tool.look([
+        {"viewport": [375, 812]},
+        {"goto": "/new"}, {"waitFor": "OC.$('ask').textContent === '62,418.50'"}, *phone("/new buy"),
+        {"click": "#what button[data-w=long]"}, {"waitFor": "OC.$('mgbox').querySelector('.gauge')"}, *phone("/new open long"),
+        {"goto": "/new?what=close&pair=BTC/USD&dir=long"}, {"waitFor": "document.querySelector('.poslist label') && OC.$('mgbox').querySelector('.gauge')"},
+        *phone("/new close"),
+        {"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('#pl') && document.querySelector('#plan')"}, *phone("/result close"),
+        {"goto": f"/result?id={spot}"}, {"waitFor": "document.querySelector('.facts')"}, *phone("/result spot"),
+        {"eval": "Array.from(document.querySelectorAll('table.fills tr'), r => Array.from(r.cells, c => c.textContent))", "as": "fills"},
+        {"viewport": [390, 844]}, {"goto": f"/result?id={spot}"}, {"waitFor": "document.querySelector('.facts')"}, *phone("/result spot 390"),
+        {"viewport": [375, 812]},
+        {"goto": "/history"}, {"waitFor": "document.querySelector('tr.click')"}, *phone("/history", "#out"),
+        {"eval": "getComputedStyle(OC.$('out'), '::before').content", "as": "hint"},
+        {"goto": "/setup"}, {"waitFor": "OC.$('mgline').textContent"}, *phone("/setup"),
+        {"signal": "start"}, {"goto": "/chase"}, card_shown("resting"), {"waitFor": "document.querySelector('#statuscard .rail .mk')"}, *phone("/chase"),
+        {"click": "#stop"}, {"waitFor": "!OC.$('stopdlg').classList.contains('hidden')"}, *phone("/chase stop dialog"),
+        {"eval": "(r => r.right <= innerWidth && r.bottom <= innerHeight)(OC.$('stopyes').getBoundingClientRect())", "as": "stop button in view"},
+        {"signal": "rest"}, {"goto": "/chase"}, card_shown("stopped"), {"text": "#actions a[href^='/new?rest']", "as": "rest button"},
+        *phone("/chase stopped with a long rest"),
+        {"viewport": [1280, 900]}, {"goto": "/history"}, {"waitFor": "document.querySelector('tr.click')"},
+        {"eval": "getComputedStyle(OC.$('out'), '::before').content", "as": "desktop hint"}],
+        on={"start": lambda: tool.start(), "rest": rest})
+    pages = ["/new buy", "/new open long", "/new close", "/result close", "/result spot", "/history", "/setup", "/chase",
+             "/chase stop dialog", "/chase stopped with a long rest"]
+    assert {p: got[p] for p in pages} == {p: {"scroll": 375, "wide": [], "cut": [], "split": []} for p in pages}
+    assert got["/result spot 390"] == {"scroll": 390, "wide": [], "cut": [], "split": []}
+    assert got["fills"] == [["Time", "BTC", "Price", "Type", "Fee USD"], ["0:00", "0.49345678", "62,417.90", "maker", "123.20"],
+                            ["0:30", "0.00654322", "62,418.50", "taker (IOC)", "3.27"]]
+    assert got["stop button in view"] is True
+    assert got["rest button"] == "Chase the rest (0.49846501 BTC), new cap"
+    assert (got["hint"], got["desktop hint"]) == ('"Scroll sideways to see every column \u2192"', "none")
+    low = {p: got[p + " contrast"] for p in pages if got[p + " contrast"]["c"] < 4.5}
+    assert low == {}
+
+
+def test_page_the_t44_states_fit_a_375_px_phone(tool):
+    # T44 at phone width: the chase page while the first order waits to go out again, and the result with its note.
+    refuse_first_place(tool)
+    cid = tool.start("long", leverage=3)                          # a margin open: its result has the note
+    assert (tool.eng.chase.phase, tool.eng.chase.price) == ("resting", None)
+
+    def again_and_stop():
+        tool.book("BTC/USD", [("62418.1", "1")], [])
+        tool.beat(5)                                                # the first order goes out again
+        tool.call(tool.eng.user, "stop")
+
+    fit = lambda name: [{"eval": f"({WIDTH_JS})(null)", "as": name}, {**ALL_TEXT, "as": name + " contrast"},
+                        {"shot": f"phone-t44-{name.split()[0].strip('/')}.png"}]
+    got = tool.look([{"viewport": [375, 812]},
+                     {"goto": "/chase"}, card_shown("placeagain"), {"text": "#statuscard .head", "as": "head"}, *fit("/chase placeagain"),
+                     {"signal": "again"},
+                     {"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"},
+                     {"text": "#againnote", "as": "note"}, *fit("/result again")], on={"again": again_and_stop})
+    assert got["head"] == "Order rejected: placing it again at the best bid"
+    assert got["note"].startswith("First order placed again: 1 time.")
+    pages = ["/chase placeagain", "/result again"]
+    assert {p: got[p] for p in pages} == {p: {"scroll": 375, "wide": [], "cut": [], "split": []} for p in pages}
+    assert {p: got[p + " contrast"]["c"] >= 4.5 for p in pages} == {p: True for p in pages}
