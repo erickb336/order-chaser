@@ -369,6 +369,30 @@ def test_the_timeout_after_a_first_order_refusal_reads_the_fills_and_sends_one_i
     assert cmds == [Ioc("oc-1-i", "buy", D("62418.5"), D("0.05"))]
 
 
+def test_the_timeout_after_a_first_order_refusal_with_the_feed_lost_promises_no_ioc():
+    # TIMEOUT-FEED-LOST-CLAIMS-IOC: no order rests and no valid price: no IOC, and the log says so.
+    c, _ = refused_first(timeout=30)
+    c, texts = logs(c, FeedLost(T0 + 1), Tick(T0 + 30))
+    assert texts[-1] == "Timeout. The tool places no new order."
+    c, texts = logs(c, OrderState(T0 + 30.1, False, D(0), None, "oc-1"))
+    assert (c.outcome, texts[-1]) == ("notfilled", "No IOC: the price feed is lost, so there is no valid price. The rest counts as not filled.")
+
+
+def test_stop_or_fill_now_with_no_order_resting_says_there_is_nothing_to_cancel():
+    # STOPPED-COPY-CLAIMS-CANCEL: after a refused first order no order rests.
+    c, _ = refused_first()
+    c, texts = logs(c, UserStop(T0 + 1))
+    assert (c.outcome, texts) == ("stopped", ["You pressed Stop. No order rests, so there is nothing to cancel."])
+    c, _ = refused_first()
+    c, texts = logs(c, UserFillNow(T0 + 1))
+    assert texts == ['You pressed "Fill the rest now". No order rests, so there is nothing to cancel.']
+    c, _ = start()                                      # the first order in flight: a cancel only if it rests
+    c, texts = logs(c, UserStop(T0 + 0.1))
+    assert texts == ["You pressed Stop. The tool cancels the order if the exchange places it."]
+    c, texts = logs(resting(), UserStop(T0 + 1))        # an order rests: the tool cancels it
+    assert texts == ["You pressed Stop. Cancelling the order."]
+
+
 def test_a_first_order_refused_for_the_rate_limit_waits_15_s_and_for_room_on_the_counter():
     c, texts = refused_first("rate_limit")
     assert (c.phase, c.rate, c.slow) == ("resting", 60.0, True)

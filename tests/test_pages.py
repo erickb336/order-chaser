@@ -169,6 +169,9 @@ def tool(tmp_path):
     t.stop()
 
 
+OC_LOG = "Array.from(document.querySelectorAll('.log li span:last-child')).map(x => x.textContent)"
+
+
 def card_shown(state):
     return {"waitFor": f"document.querySelector('#statuscard[data-state=\"{state}\"]')"}
 
@@ -1029,12 +1032,78 @@ def test_page_a_first_order_refused_as_would_cross_says_so_and_goes_out_again_at
     assert got["head"] == "Order rejected: placing it again at the best bid"
     assert got["sub"] == ("The simulated exchange rejected the order: would cross the ask (post-only). The tool places it again at "
                           "the best bid after the wait. No order rests now. The new order never goes above the cap, 62,418.50. "
-                          "At the timeout, the tool sends one IOC at the cap for the rest. (Simulated. No order goes to Kraken.)")
+                          "At the timeout, the tool places no new order. If the price is valid then, it sends one IOC at the cap "
+                          "for the rest. (Simulated. No order goes to Kraken.)")
     assert got["buttons"] == [True, True]
     assert got["log"][0].endswith("The tool places it again at the best bid after the wait.")
     assert got["after"] == "Resting at the best bid"
     assert got["log_after"][0].endswith("Placed a post-only buy, 0.0500 BTC at 62,418.10.")
     tool.eng.gw.send = send
+
+
+def refuse_first_place(tool):
+    """The simulated exchange rejects the next place as would-cross (T44); the ones after it go through."""
+    send, refused = tool.eng.gw.send, []
+    tool.eng.gw.send = lambda cmd, now: (refused.append(cmd) or [core.Rejected(now, "place", "would_cross")]) \
+        if isinstance(cmd, core.Place) and not refused else send(cmd, now)
+
+
+def test_page_the_result_counts_a_first_order_placed_again_apart_from_the_cancel_and_replace(tool):
+    # RESULT-SAYS-AMEND-REFUSED-AFTER-RETRY: the first order placed again is not a cancel and replace.
+    refuse_first_place(tool)
+    cid = tool.start("long", leverage=3)
+    tool.book("BTC/USD", [("62418.1", "1")], [])
+    tool.beat(5)                                                    # the first order goes out again: leg -1
+    assert tool.eng.chase.legs[-1].endswith("-1") and tool.eng.chase.price is not None
+    tool.call(tool.eng.user, "stop")
+    assert tool.eng.chase.outcome == "stopped"
+    first = cid
+
+    refuse_first_place(tool)
+    tool.eng.gw.refuse_margin_amends = True
+    cid = tool.start("long", leverage=3)
+    tool.book("BTC/USD", [("62418.2", "1")], [])
+    tool.beat(5)                                                    # placed again: leg -1
+    tool.book("BTC/USD", [("62418.3", "1")], [])
+    for _ in range(3):
+        tool.timeout(6)                                             # the amend is refused: cancel, read, a new order (-2)
+    c = tool.eng.chase
+    assert (c.replace, len(c.legs), c.phase) == (True, 3, "resting")
+    tool.call(tool.eng.user, "stop")
+    got = tool.look([{"goto": f"/result?id={first}"}, {"waitFor": "document.querySelector('.facts')"},
+                     {"eval": "[OC.$('againnote')?.textContent, OC.$('replacenote')?.textContent ?? null]", "as": "first"},
+                     {"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"},
+                     {"text": "#againnote", "as": "again"}, {"eval": "OC.$('replacenote').textContent.split('.')[0]", "as": "replace"},
+                     ALL_TEXT, {"shot": "t44-result-again-and-replace.png"}])
+    assert got.pop("all")["c"] >= 4.5
+    assert got["first"] == ["First order placed again: 1 time. The simulated exchange rejected it, so the tool placed it again after the wait.", None]
+    assert got["again"].startswith("First order placed again: 1 time.")
+    assert got["replace"] == "Cancel and replace: 1 time"
+
+
+def test_page_a_stop_with_no_order_resting_says_there_was_nothing_to_cancel(tool):
+    # STOPPED-COPY-CLAIMS-CANCEL: after a rejected first order no order rests, so Stop cancels nothing.
+    refuse_first_place(tool)
+    cid = tool.start("long", leverage=3)
+    tool.call(tool.eng.user, "stop")
+    assert (tool.eng.chase.outcome, tool.eng.chase.price) == ("stopped", None)
+    spot = tool.start()                                             # a spot chase with an order resting: a real cancel
+    tool.call(tool.eng.user, "stop")
+    got = tool.look([{"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"},
+                     {"text": "main .card p.muted", "as": "result"}, {"eval": OC_LOG, "as": "log"},
+                     {"goto": f"/result?id={spot}"}, {"waitFor": "document.querySelector('.facts')"},
+                     {"eval": "document.body.innerText.includes('The simulated exchange confirmed the cancel.')", "as": "spot"}])
+    assert got["result"].endswith("No order rested, so there was nothing to cancel.")
+    assert "You pressed Stop. No order rests, so there is nothing to cancel." in got["log"]
+    assert got["spot"] is True
+
+
+def test_page_the_chase_card_after_a_stop_with_no_order_resting_says_there_was_nothing_to_cancel(tool):
+    refuse_first_place(tool)
+    tool.start()
+    tool.call(tool.eng.user, "stop")
+    got = tool.look([{"goto": "/chase"}, card_shown("stopped"), {"text": "#statuscard .sub", "as": "sub"}])
+    assert got["sub"].startswith("You stopped the chase. No order rested, so there was nothing to cancel. 0.0000 BTC filled before the stop.")
 
 
 def test_page_a_close_ended_by_a_restart_names_the_open_position_on_the_chase_page(tool):

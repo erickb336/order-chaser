@@ -21,7 +21,8 @@ Margin (dry run first; the T4 gateway maps the same commands):
   liquidated, or no position left for a reduce-only order -> cancel -> done
 
 Each order of a chase is a leg with its own cl_ord_id: the chase id for the first leg, then
-"<id>-1", "<id>-2", ... for the legs of a cancel and replace, and "<id>-i" for the IOC.
+"<id>-1", "<id>-2", ... for the first order placed again after a refusal and for the legs of a cancel
+and replace, and "<id>-i" for the IOC.
 Filled = the sum of the venue's cum of each leg. All ids have at most 18 characters (Kraken's limit).
 """
 from __future__ import annotations
@@ -538,7 +539,7 @@ def step(c: Chase, ev) -> tuple[Chase, list]:
     elif isinstance(ev, Tick):
         if c.exit is None and t >= c.timeout and c.phase in ("resting", "feed_lost") + REPLACE_IN_FLIGHT:
             c = replace(c, exit="timeout")
-            out.append(Log(t, "Timeout. The tool places no new order and fills the rest with one IOC." if c.phase in REPLACE_IN_FLIGHT or c.price is None
+            out.append(Log(t, _no_new_order(c, ev.now) if c.phase in REPLACE_IN_FLIGHT or c.price is None
                            else "Timeout. Cancelling the resting order." if c.phase == "resting"
                            else "Timeout while the price feed is lost. Cancelling the order.", "warn"))
         if c.phase in ("resting", "feed_lost"):
@@ -637,13 +638,13 @@ def step(c: Chase, ev) -> tuple[Chase, list]:
     elif isinstance(ev, UserStop) and ((c.phase in ACTIVE and c.exit not in ("stop",) + GONE)
                                        or (c.phase in REPLACE_IN_FLIGHT and c.exit is None)):
         c = replace(c, exit="stop")
-        out.append(Log(t, "You pressed Stop. Cancelling the order."))
+        out.append(Log(t, "You pressed Stop." + _cancel_text(c, "the order")))
         c, more = _settle(c, ev.now)
         out += more
 
     elif isinstance(ev, UserFillNow) and c.exit is None and c.phase in ("placing", "resting", "amending", "reconcile") + REPLACE_IN_FLIGHT:
         c = replace(c, exit="fillnow")
-        out.append(Log(t, "You pressed \"Fill the rest now\". Cancelling the resting order.", "warn"))
+        out.append(Log(t, "You pressed \"Fill the rest now\"." + _cancel_text(c, "the resting order"), "warn"))
         c, more = _settle(c, ev.now)
         out += more
 
@@ -652,6 +653,20 @@ def step(c: Chase, ev) -> tuple[Chase, list]:
         out += more
 
     return c, out
+
+
+def _no_new_order(c: Chase, now: float) -> str:
+    """The timeout when no order rests: the IOC goes out only at a valid price (see the reread)."""
+    return "Timeout. The tool places no new order" + (" and fills the rest with one IOC." if c.fresh(now) else ".")
+
+
+def _cancel_text(c: Chase, order: str) -> str:
+    """What Stop or "Fill the rest now" cancels: no order rests after a refused place or between the legs of a replace."""
+    if c.phase == "placing":
+        return " The tool cancels the order if the exchange places it."
+    if c.price is None:
+        return " No order rests, so there is nothing to cancel."
+    return f" Cancelling {order}."
 
 
 def _liquidated_after_end(c: Chase, ev) -> tuple[Chase, list]:
@@ -853,7 +868,7 @@ def _order_state(c: Chase, ev: OrderState, t: float) -> tuple[Chase, list]:
             return c, out + more
         if c.exit is None and ev.now - c.started >= c.timeout:
             c = replace(c, exit="timeout")
-            out.append(Log(t, "Timeout. The tool places no new order and fills the rest with one IOC.", "warn"))
+            out.append(Log(t, _no_new_order(c, ev.now), "warn"))
         below = Log(t, f"The rest, {fmt_qty(rest)} {base}, is below the Kraken minimum for {c.pair.symbol} "
                        f"({fmt_qty(c.pair.ordermin)} {base} or {c.pair.costmin} {c.pair.quote}). It counts as not filled.", "bad")
         if c.exit is None:                          # cancel and replace: the next leg, for the rest
