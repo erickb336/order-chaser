@@ -672,6 +672,25 @@ def test_reads_send_the_txid_a_refused_leg_is_closed_without_a_read_and_a_lost_a
     assert len(fake.calls_of("OpenOrders")) == 1                             # the lost add, by its cl_ord_id
 
 
+def test_an_account_rate_limit_on_a_new_order_is_a_rate_limit_refusal_so_the_core_waits_and_places_it_again(fake):
+    """EAPI-RATE-LIMIT-ON-PLACE: Kraken did not take the order. Another transient error stays "Kraken did not answer"."""
+    async def run():
+        async with httpx.AsyncClient() as http:
+            gw = gateway(fake, http)
+            await gw.open()
+            fake.errors["AddOrder"] = ["EAPI:Rate limit exceeded", "EService:Busy"]
+            out = [await gw.send(core.Place("oc-rate", "buy", D("62417.9"), D("0.05")), 1000.0),
+                   await gw.send(core.Place("oc-busy", "buy", D("62417.9"), D("0.05")), 1000.0)]
+            await gw.close()
+            return out
+    rate, busy = asyncio.run(run())
+    assert rate == [core.Rejected(1000.0, "place", "rate_limit")]
+    assert busy == [core.Rejected(1000.0, "place", "Kraken did not answer")]
+    # The core's answer to it: the first order waits and goes out again, it does not end as refused.
+    c, out = core.step(chase(), rate[0])
+    assert (c.phase, c.outcome, c.rate) == ("resting", None, float(core.RATE_MAX))
+
+
 class SlowFirst(httpx.AsyncBaseTransport):
     """The first request waits 0.2 s on its way to Kraken: a later call can overtake it."""
     def __init__(self):

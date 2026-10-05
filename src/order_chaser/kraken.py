@@ -383,7 +383,9 @@ class KrakenGateway:
                     return await self._ioc_read(cmd.id)
                 if isinstance(cmd, core.Place):
                     st, _ = await self._read(cmd.id)
-                    return [core.Placed(self.clock())] if st.open else [core.Rejected(self.clock(), "place", "Kraken did not answer")]
+                    # No order after an account rate limit: Kraken did not take it. The core waits and places it again.
+                    why = "rate_limit" if isinstance(e, KrakenError) and _reason(e.errors) == "rate_limit" else "Kraken did not answer"
+                    return [core.Placed(self.clock())] if st.open else [core.Rejected(self.clock(), "place", why)]
                 if isinstance(cmd, core.Cancel):
                     return [core.Rejected(self.clock(), "cancel", "Kraken did not answer")]   # the core reads the order
         except httpx.HTTPError:
