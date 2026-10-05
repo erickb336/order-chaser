@@ -309,6 +309,111 @@ def test_fill_the_rest_now_runs_the_fallback_at_once():
     assert cmds == [Query("oc-1"), Ioc("oc-1-i", "buy", D("62418.5"), D("0.04"))]
 
 
+# ---------- the first order refused (owner decision G21 B: wait and place it again until the timeout) ----------
+
+def refused_first(reason="would_cross", *before, **kw):
+    """The venue refuses the first post-only order at T0 + 0.2; the events in `before` come while it is in flight."""
+    c, _ = start(**kw)
+    c, _ = run(c, *before)
+    return logs(c, Rejected(T0 + 0.2, "place", reason))
+
+
+def test_a_first_order_refused_as_would_cross_is_placed_again_at_the_new_bid_after_the_wait():
+    c, texts = refused_first()
+    assert (c.phase, c.price, c.outcome) == ("resting", None, None)
+    assert texts == ["The simulated exchange rejected the order: would cross the ask (post-only). "
+                     "The tool places it again at the best bid after the wait."]
+    c, cmds = run(c, Book(T0 + 3, D("62418.0"), D("62418.6"), True))
+    assert cmds == []                                   # 5 s from the first order
+    c, cmds = run(c, Book(T0 + 5, D("62418.1"), D("62418.6"), True))
+    assert cmds == [Place("oc-1-1", "buy", D("62418.1"), D("0.05"))]
+    c, cmds = run(c, Placed(T0 + 5.1), Book(T0 + 11, D("62418.3"), D("62418.6"), True))
+    assert cmds == [Amend("oc-1-1", D("62418.3"))]     # the new order moves by amends, as a first order does
+
+
+def test_a_sell_refused_as_would_cross_is_placed_again_at_the_new_ask():
+    c, texts = refused_first(side="sell")
+    assert texts[0].endswith("would cross the bid (post-only). The tool places it again at the best ask after the wait.")
+    c, cmds = run(c, Book(T0 + 5, D("62417.0"), D("62417.6"), True))
+    assert cmds == [Place("oc-1-1", "sell", D("62417.9"), D("0.05"))]   # never below the floor, the start bid
+
+
+def test_after_a_first_order_refusal_the_new_order_never_goes_above_the_cap():
+    c, _ = refused_first()
+    c, cmds = run(c, Book(T0 + 5, D("62418.5"), D("62418.5"), True))    # a post-only buy at the cap would cross
+    assert cmds == []
+    c, cmds = run(c, Book(T0 + 6, D("62425.0"), D("62425.1"), True))    # the bid ran above the cap
+    assert cmds == [Place("oc-1-1", "buy", D("62418.5"), D("0.05"))]
+
+
+def test_fill_now_while_the_first_order_is_in_flight_then_refused_reads_the_fills_and_sends_one_ioc_at_the_cap():
+    c, _ = start()
+    c, _ = run(c, UserFillNow(T0 + 0.1))
+    c, cmds = run(c, Rejected(T0 + 0.2, "place", "would_cross"))
+    assert (c.phase, cmds) == ("reread", [Query("oc-1")])
+    c, cmds = run(c, OrderState(T0 + 0.3, False, D(0), None, "oc-1"))
+    assert (c.phase, cmds) == ("ioc", [Ioc("oc-1-i", "buy", D("62418.5"), D("0.05"))])
+
+
+def test_stop_while_the_first_order_is_in_flight_then_refused_ends_as_stopped():
+    c, _ = refused_first("would_cross", UserStop(T0 + 0.1))
+    assert (c.phase, c.outcome) == ("done", "stopped")
+
+
+def test_the_timeout_after_a_first_order_refusal_reads_the_fills_and_sends_one_ioc_at_the_cap():
+    c, _ = refused_first(timeout=30)
+    c, texts = logs(c, Book(T0 + 30, D("62418.5"), D("62418.5"), True), Tick(T0 + 30))   # a locked book: no post-only price
+    assert texts == ["Timeout. The tool places no new order and fills the rest with one IOC."]
+    assert c.phase == "reread"
+    c, cmds = run(c, OrderState(T0 + 30.1, False, D(0), None, "oc-1"))
+    assert cmds == [Ioc("oc-1-i", "buy", D("62418.5"), D("0.05"))]
+
+
+def test_the_timeout_after_a_first_order_refusal_with_the_feed_lost_promises_no_ioc():
+    # TIMEOUT-FEED-LOST-CLAIMS-IOC: no order rests and no valid price: no IOC, and the log says so.
+    c, _ = refused_first(timeout=30)
+    c, texts = logs(c, FeedLost(T0 + 1), Tick(T0 + 30))
+    assert texts[-1] == "Timeout. The tool places no new order."
+    c, texts = logs(c, OrderState(T0 + 30.1, False, D(0), None, "oc-1"))
+    assert (c.outcome, texts[-1]) == ("notfilled", "No IOC: the price feed is lost, so there is no valid price. The rest counts as not filled.")
+
+
+def test_stop_or_fill_now_with_no_order_resting_says_there_is_nothing_to_cancel():
+    # STOPPED-COPY-CLAIMS-CANCEL: after a refused first order no order rests.
+    c, _ = refused_first()
+    c, texts = logs(c, UserStop(T0 + 1))
+    assert (c.outcome, texts) == ("stopped", ["You pressed Stop. No order rests, so there is nothing to cancel."])
+    c, _ = refused_first()
+    c, texts = logs(c, UserFillNow(T0 + 1))
+    assert texts == ['You pressed "Fill the rest now". No order rests, so there is nothing to cancel.']
+    c, _ = start()                                      # the first order in flight: a cancel only if it rests
+    c, texts = logs(c, UserStop(T0 + 0.1))
+    assert texts == ["You pressed Stop. The tool cancels the order if the exchange places it."]
+    c, texts = logs(resting(), UserStop(T0 + 1))        # an order rests: the tool cancels it
+    assert texts == ["You pressed Stop. Cancelling the order."]
+
+
+def test_a_first_order_refused_for_the_rate_limit_waits_15_s_and_for_room_on_the_counter():
+    c, texts = refused_first("rate_limit")
+    assert (c.phase, c.rate, c.slow) == ("resting", 60.0, True)
+    assert texts == ["The simulated exchange rejected the order: EOrder:Rate limit exceeded. "
+                     "The tool places it again at the best bid after the wait."]
+    placed = []
+    for s in range(1, 20):
+        c, cmds = run(c, Book(T0 + s, D("62417.9"), D("62418.5"), True))
+        placed += [(s, x.id) for x in cmds if isinstance(x, Place)]
+    assert placed == [(15, "oc-1-1")]
+
+
+def test_a_first_order_refused_with_another_reason_ends_the_chase_with_the_venues_text():
+    c, texts = refused_first("EOrder:Insufficient funds")
+    assert (c.phase, c.outcome) == ("done", "refused")
+    assert texts == ["The simulated exchange rejected the order: EOrder:Insufficient funds."]
+    c, _ = refused_first()                              # no order ever rested: still "refused" after a would-cross
+    c, _ = run(c, Book(T0 + 5, D("62417.9"), D("62418.5"), True), Rejected(T0 + 5.1, "place", "EOrder:Insufficient funds"))
+    assert (c.phase, c.outcome, c.legs) == ("done", "refused", ("oc-1", "oc-1-1"))
+
+
 # ---------- sell is the mirror ----------
 
 def test_sell_rests_at_the_ask_moves_down_never_below_the_floor_and_ioc_at_the_floor():
