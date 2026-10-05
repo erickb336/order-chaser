@@ -133,7 +133,7 @@ class Tool:
         with tempfile.TemporaryFile("w+") as err:
             p = subprocess.Popen(["node", str(PAGES / "look.mjs"), json.dumps({"base": f"http://127.0.0.1:{self.port}", "tabs": tabs, "steps": steps})],
                                  cwd=PAGES, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, text=True)
-            kill = threading.Timer(120, p.kill)
+            kill = threading.Timer(120, p.kill)      # the one allowed timer (tests/test_test_rules.py): a hung page ends the test
             kill.start()
             result = []
             try:
@@ -150,7 +150,9 @@ class Tool:
                 if p.poll() is None:
                     p.kill()
             err.seek(0)
-            assert result, err.read()
+            log = err.read()
+            last = ([l for l in log.splitlines() if l.startswith(("step ", "close"))] or ["no step"])[-1]
+            assert result, f"look.mjs {'stopped after 120 s' if p.returncode == -9 else f'exited {p.returncode}'} at: {last}\n{log}"
         out = json.loads(result[0][7:])
         assert out.pop("csp") == []   # the pages run under the full CSP with no refusal
         return out
@@ -714,33 +716,25 @@ FOCUS = ("(() => { const e = document.activeElement; return [e.tagName, e.id || 
 def test_page_the_close_list_keeps_the_focus_and_the_selection_while_prices_update(tool):
     # UX-POSLIST-FOCUS-LOST, also the "Close all" button
     two_longs(tool)
-    stop = threading.Event()
 
-    def prices():                                    # a new best bid and a new account read about 6 times a second
-        k, prev = 0, "62000.0"
-        while not stop.is_set():
-            k += 1
-            bid = f"{61900 + k % 10 * 10}.0"           # 61,900 to 61,990: the mark moves; the book stays below the ask of 62,000.60
-            tool.book("BTC/USD", [(prev, "0"), (bid, "1")], [])
-            prev = bid
+    def move(bid, ask, old_bid, old_ask):            # a new mark and a new account read: the close list draws again
+        def go():
+            tool.book("BTC/USD", [(old_bid, "0"), (bid, "1")], [(old_ask, "0"), (ask, "3")])
             tool.call(tool.eng.read_account, True)
-            time.sleep(0.15)
-    th = threading.Thread(target=prices, daemon=True)
-    th.start()
-    try:
-        got = tool.look([{"goto": "/new?what=close&pair=BTC/USD&dir=long"}, {"waitFor": "document.querySelector('#poslist input')"},
-                         {"eval": "OC.$('pairsel').focus()", "as": "_"}, {"press": "Tab"}, {"eval": FOCUS, "as": "radio_before"},
-                         {"eval": "document.querySelector('#poslist label .r').textContent", "as": "pl_before"}, {"shot": "r2-focus-radio-before.png"},
-                         {"sleep": 2500}, {"eval": FOCUS, "as": "radio_after"}, {"eval": "document.querySelector('#poslist label .r').textContent", "as": "pl_after"},
-                         {"shot": "r2-focus-radio-after.png"},
-                         {"fill": ["#amt", "0.01"]}, {"waitFor": "OC.$('whole')"}, {"eval": "OC.$('whole').focus()", "as": "_"},
-                         {"eval": FOCUS, "as": "whole_before"}, {"sleep": 2500}, {"eval": FOCUS, "as": "whole_after"},
-                         {"shot": "r2-focus-close-all-after.png"}])
-    finally:
-        stop.set()
-        th.join(5)
+        return go
+    pl = "document.querySelector('#poslist label .r').textContent"
+    got = tool.look([{"goto": "/new?what=close&pair=BTC/USD&dir=long"}, {"waitFor": "document.querySelector('#poslist input')"},
+                     {"eval": "OC.$('pairsel').focus()", "as": "_"}, {"press": "Tab"}, {"eval": FOCUS, "as": "radio_before"},
+                     {"eval": pl, "as": "pl_before"}, {"shot": "r2-focus-radio-before.png"},
+                     {"signal": "down"}, {"waitFor": f"{pl}.startsWith('+12.83')", "timeout": 8000},
+                     {"eval": FOCUS, "as": "radio_after"}, {"eval": pl, "as": "pl_after"}, {"shot": "r2-focus-radio-after.png"},
+                     {"fill": ["#amt", "0.01"]}, {"waitFor": "OC.$('whole')"}, {"eval": "OC.$('whole').focus()", "as": "_"},
+                     {"eval": FOCUS, "as": "whole_before"},
+                     {"signal": "up"}, {"waitFor": f"{pl}.startsWith('+15.83')", "timeout": 8000}, {"eval": FOCUS, "as": "whole_after"},
+                     {"shot": "r2-focus-close-all-after.png"}],
+                    on={"down": move("61900.0", "61900.6", "62000.0", "62000.6"), "up": move("62000.0", "62000.6", "61900.0", "61900.6")})
     assert got["radio_before"] == got["radio_after"] == ["INPUT", "pos", True]
-    assert got["pl_before"] != got["pl_after"]       # the row's profit or loss changed while the radio kept the focus
+    assert got["pl_before"].startswith("+15.83") and got["pl_after"].startswith("+12.83")   # the row's profit changed under the focus
     assert got["whole_before"] == got["whole_after"] == ["BUTTON", "whole", None]
 
 
