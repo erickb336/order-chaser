@@ -231,8 +231,13 @@ def test_a_live_chase_end_to_end_timer_post_only_amend_fill_timeout_ioc_and_the_
     assert eng.db.get(cid)[1] == "live"
 
 
-def test_the_safety_timer_fires_when_it_is_not_renewed_and_the_chase_ends_with_no_ioc(live, fake):
+def test_the_safety_timer_fires_when_it_is_not_renewed_and_the_chase_ends_with_no_ioc(live, fake, monkeypatch):
+    from order_chaser import kraken
+    monkeypatch.setattr(kraken, "RETRY_EVERY", 0.05)
     eng, f, clock, call, _ = live
+    fake.add_other("limit", "XBTUSD", "sell 1 XBTUSD @ limit 70000")
+    fake.add_other("take-profit", "XBTUSD", "sell 0.1 XBTUSD @ take profit 75000")
+    fake.add_other("stop-loss", "XBTUSD", "sell 0.1 XBTUSD @ stop loss 58000")
     book(f, call, "snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")])
     assert call(eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
     wait_for(lambda: eng.chase.phase == "resting")
@@ -244,10 +249,18 @@ def test_the_safety_timer_fires_when_it_is_not_renewed_and_the_chase_ends_with_n
     wait_for(lambda: eng.chase.phase == "done")
     assert eng.chase.outcome == "timer"
     assert texts(eng)[-1] == "Kraken cancelled the order: the safety timer fired. Filled 0.0000 BTC. Chase ended. No IOC sent."
+    wait_for(lambda: not eng.kgw.renewing)                                   # no renewal in flight (it would set a timer)
     fake.rest_down = False
     wait_for(lambda: eng.kgw.task is None)
     assert fake.calls_of("CancelAllOrdersAfter") == [{"timeout": "60"}]     # no "0" after the timer fired
     assert len(fake.calls_of("AddOrder")) == 1                               # no IOC
+    wait_for(lambda: eng.chase.others_cancelled is not None)                 # C8: read when Kraken answers again
+    assert eng.chase.others_cancelled == ("sell 0.1 XBTUSD @ take profit 75000", "sell 0.1 XBTUSD @ stop loss 58000",
+                                          "sell 1 XBTUSD @ limit 70000")     # stop-loss and take-profit first
+    assert texts(eng)[-1] == ("Kraken cancelled 3 other orders of the account: sell 0.1 XBTUSD @ take profit 75000; "
+                              "sell 0.1 XBTUSD @ stop loss 58000; sell 1 XBTUSD @ limit 70000. The tool does not "
+                              "place them again.")
+    assert len(fake.calls_of("AddOrder")) == 1                               # never placed again (G19 P3)
 
 
 def test_a_lost_private_feed_reads_the_order_by_rest_every_5_s_and_pauses_amends(live, fake):
@@ -426,3 +439,68 @@ def test_the_keychain_is_read_one_time_at_each_start_of_the_tool(tmp_path, fake,
         book(f, call, "snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")])
         post(client, "/api/live/check", {"pair": "BTC/USD"})
         assert memory_keyring.reads == 2
+
+
+# ---------- U6: the restart reconcile (Q5, C8) ----------
+
+def stopped_during_a_chase(tmp_path, fake, fill: str | None = None) -> tuple[str, "Clock"]:
+    """A live chase rests, then the tool stops (no Stop, no timer 0)."""
+    with live_app(tmp_path, fake) as (eng, f, clock, call, _):
+        book(f, call, "snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")])
+        assert call(eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
+        wait_for(lambda: eng.chase.phase == "resting")
+        if fill:
+            fake.run(fake.fill, eng.chase.id, fill, None, False)               # a fill the tool did not see
+        return eng.chase.id, clock
+
+
+def test_at_restart_an_order_still_open_is_cancelled_and_its_fills_are_recorded(tmp_path, fake):
+    cid, _ = stopped_during_a_chase(tmp_path, fake, "0.018")
+    with live_app(tmp_path, fake) as (eng, f, clock, call, client):
+        wait_for(lambda: eng.restart is None)
+        c = eng.db.get(cid)[0]
+        assert client.get("/", follow_redirects=False).headers["location"] == "/new"
+        assert eng.setup_state()["why"][-1:] != [eng.blocked]
+    assert (c.phase, c.outcome, c.found, c.filled) == ("done", "ended", "open", D("0.018"))
+    assert fake.calls_of("CancelOrder") == [{"cl_ord_id": cid}]
+    assert fake.by_cl(cid)[1]["status"] == "canceled"
+    assert [e["text"] for e in eng.db.events(cid)][-2:] == [
+        "Kraken reports 0.0180 BTC more filled than the tool saw. Recorded it at 62,417.90 (maker).",
+        "The order was still open on Kraken. The tool cancelled it. The safety timer had not fired: your other orders "
+        "are untouched. Filled 0.0180 of 0.0500 BTC. Chase ended. The tool sends no order after a restart without you."]
+    assert len(fake.calls_of("AddOrder")) == 1                               # no IOC, no new order
+
+
+def test_at_restart_after_the_timer_fired_the_page_lists_the_other_orders_it_cancelled(tmp_path, fake):
+    fake.add_other("limit", "XBTUSD", "sell 1 XBTUSD @ limit 70000")
+    fake.add_other("stop-loss", "XBTUSD", "sell 0.1 XBTUSD @ stop loss 58000")
+    cid, clock = stopped_during_a_chase(tmp_path, fake)
+    clock.t += 50
+    fake.run(fake.fire_timer)                                                # Kraken's cancel-all, the tool is off
+    with live_app(tmp_path, fake) as (eng, f, clock2, call, client):
+        wait_for(lambda: eng.restart is None)
+        got = client.get(f"/api/chase/{cid}").json()
+    assert (got["found"], got["outcome"], got["others_cancelled"]) == (
+        "timer", "ended", ["sell 0.1 XBTUSD @ stop loss 58000", "sell 1 XBTUSD @ limit 70000"])
+    assert fake.calls_of("CancelOrder") == []
+    assert len(fake.calls_of("AddOrder")) == 1                               # the others are not placed again (G19 P3)
+
+
+def test_at_restart_kraken_not_answering_blocks_new_live_chases_and_says_why(tmp_path, fake):
+    cid, _ = stopped_during_a_chase(tmp_path, fake)
+    fake.rest_down = True
+    with live_app(tmp_path, fake) as (eng, f, clock, call, client):
+        wait_for(lambda: eng.reading["error"] is not None)
+        assert client.get("/", follow_redirects=False).headers["location"] == "/reconcile"
+        state = client.get("/api/state").json()
+        assert state["restart"]["id"] == cid and state["restart"]["reading"]["error"] == (
+            "Kraken did not answer. Check the connection.")
+        blocked = ("The tool cannot read Kraken to check the live chase of the last stop. Kraken did not answer. "
+                   "Check the connection. New live chases wait until it can.")
+        post(client, "/api/setup", {"account": "no"})
+        book(f, call, "snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")])
+        assert blocked in post(client, "/api/chase", LIVE).json()["errors"]
+        fake.rest_down = False                                               # the next try (2 s later) reads Kraken
+        wait_for(lambda: eng.restart is None)
+        assert blocked not in eng.setup_state()["why"]
+        assert eng.db.get(cid)[0].found == "open"

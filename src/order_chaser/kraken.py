@@ -142,6 +142,18 @@ NO_ANSWER = 60        # s: a read with no answer for this long ends the chase (c
 FEED_WAIT = 10        # s: the private feed must be up before the first order
 
 
+PROTECT = ("stop-loss", "take-profit", "trailing-stop")   # Kraken ordertypes that protect a position (Q7, C8)
+
+
+def others(orders: dict) -> list[dict]:
+    """Orders of the account (Kraken OpenOrders or ClosedOrders), stop-loss and take-profit orders first (Q7, C8)."""
+    rows = [{"id": k, "pair": o.get("descr", {}).get("pair", ""), "type": o.get("descr", {}).get("ordertype", ""),
+             "text": o.get("descr", {}).get("order", ""), "cl_ord_id": o.get("cl_ord_id")} for k, o in orders.items()]
+    for r in rows:
+        r["protect"] = r["type"].startswith(PROTECT)
+    return sorted(rows, key=lambda r: not r["protect"])
+
+
 def _reason(errors: list[str]) -> str:
     """Kraken's error text -> the core's reason of a refusal."""
     text = ", ".join(errors)
@@ -180,6 +192,7 @@ class KrakenGateway:
         self.cancels: set[str] = set()    # the legs that the tool asked to cancel
         self.timer = {"on": False, "renewed_at": None, "deadline": None, "tried_at": None}
         self.renewing = False
+        self.bg: set[asyncio.Task] = set()   # the read of the orders that the timer cancelled (C8)
 
     async def open_key(self) -> None:
         """The key, from memory or from the Keychain (Q9: macOS asks one time at each start of the tool)."""
@@ -263,8 +276,51 @@ class KrakenGateway:
         now = self.clock()
         if self.timer["deadline"] is not None and now >= self.timer["deadline"]:
             self.timer["on"] = False
+            task = asyncio.get_running_loop().create_task(self._after_timer(self.chase, self.timer["deadline"] - 5, now + 5))
+            self.bg.add(task)
+            task.add_done_callback(self.bg.discard)
             return core.VenueCanceled(now, "timer")
         return core.VenueCanceled(now, reason)
+
+    async def cancelled_by_timer(self, c: core.Chase, since: float, until: float) -> tuple[str, ...]:
+        """C8: the other orders of the account that Kraken cancelled from since to until (ClosedOrders), stop-loss
+        and take-profit orders first. The tool never places them again (G19 P3)."""
+        ours = {*c.legs, c.ioc_id}
+        got = (await self.rest.call("ClosedOrders", start=int(since)))
+        rows = {k: o for k, o in got.get("closed", {}).items() if o.get("status") == "canceled"
+                and o.get("cl_ord_id") not in ours and since <= float(o.get("closetm") or 0) <= until}
+        return tuple(r["text"] for r in others(rows))
+
+    async def _after_timer(self, c: core.Chase, since: float, until: float) -> None:
+        start = self.clock()
+        while True:
+            try:
+                got = await self.cancelled_by_timer(c, since, until)
+                break
+            except (httpx.HTTPError, KrakenError):
+                if self.clock() - start >= NO_ANSWER:
+                    got = None
+                    break
+                await asyncio.sleep(RETRY_EVERY)
+        self.on_event(core.OthersCancelled(self.clock(), c.id, got))
+
+    async def reconcile(self, c: core.Chase) -> list:
+        """The restart reconcile (Q5) of a live chase of the last stop: read each leg by cl_ord_id (one try each) and
+        cancel a leg that is still open. Returns the OrderState of each leg (after a cancel), then core.Reconciled.
+        Raises httpx.HTTPError or KrakenError when Kraken cannot be read: the caller tries again later."""
+        out, found = [], "closed"
+        for leg in (*c.legs, c.ioc_id):
+            st, info = await self._read(leg, wait=0)
+            if st.open:
+                await self.rest.call("CancelOrder", cl_ord_id=leg)
+                st, info = await self._read(leg, wait=0)
+                found = "open"
+            elif found == "closed" and info.get("status") == "canceled" and float(info.get("closetm") or 0) >= (c.off_from or 0):
+                found = "timer"      # cancelled after the tool stopped, not by the tool: the safety timer
+            if info:
+                out.append(st)
+        gone = await self.cancelled_by_timer(c, c.off_from, c.off_from + TIMER + 5) if found == "timer" else None
+        return out + [core.Reconciled(self.clock(), found, gone)]
 
     # ----- commands -----
     async def send(self, cmd, now: float) -> list:
@@ -346,9 +402,9 @@ class KrakenGateway:
             return [core.Rejected(self.clock(), "cancel", _reason(e.errors))]
         return [core.Canceled(self.clock())]
 
-    async def _read(self, leg: str) -> tuple[core.OrderState, dict]:
+    async def _read(self, leg: str, wait: float = NO_ANSWER) -> tuple[core.OrderState, dict]:
         """REST QueryOrders by cl_ord_id. Kraken's "unknown order": open False, cum 0.
-        No answer: it tries again every 2 s; after NO_ANSWER s (the chase clock) it raises httpx.HTTPError."""
+        No answer: it tries again every 2 s; after `wait` s (the chase clock) it raises httpx.HTTPError."""
         start = self.clock()
         while True:
             try:
@@ -360,7 +416,7 @@ class KrakenGateway:
                 r = {}
                 break
             except httpx.HTTPError:
-                if self.clock() - start >= NO_ANSWER:
+                if self.clock() - start >= wait:
                     raise
                 await asyncio.sleep(RETRY_EVERY)
         for info in r.values():

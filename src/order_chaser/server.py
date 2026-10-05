@@ -25,13 +25,13 @@ from starlette.staticfiles import StaticFiles
 
 from . import core, feed, keys, rest
 from .db import DEFAULT_DIR, Db, lock_folder
-from .kraken import WS_AUTH, KrakenGateway
+from .kraken import WS_AUTH, KrakenGateway, others
 from .sim import SimAccount, SimGateway
 
 HOST, PORT = "127.0.0.1", 5180
 WATCH_EVERY = 1.0   # s: at most one pair change each second, so that Kraken does not refuse the subscriptions
 STATIC = Path(__file__).parent / "static"
-PAGES = ("new", "chase", "result", "history", "setup")
+PAGES = ("new", "chase", "result", "history", "setup", "reconcile")
 PLAIN_NUMBER = re.compile(r"[0-9]{1,15}(\.[0-9]{1,18})?")   # ASCII digits only: no "١" or "０"
 NUMBER_MAX = Decimal(10) ** 12
 WHAT = {"buy": "buy", "sell": "sell", "long": "buy", "short": "sell", "close-long": "sell", "close-short": "buy"}  # -> side
@@ -49,7 +49,6 @@ WITHDRAW_NOT_REMOVED = ("This key can withdraw funds. The tool refused it, but m
                         "Delete the item \"Kraken API key (order-chaser)\" in Keychain Access, and delete the key in Kraken Pro.")
 KEYCHAIN_TEXT = keys.KEYCHAIN_TEXT
 ACCOUNT_ANSWERS = ("no", "yes", "sub")   # Q10: no other tool; another tool (live stays off); "I use a sub-account" (G19 P2)
-PROTECT = ("stop-loss", "take-profit", "trailing-stop")   # Kraken ordertypes that protect a position (Q7, C8)
 OTHERS_TICK_TEXT = ("Tick the box to start: the safety timer can cancel your stop-loss and take-profit orders.")
 FIRST_TICK_TEXT = "Tick the box for your first live order."
 STOP_TIMER_TEXT = ("The tool stopped during a live chase. The safety timer stays on: within 60 s Kraken cancels ALL "
@@ -66,15 +65,6 @@ def number(v) -> Decimal | None:
     else:
         return None
     return d if d.is_finite() and 0 <= d < NUMBER_MAX else None
-
-
-def others(open_orders: dict) -> list[dict]:
-    """The open orders of the account (Kraken OpenOrders), stop-loss and take-profit orders first (Q7, C8)."""
-    rows = [{"id": k, "pair": o.get("descr", {}).get("pair", ""), "type": o.get("descr", {}).get("ordertype", ""),
-             "text": o.get("descr", {}).get("order", ""), "cl_ord_id": o.get("cl_ord_id")} for k, o in open_orders.items()]
-    for r in rows:
-        r["protect"] = r["type"].startswith(PROTECT)
-    return sorted(rows, key=lambda r: not r["protect"])
 
 
 def _plain(o):
@@ -114,15 +104,43 @@ class Engine:
         self.touched = 0.0
         self.feed: feed.PublicFeed | None = None
         self.kgw: KrakenGateway | None = None   # the live gateway (create_app gives it); a dry run uses self.gw
-        self.blocked: str | None = None         # why no live chase can start now (the restart reconcile could not read Kraken)
+        self.blocked: str | None = None         # why no live chase can start now (the restart reconcile is not done)
+        self.restart: core.Chase | None = None  # the live chase of the last stop, until the restart reconcile ends it
+        self.reading = {"attempt": 0, "next_in": 0, "error": None}   # the restart reconcile's tries
 
     # ----- start of the tool -----
     def end_unfinished(self) -> None:
-        """A chase that did not finish before the tool stopped ends now. It is not resumed."""
+        """A chase that did not finish before the tool stopped ends now. It is not resumed. A live chase waits for
+        the restart reconcile (reconcile()); new live chases wait too."""
         now = self.clock()
         for c, last_seen in self.db.unfinished():
             self.chase = c
             self.handle(core.Restarted(now, last_seen))
+        if self.chase is not None and self.chase.phase == "restart":
+            self.restart, self.chase = self.chase, None
+            self.blocked = "The tool reads Kraken to check the live chase of the last stop. New live chases wait for it."
+
+    async def reconcile(self) -> bool:
+        """The restart reconcile (Q5): read the legs of the live chase of the last stop by cl_ord_id, cancel an open
+        leg, record the fills, end the chase. False when Kraken cannot be read: blocked says why."""
+        c = self.restart
+        self.reading["attempt"] += 1
+        try:
+            await self.kgw.open_key()
+            evs = await self.kgw.reconcile(c)
+        except Exception as e:   # no key, Keychain denied, Kraken refused or did not answer
+            self.reading["error"] = keys.why(e)
+            self.blocked = (f"The tool cannot read Kraken to check the live chase of the last stop. {keys.why(e)} "
+                            "New live chases wait until it can.")
+            self.version += 1
+            return False
+        self.chase = c
+        for ev in evs:
+            self.handle(ev)
+        self.restart = self.blocked = None
+        self.reading["error"] = None
+        self.version += 1
+        return True
 
     # ----- feed callbacks -----
     def on_book(self, book, ok: bool) -> None:
@@ -262,7 +280,9 @@ class Engine:
         return out
 
     def on_private(self, ev) -> None:
-        if self.active and not self.chase.dry:
+        if isinstance(ev, core.OthersCancelled) and self.chase and self.chase.id == ev.id:
+            self.handle(ev)                     # also after the chase ended (C8)
+        elif self.active and not self.chase.dry:
             self.handle(ev)
 
     def on_private_link(self, up: bool) -> None:
@@ -420,6 +440,7 @@ class Engine:
             "rate": self.rate_for(self.watched),
             "account": self.account,
             "chase": self.view(self.chase),
+            "restart": self.view(self.restart) and {**self.view(self.restart), "reading": self.reading},
         }
 
 
@@ -493,7 +514,7 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         return page_cache[name].replace("{{TOKEN}}", token)
 
     async def index(request: Request):
-        return RedirectResponse("/chase" if eng.active else "/new")
+        return RedirectResponse("/reconcile" if eng.restart else "/chase" if eng.active else "/new")
 
     async def html(request: Request):
         name = request.url.path.strip("/")
@@ -626,6 +647,8 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
             tasks.append(asyncio.create_task(eng.feed.run()))
             tasks.append(asyncio.create_task(_pairs_loop(eng)))
         tasks.append(asyncio.create_task(_tick_loop(eng)))
+        if eng.restart:
+            tasks.append(asyncio.create_task(_reconcile_loop(eng)))
         yield
         if eng.tasks:   # the end of a live chase that just ended: timer 0 (else it cancels other orders later)
             await asyncio.wait(eng.tasks, timeout=3)
@@ -748,6 +771,15 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
     app = Starlette(routes=routes, lifespan=lifespan)
     app.state.engine, app.state.token, app.state.keys = eng, token, store
     return Guard(app, token, port)
+
+
+async def _reconcile_loop(eng: Engine) -> None:
+    """The restart reconcile: try until Kraken can be read, 2, 4, 8 then 15 s apart. New live chases wait."""
+    wait = 2
+    while not await eng.reconcile():
+        eng.reading["next_in"] = wait
+        await asyncio.sleep(wait)
+        wait = min(wait * 2, 15)
 
 
 async def _tick_loop(eng: Engine) -> None:

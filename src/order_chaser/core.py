@@ -169,6 +169,8 @@ class Chase:
     gone_qty: Decimal = ZERO          # margin: the qty filled when the position was gone; later fills open a new one
     pfeed_ok: bool = True             # live: the private feed of the fills is up
     queried_at: float | None = None   # live: the last REST read of the order while the private feed is lost
+    found: str | None = None          # live, restart reconcile: "open" (the tool cancelled it), "timer" or "closed"
+    others_cancelled: tuple[str, ...] | None = None   # live: the other orders that the safety timer cancelled (C8)
 
     @property
     def buy(self) -> bool:
@@ -312,6 +314,23 @@ class NoAnswer:
     know the state of the order: the chase ends, and the safety timer cancels the order. reason: Kraken's error."""
     now: float
     reason: str = ""
+
+@dataclass(frozen=True)
+class Reconciled:
+    """Live restart reconcile (Q5): the tool read every leg (OrderState events with its id come first) and cancelled
+    any open leg. found: "open" (the tool cancelled it), "timer" (the safety timer cancelled it) or "closed".
+    others: the other orders that the timer cancelled (C8); None when the timer did not fire or they were not read."""
+    now: float
+    found: str
+    others: tuple[str, ...] | None = None
+
+@dataclass(frozen=True)
+class OthersCancelled:
+    """Live: after the safety timer fired, the other orders of the account that Kraken cancelled (C8), stop-loss and
+    take-profit orders first. None: the tool could not read them. Also after the chase ended."""
+    now: float
+    id: str
+    others: tuple[str, ...] | None
 
 @dataclass(frozen=True)
 class IocDone:
@@ -547,7 +566,18 @@ def _position_text(c: Chase) -> str:
     return f" Stays open: {stays}." if stays else " Position closed."
 
 
+def _others_text(others: tuple[str, ...] | None) -> str:
+    if others is None:
+        return "The tool could not read which other orders Kraken cancelled. Check them in Kraken Pro."
+    if not others:
+        return "Kraken cancelled no other order of the account."
+    return (f"Kraken cancelled {len(others)} other order{'s' if len(others) > 1 else ''} of the account: "
+            f"{'; '.join(others)}. The tool does not place them again.")
+
+
 def step(c: Chase, ev) -> tuple[Chase, list]:
+    if isinstance(ev, OthersCancelled):
+        return replace(c, others_cancelled=ev.others), [Log(ev.now - c.started, _others_text(ev.others), "bad")]
     if c.phase == "done":
         return _liquidated_after_end(c, ev)
     c = _decay(c, ev.now)
@@ -626,6 +656,19 @@ def step(c: Chase, ev) -> tuple[Chase, list]:
         out.append(Log(t, f"{why}. The chase ended. The safety timer cancels the order on Kraken within 60 s. "
                           "Check Kraken Pro for fills.", "bad"))
         c, more = _end(c, ev.now, "noanswer")
+        out += more
+
+    elif isinstance(ev, Reconciled) and c.phase == "restart":
+        line = {"open": "The order was still open on Kraken. The tool cancelled it. The safety timer had not fired: "
+                        "your other orders are untouched.",
+                "timer": "The safety timer cancelled the order on Kraken.",
+                "closed": "The order was closed on Kraken."}[ev.found]
+        out.append(Log(t, f"{line} Filled {fmt_qty(c.filled)} of {fmt_qty(c.qty)} {base}. Chase ended. "
+                          "The tool sends no order after a restart without you.", "fill" if c.filled >= c.qty else "warn"))
+        if ev.found == "timer":
+            out.append(Log(t, _others_text(ev.others), "bad"))
+        c, more = _end(replace(c, found=ev.found, others_cancelled=ev.others), ev.now,
+                       "filled" if c.filled >= c.qty else "ended")
         out += more
 
     elif isinstance(ev, Placed) and c.phase == "placing":
@@ -963,10 +1006,12 @@ def _restarted(c: Chase, ev: Restarted, t: float) -> tuple[Chase, list]:
         lines = [Log(t, f"Tool started again after {off} s off. Ended the simulated order. No order was on Kraken.", "bad"),
                  Log(t, f"Recorded the simulated fills: {fmt_qty(c.filled)} of {fmt_qty(c.qty)} {base}."),
                  Log(t, "Did not continue the dry run.")]
-    else:
-        lines = [Log(t, f"Tool started again after {off} s off. Chase ended, not continued.", "bad"),
-                 Log(t, "The safety timer of the live chase stayed on: within 60 s of the stop, Kraken cancelled all "
-                        "open orders on the account, also stop-loss and take-profit orders.", "warn")]
+    else:   # the restart reconcile (Q5): the engine reads the legs on Kraken, then Reconciled ends the chase
+        return replace(c, phase="restart", off_from=ev.last_seen, price=None, pending=None), [
+            Log(t, f"Tool started again after {off} s off. Reading the orders of this chase on Kraken by cl_ord_id. "
+                   "The chase does not continue.", "bad"),
+            Log(t, "The safety timer of the live chase stayed on: within 60 s of the stop, Kraken cancelled all "
+                   "open orders on the account, also stop-loss and take-profit orders.", "warn")]
     c, more = _end(replace(c, off_from=ev.last_seen), ev.now, "ended")
     return c, lines + more
 
@@ -1167,6 +1212,8 @@ def from_json(s: str) -> Chase:
             for p in m["positions"]))
     d.pop("order_cum", None)   # a field of the first build; the fills hold the venue's qty now
     d["gone_qty"] = Decimal(d.get("gone_qty", 0))   # absent in a state saved before this field
+    if d.get("others_cancelled") is not None:
+        d["others_cancelled"] = tuple(d["others_cancelled"])
     for k in ("qty", "limit", "start_bid", "start_ask"):
         d[k] = Decimal(d[k])
     for k in ("price", "pending", "bid", "ask", "end_ask", "reject_price"):
