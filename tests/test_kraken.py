@@ -839,3 +839,62 @@ def test_when_the_0_fails_at_the_end_of_a_live_chase_the_chase_log_says_the_time
     wait_for(lambda: eng.chase.phase == "done" and not eng.tasks)
     assert texts(eng)[-1] == ("The safety timer can still be on: within 60 s Kraken cancels ALL open orders on this "
                               "account, also stop-loss and take-profit orders.")
+
+
+# ---------- T44's contract: price None means "no order rests"; a refused first order goes out again as -1, -2 ----------
+
+def test_an_open_order_whose_kraken_answer_has_no_price_keeps_its_price_and_no_second_order_goes_out(live, fake):
+    """T44 contract 1: the core reads a price of None as "no order rests" and places a new order. So the gateway
+    gives each open order a price: Kraken's, else the price that the tool last sent (here: the amended one)."""
+    eng, f, clock, call, _ = live
+    book(f, call, "snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")])
+    assert call(eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
+    cid = eng.chase.id
+    wait_for(lambda: eng.chase.phase == "resting")
+    clock.t += 6
+    book(f, call, "update", [("62418.1", "0.5")], [])                        # amended to 62418.1
+    wait_for(lambda: eng.chase.price == D("62418.1"))
+    del fake.by_cl(cid)[1]["descr"]["price"]                                 # Kraken's answers now have no price
+    fake.refuse_amend = "EGeneral:Internal error"
+    clock.t += 6
+    book(f, call, "update", [("62418.2", "0.5")], [])                        # amend refused: the core reads the order
+    wait_for(lambda: "Read the order again: open, 0.0000 BTC filled, at 62,418.10." in texts(eng))
+    snap = {"exec_type": "new", "cl_ord_id": cid, "order_status": "open", "cum_qty": 0.0}   # a snapshot with no limit_price
+    got = []
+    eng.kgw.on_event = got.append
+    fake.run(fake.push, "snapshot", [snap])
+    wait_for(lambda: got)
+    assert got == [core.OrderState(clock.t, True, D(0), D("62418.1"), cid)]
+    assert (eng.chase.phase, eng.chase.price) == ("resting", D("62418.1"))
+    assert [p["cl_ord_id"] for p in fake.calls_of("AddOrder")] == [cid]       # no second order next to the first
+
+
+def test_a_refused_first_order_goes_out_again_as_minus_1_minus_2_and_reads_of_refused_legs_ask_kraken_nothing(live, fake):
+    """T44 contracts 2 and 3 on a live spot chase: Place with "<id>-1", "<id>-2" after a would-cross refusal (not a
+    cancel and replace), and a Query of a leg that Kraken never accepted is closed, 0 filled, with no call to Kraken."""
+    eng, f, clock, call, _ = live
+    book(f, call, "snapshot", [("62418.5", "1.0")], [("62419.0", "1.0")])   # the bid is at the fake's ask: post-only crosses
+    assert call(eng.start_live, "BTC/USD", "buy", D("0.05"), D("62420.0"), 120) == []
+    cid = eng.chase.id
+    wait_for(lambda: eng.chase.phase == "resting" and eng.chase.price is None)
+    for _ in range(2):                                                       # after each wait: placed again, refused again
+        clock.t += 6
+        book(f, call, "update", [("62418.5", "1.0")], [])
+        call(eng.tick)
+    wait_for(lambda: len(fake.calls_of("AddOrder")) == 3 and eng.chase.phase == "resting" and eng.chase.price is None)
+    assert [p["cl_ord_id"] for p in fake.calls_of("AddOrder")] == [cid, cid + "-1", cid + "-2"]
+    assert eng.chase.legs == (cid, cid + "-1", cid + "-2") and eng.chase.replace is False
+    assert eng.kgw.refused == {cid, cid + "-1", cid + "-2"}
+
+    async def read(leg):
+        return await eng.kgw.send(core.Query(leg), clock.t)
+    assert [call(read, leg) for leg in eng.chase.legs] == [[core.OrderState(clock.t, False, D(0), None, leg)]
+                                                           for leg in eng.chase.legs]
+    clock.t += 120                                                           # timeout, no order rests: the reread of "-2"
+    call(eng.tick)                                                           # (a book first would place "-3": 5 s passed)
+    wait_for(lambda: eng.chase.phase == "done")
+    assert texts(eng)[-3:] == ["Timeout. The tool places no new order.", "Read the filled quantity again: 0.0000 BTC.",
+                               "No IOC: the order book is not valid now, so there is no valid price. The rest counts as not filled."]
+    assert [m for m, _ in fake.calls if m in ("QueryOrders", "OpenOrders", "ClosedOrders", "CancelOrder")] == []
+    assert [p["cl_ord_id"] for p in fake.calls_of("AddOrder")] == [cid, cid + "-1", cid + "-2"]
+    assert (eng.chase.outcome, eng.chase.filled) == ("notfilled", D(0))

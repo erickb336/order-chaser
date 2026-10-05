@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
 import os
@@ -183,7 +184,8 @@ class KrakenGateway:
       leverage and reduce_only for margin. The IOC is read back at once (QueryOrders): Filled(cum), then IocDone.
     - Amend: WebSocket v2 amend_order by cl_ord_id. A refusal goes to the core, which decides (margin: cancel and
       replace). Cancel: REST CancelOrder. Query: REST QueryOrders by the txid of AddOrder's answer (Kraken needs it);
-      "unknown order", or a leg that Kraken refused (no txid), is OrderState(open False, cum 0).
+      "unknown order", or a leg that Kraken refused (no txid), is OrderState(open False, cum 0). An open order always
+      has a price (_priced): the core reads None as "no order rests".
     - The executions feed: exec_events(); a cancel of the current leg that the tool did not ask for also gives
       VenueCanceled ("timer" when the safety timer was due).
     - The safety timer: CancelAllOrdersAfter 60 s before the first order (no order rests without it), renewed every
@@ -205,6 +207,7 @@ class KrakenGateway:
         self.cancels: set[str] = set()    # the legs that the tool asked to cancel
         self.txids: dict[str, str] = {}   # leg (cl_ord_id) -> Kraken's txid, from AddOrder's answer
         self.refused: set[str] = set()    # the legs that Kraken refused: no order exists
+        self.prices: dict[str, Decimal] = {}   # leg -> the price of its last Place or accepted Amend (see _priced)
         self.ioc_sent = False             # the IOC went out: the chase leg is gone, so no order of the chase can rest
         self.timer = {"on": False, "renewed_at": None, "deadline": None, "tried_at": None}
         self.renewing: asyncio.Task | None = None   # a renewal on its way: close() waits for it, then sends 0
@@ -221,7 +224,7 @@ class KrakenGateway:
     async def open(self) -> None:
         """Before the first order: the private feed (up within FEED_WAIT s), the safety timer and caffeinate.
         Raises (ConnectionError, KrakenError, httpx.HTTPError) when one of them fails: the caller sends no order."""
-        self.cancels, self.refused, self.ioc_sent = set(), set(), False
+        self.cancels, self.refused, self.prices, self.ioc_sent = set(), set(), {}, False
         self.timer = {"on": False, "renewed_at": None, "deadline": None, "tried_at": None}
         self.feed = PrivateFeed(self._token, self._on_exec, self._link, self.ws_url)
         self.task = asyncio.create_task(self.feed.run())
@@ -402,6 +405,7 @@ class KrakenGateway:
 
     async def _add(self, cmd, ioc: bool) -> list:
         """AddOrder. A refusal (not a transient error) is core.Rejected; a transient error raises (send reads)."""
+        self.prices[cmd.id] = cmd.price   # also when the answer is lost and the read finds the order
         try:
             r = await self.rest.call("AddOrder", **self._order(cmd, ioc))
         except KrakenError as e:
@@ -434,6 +438,7 @@ class KrakenGateway:
         except ConnectionError:
             return [core.Rejected(self.clock(), "amend", "no_feed")]
         if m.get("success"):
+            self.prices[cmd.id] = cmd.price
             return [core.Amended(self.clock())]
         return [core.Rejected(self.clock(), "amend", _reason([str(m.get("error"))]))]
 
@@ -465,9 +470,16 @@ class KrakenGateway:
                     raise
             await asyncio.sleep(RETRY_EVERY)
         for info in r.values():
-            return core.OrderState(self.clock(), info.get("status") in OPEN_STATES, Decimal(str(info.get("vol_exec", 0))),
-                                   _dec(info.get("descr", {}).get("price")), leg), info
+            return self._priced(core.OrderState(self.clock(), info.get("status") in OPEN_STATES,
+                                                Decimal(str(info.get("vol_exec", 0))), _dec(info.get("descr", {}).get("price")), leg)), info
         return core.OrderState(self.clock(), False, Decimal(0), None, leg), {}
+
+    def _priced(self, st: core.OrderState) -> core.OrderState:
+        """An open order always has its price (T44: the core reads a price of None as "no order rests" and places
+        a new order). Kraken's price first; when its answer has none, the price that the tool last sent for the leg."""
+        if st.open and st.price is None:
+            return dataclasses.replace(st, price=self.prices.get(st.id))
+        return st
 
     async def _ask(self, leg: str) -> dict:
         """REST QueryOrders by the leg's txid (Kraken needs the txid). With no txid (AddOrder's answer was lost, or
@@ -493,6 +505,7 @@ class KrakenGateway:
         if c is None:
             return
         for ev in exec_events(c, kind, items, self.clock(), self.cancels):
+            ev = self._priced(ev) if isinstance(ev, core.OrderState) else ev
             self.on_event(ev)
             if isinstance(ev, core.OrderState) and not ev.open and ev.id == c.leg:
                 why = next((x.get("reason") for x in items if x.get("cl_ord_id") == ev.id and x.get("reason")), None)
