@@ -1138,3 +1138,41 @@ def test_page_a_liquidation_before_the_ioc_fills_ends_liquidated_with_the_positi
                            "The 0.0050 BTC that filled after it stays open as a position.",
                    "pstat": "Open: 0.0050 BTC long, 5x",
                    "last": "0:31Filled 0.0050 BTC at 49,000.60 (taker, IOC). Order complete. Position now: 0.0050 BTC long, 5x."}
+
+
+# ---------- phone width (T45) ----------
+
+# The page width and each element that goes past the left or right edge of the window (UX R90, QA R91 of T5). An element
+# inside a box that scrolls or clips sideways (such as the history table) does not count; that box itself must fit.
+WIDTH_JS = """() => {
+  const W = innerWidth;
+  const boxed = e => { for (let a = e.parentElement; a && a !== document.body; a = a.parentElement) if (getComputedStyle(a).overflowX !== 'visible') return true; return false; };
+  const name = e => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + (typeof e.className === 'string' && e.className.trim() ? '.' + e.className.trim().split(/\\s+/).join('.') : '');
+  const wide = Array.from(document.querySelectorAll('body *')).filter(e => {
+    const r = e.getBoundingClientRect();
+    return r.width > 0 && (r.right > W + 0.5 || r.left < -0.5) && !e.closest('.sr-only') && !boxed(e);
+  }).map(e => name(e) + ' ' + Math.round(e.getBoundingClientRect().left) + '..' + Math.round(e.getBoundingClientRect().right));
+  return { scroll: document.scrollingElement.scrollWidth, wide: wide.slice(0, 12) };
+}"""
+
+
+def test_page_every_page_fits_a_375_px_phone_with_no_sideways_scroll_and_readable_text(tool):
+    cid = opened_long(tool)                                       # a position to close, a result and a history row
+    tool.beat(1)
+    phone = lambda name: [{"eval": f"({WIDTH_JS})()", "as": name}, {**ALL_TEXT, "as": name + " contrast"},
+                          {"shot": f"phone-{name.replace('/', '').replace(' ', '-') or 'new'}.png"}]
+    got = tool.look([
+        {"viewport": [375, 812]},
+        {"goto": "/new"}, {"waitFor": "OC.$('ask').textContent === '62,418.50'"}, *phone("/new buy"),
+        {"click": "#what button[data-w=long]"}, {"waitFor": "OC.$('mgbox').querySelector('.gauge')"}, *phone("/new open long"),
+        {"goto": "/new?what=close&pair=BTC/USD&dir=long"}, {"waitFor": "document.querySelector('.poslist label') && OC.$('mgbox').querySelector('.gauge')"},
+        *phone("/new close"),
+        {"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"}, *phone("/result"),
+        {"goto": "/history"}, {"waitFor": "document.querySelector('tr.click')"}, *phone("/history"),
+        {"goto": "/setup"}, {"waitFor": "OC.$('mgline').textContent"}, *phone("/setup"),
+        {"signal": "start"}, {"goto": "/chase"}, card_shown("resting"), {"waitFor": "document.querySelector('#statuscard .rail .mk')"}, *phone("/chase")],
+        on={"start": lambda: tool.start()})
+    pages = ["/new buy", "/new open long", "/new close", "/result", "/history", "/setup", "/chase"]
+    assert {p: got[p] for p in pages} == {p: {"scroll": 375, "wide": []} for p in pages}
+    low = {p: got[p + " contrast"] for p in pages if got[p + " contrast"]["c"] < 4.5}
+    assert low == {}

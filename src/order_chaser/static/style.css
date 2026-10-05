@@ -261,3 +261,25 @@ table.t tr.click:hover td { background: var(--surface-2); }
   .facts { grid-template-columns: 1fr 1fr; }
 }
 .mins { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 12.5px; align-items: baseline; }
+
+/* Phone width (T45): no page scrolls sideways at 375 px. A wide table scrolls inside its own card. */
+.card:has(> table.t) { overflow-x: auto; }
+@media (max-width: 600px) {
+  .app { padding: 0 16px 40px; }
+  .top { flex-wrap: wrap; gap: 4px 12px; padding: 8px 0; }
+  .top .spacer { flex-basis: 100%; height: 0; }
+  .nav a { display: inline-flex; align-items: center; min-height: 44px; }
+  .row { flex-wrap: wrap; }
+  .card { padding: 16px; }
+  .btn, .seg button, select.input { min-height: 44px; }
+  .btn.sm { min-height: 36px; }
+  /* A row with a note in its last cell: the note goes under the label and the value. */
+  table.t tr:has(> td.tiny:last-child) { display: grid; grid-template-columns: 1fr auto; border-bottom: 1px solid var(--line); }
+  table.t tr:has(> td.tiny:last-child):last-child { border-bottom: 0; }
+  table.t tr:has(> td.tiny:last-child) > td { border-bottom: 0; }
+  table.t tr:has(> td.tiny:last-child) > td.tiny { grid-column: 1 / -1; padding-top: 0; }
+  .poslist label { grid-template-columns: 22px 1fr; }
+  .poslist .r { grid-column: 2; text-align: left; }
+  .num, .mono, .big { overflow-wrap: anywhere; }
+  table.t .num, table.t td.r { overflow-wrap: normal; white-space: nowrap; }
+}
