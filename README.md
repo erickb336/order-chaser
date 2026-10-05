@@ -10,12 +10,17 @@
   <a href="LICENSE"><img alt="licence: MIT" src="https://img.shields.io/badge/licence-MIT-blue.svg"></a>
 </p>
 
+> [!CAUTION]
+> **Don't use this. Trading is stupid. DCA is the way.**
+>
+> I built this tool as an experiment in agent-driven software, not as advice. Chasing prices costs fees and time, and it rarely beats dollar-cost averaging (DCA): buy a fixed amount on a fixed schedule, and hold. This is not financial advice. See [#8](https://github.com/erickb336/order-chaser/issues/8).
+
 **Order chaser is a local tool for Kraken Pro that chases a post-only limit order at the best bid, never above a cap, and sends one IOC for the rest at the end.**
 
 You give it a pair, an amount and a timeout. It places a post-only buy at the best bid and moves it up as the bid rises. It never goes above the cap: the ask at the start. After the timeout, it cancels, reads the filled quantity again, and sends one IOC (immediate-or-cancel) order at the cap for the rest. A sell is the mirror, with a floor (the bid at the start). It also chases margin orders: open a long or a short at 2x to 5x, and close a position with a reduce-only order.
 
 > [!IMPORTANT]
-> **This version is a dry run only.** It reads live public Kraken prices and simulates the fills. It takes no API key and sends no order to Kraken. A margin dry run uses a simulated account of 5,000 USD. Live trading is task T4: it is designed, not built, and it comes only after the owner's go-ahead.
+> **This version is a dry run only.** It reads live public Kraken prices and simulates the fills. It takes no API key and sends no order to Kraken. A margin dry run uses a simulated account of 5,000 USD. Live trading is not finished. What it still needs is in [#9](https://github.com/erickb336/order-chaser/issues/9).
 
 **Contents:** [Quick start](#quick-start) · [Learn it in 5 minutes](#learn-it-in-5-minutes) · [How it works](#how-it-works) · [Concepts](#concepts) · [Options and tests](#options-and-tests) · [FAQ](#faq) · [Under the hood](#under-the-hood) · [Credits](#credits) · [Licence](#licence)
 
