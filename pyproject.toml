@@ -3,6 +3,8 @@ name = "order-chaser"
 version = "0.1.0"
 description = "Kraken order chaser: chases a post-only limit order. This version runs dry runs only."
 requires-python = "==3.12.*"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "httpx==0.28.1",
     "starlette==1.7.0",

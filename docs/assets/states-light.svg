@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" width="960" height="560" role="img" aria-labelledby="title desc">
+<title id="title">Chase states</title><desc id="desc">The chase states. Placing goes to resting. Resting and amending go back and forth while the bid moves. An amend that Kraken rejects goes to reconcile, which reads the order and goes back to resting. No message for 10 s makes the feed lost; when the feed comes back, reconcile reads the order again. A timeout, Fill the rest now, or Stop goes to cancelling. After a timeout or Fill the rest now: reread the filled quantity, send one IOC at the cap, then done. Stop goes from cancelling to done, and so does a cancel rejected 3 times. A timeout while the feed is lost cancels and sends no IOC. Done has one outcome: filled, not filled, stopped, liquidated or ended.</desc>
+<defs><marker id="arrow-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4a5260"/></marker><marker id="arrow-order" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1f4fd1"/></marker><marker id="arrow-ioc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5b3fd1"/></marker><marker id="arrow-ask" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#b42318"/></marker><marker id="arrow-cap" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8a5300"/></marker></defs>
+<rect x="0.5" y="0.5" width="959" height="559" rx="14" fill="#ffffff" stroke="#c4cad4"/>
+<text x="32" y="44" fill="#14171c" font-size="22" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Chase states</text>
+<text x="32" y="68" fill="#4a5260" font-size="14" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">From src/order_chaser/core.py. One step(chase, event) function moves a chase.</text>
+<line x1="190" y1="136.0" x2="290" y2="136.0" stroke="#4a5260" stroke-width="1.6" marker-end="url(#arrow-muted)"/>
+<text x="240.0" y="128.0" fill="#4a5260" font-size="12" font-weight="400" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">placed</text>
+<line x1="440" y1="128.2" x2="560" y2="128.2" stroke="#4a5260" stroke-width="1.6" marker-end="url(#arrow-muted)"/>
+<text x="500.0" y="120.19999999999999" fill="#4a5260" font-size="12" font-weight="400" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">bid moves</text>
+<line x1="560" y1="146.4" x2="440" y2="146.4" stroke="#4a5260" stroke-width="1.6" marker-end="url(#arrow-muted)"/>
+<text x="500.0" y="164.4" fill="#4a5260" font-size="12" font-weight="400" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">amended</text>
+<line x1="635.0" y1="162" x2="635.0" y2="260" stroke="#4a5260" stroke-width="1.6" marker-end="url(#arrow-muted)"/>
+<text x="643.0" y="211.0" fill="#4a5260" font-size="12" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">amend rejected</text>
+<line x1="365.0" y1="162" x2="365.0" y2="260" stroke="#4a5260" stroke-width="1.6" marker-end="url(#arrow-muted)"/>
+<text x="357.0" y="236" fill="#4a5260" font-size="12" font-weight="400" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">no message 10 s</text>
+<line x1="440" y1="286.0" x2="560" y2="286.0" stroke="#4a5260" stroke-width="1.6" marker-end="url(#arrow-muted)"/>
+<text x="500.0" y="278.0" fill="#4a5260" font-size="12" font-weight="400" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">feed back</text>
+<line x1="560" y1="265.2" x2="410.0" y2="162" stroke="#4a5260" stroke-width="1.6" marker-end="url(#arrow-muted)"/>
+<text x="472" y="222" fill="#4a5260" font-size="12" font-weight="400" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">order read</text>
+<path d="M290,151.6 H230 V436.0 H290" fill="none" stroke="#4a5260" stroke-width="1.6" stroke-linejoin="round" marker-end="url(#arrow-muted)"/>
+<text x="222" y="330" fill="#4a5260" font-size="12" font-weight="400" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">timeout,</text>
+<text x="222" y="346" fill="#4a5260" font-size="12" font-weight="400" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Fill the rest now,</text>
+<text x="222" y="362" fill="#4a5260" font-size="12" font-weight="400" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">or Stop</text>
+<line x1="365.0" y1="312" x2="365.0" y2="410" stroke="#4a5260" stroke-width="1.6" marker-end="url(#arrow-muted)"/>
+<text x="373.0" y="386" fill="#4a5260" font-size="12" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">timeout: no IOC</text>
+<line x1="440" y1="436.0" x2="520" y2="436.0" stroke="#4a5260" stroke-width="1.6" marker-end="url(#arrow-muted)"/>
+<text x="480.0" y="428.0" fill="#4a5260" font-size="12" font-weight="400" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">cancelled</text>
+<line x1="670" y1="436.0" x2="740" y2="436.0" stroke="#4a5260" stroke-width="1.6" marker-end="url(#arrow-muted)"/>
+<text x="705.0" y="428.0" fill="#4a5260" font-size="12" font-weight="400" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">rest to fill</text>
+<rect x="290" y="490" width="600" height="52" rx="10" fill="#f3f5f8" stroke="#14171c" stroke-width="1.6"/>
+<text x="306" y="512" fill="#14171c" font-size="15" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">done</text>
+<text x="306" y="531" fill="#4a5260" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">outcome: filled · not filled · stopped · liquidated · ended (tool restart)</text>
+<line x1="365.0" y1="462" x2="365.0" y2="490" stroke="#4a5260" stroke-width="1.6" marker-end="url(#arrow-muted)"/>
+<text x="357.0" y="480" fill="#4a5260" font-size="12" font-weight="400" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Stop, or cancel rejected 3 times</text>
+<line x1="595.0" y1="462" x2="595.0" y2="490" stroke="#4a5260" stroke-width="1.6" marker-end="url(#arrow-muted)"/>
+<text x="603.0" y="480" fill="#4a5260" font-size="12" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">nothing to send</text>
+<line x1="815.0" y1="462" x2="815.0" y2="490" stroke="#5b3fd1" stroke-width="1.6" marker-end="url(#arrow-ioc)"/>
+<rect x="40" y="110" width="150" height="52" rx="10" fill="#f3f5f8" stroke="#1f4fd1" stroke-width="1.6"/>
+<text x="54" y="132" fill="#1f4fd1" font-size="15" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">placing</text>
+<text x="54" y="151" fill="#4a5260" font-size="12" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">post-only order</text>
+<rect x="290" y="110" width="150" height="52" rx="10" fill="#f3f5f8" stroke="#1f4fd1" stroke-width="1.6"/>
+<text x="304" y="132" fill="#1f4fd1" font-size="15" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">resting</text>
+<text x="304" y="151" fill="#4a5260" font-size="12" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">at the bid, ≤ cap</text>
+<rect x="560" y="110" width="150" height="52" rx="10" fill="#f3f5f8" stroke="#1f4fd1" stroke-width="1.6"/>
+<text x="574" y="132" fill="#1f4fd1" font-size="15" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">amending</text>
+<text x="574" y="151" fill="#4a5260" font-size="12" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">move to the new bid</text>
+<rect x="290" y="260" width="150" height="52" rx="10" fill="#f3f5f8" stroke="#b42318" stroke-width="1.6"/>
+<text x="304" y="282" fill="#b42318" font-size="15" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">feed lost</text>
+<text x="304" y="301" fill="#4a5260" font-size="12" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">no message 10 s</text>
+<rect x="560" y="260" width="150" height="52" rx="10" fill="#f3f5f8" stroke="#8a5300" stroke-width="1.6"/>
+<text x="574" y="282" fill="#8a5300" font-size="15" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">reconcile</text>
+<text x="574" y="301" fill="#4a5260" font-size="12" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">read the order</text>
+<rect x="290" y="410" width="150" height="52" rx="10" fill="#f3f5f8" stroke="#1f4fd1" stroke-width="1.6"/>
+<text x="304" y="432" fill="#1f4fd1" font-size="15" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">cancelling</text>
+<text x="304" y="451" fill="#4a5260" font-size="12" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">cancel, wait</text>
+<rect x="520" y="410" width="150" height="52" rx="10" fill="#f3f5f8" stroke="#1f4fd1" stroke-width="1.6"/>
+<text x="534" y="432" fill="#1f4fd1" font-size="15" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">reread</text>
+<text x="534" y="451" fill="#4a5260" font-size="12" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">read the fill again</text>
+<rect x="740" y="410" width="150" height="52" rx="10" fill="#f3f5f8" stroke="#5b3fd1" stroke-width="1.6"/>
+<text x="754" y="432" fill="#5b3fd1" font-size="15" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">ioc</text>
+<text x="754" y="451" fill="#4a5260" font-size="12" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">one IOC at the cap</text>
+<text x="780" y="128" fill="#4a5260" font-size="12" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Margin: if Kraken refuses</text>
+<text x="780" y="144" fill="#4a5260" font-size="12" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">an amend, the tool cancels</text>
+<text x="780" y="160" fill="#4a5260" font-size="12" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">and places a new order</text>
+<text x="780" y="176" fill="#4a5260" font-size="12" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">for the rest instead.</text>
+</svg>

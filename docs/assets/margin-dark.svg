@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" width="960" height="540" role="img" aria-labelledby="title desc">
+<title id="title">Margin flow</title><desc id="desc">The margin flow of the dry run, with sample data. 1: open a long or a short at 2x to 5x with a chase. 2: each open is its own position in the simulated account of 5,000 USD, with its own leverage, entry and collateral. 3: close with a reduce-only order, oldest position first (FIFO). Example: positions of 0.0100 BTC at 2x and 0.0200 BTC at 4x; a close of 0.0150 BTC takes all of the 2x position and 0.0050 BTC of the 4x position; 0.0150 BTC at 4x stays open. Below: the margin level, equity divided by used margin times 100. Kraken calls margin at 80%. At the pair's margin stop, 40% today, the simulated exchange liquidates every position at the mark and a running chase ends.</desc>
+<defs><marker id="arrow-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a7aebb"/></marker><marker id="arrow-order" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8fb6ff"/></marker><marker id="arrow-ioc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c5b3ff"/></marker><marker id="arrow-ask" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff8a80"/></marker><marker id="arrow-cap" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f6bd5a"/></marker></defs>
+<rect x="0.5" y="0.5" width="959" height="539" rx="14" fill="#0f1115" stroke="#3a404b"/>
+<text x="32" y="44" fill="#e8eaee" font-size="22" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Margin in the dry run</text>
+<text x="32" y="68" fill="#a7aebb" font-size="14" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Simulated account of 5,000 USD. Sample data. No order goes to Kraken.</text>
+<rect x="32" y="90" width="288" height="112" rx="10" fill="#191c22" stroke="#8fb6ff" stroke-width="1.6"/>
+<circle cx="58" cy="118" r="13" fill="#191c22" stroke="#8fb6ff" stroke-width="2"/>
+<text x="58" y="123" fill="#8fb6ff" font-size="14" font-weight="700" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">1</text>
+<text x="80" y="123" fill="#e8eaee" font-size="16" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Open long or short</text>
+<text x="50" y="152" fill="#a7aebb" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">2x to 5x, only the levels</text>
+<text x="50" y="171" fill="#a7aebb" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">the pair allows.</text>
+<text x="50" y="190" fill="#a7aebb" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">A chase opens it.</text>
+<line x1="322" y1="146" x2="334" y2="146" stroke="#a7aebb" stroke-width="1.6" marker-end="url(#arrow-muted)"/>
+<rect x="336" y="90" width="288" height="112" rx="10" fill="#191c22" stroke="#f6bd5a" stroke-width="1.6"/>
+<circle cx="362" cy="118" r="13" fill="#191c22" stroke="#f6bd5a" stroke-width="2"/>
+<text x="362" y="123" fill="#f6bd5a" font-size="14" font-weight="700" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">2</text>
+<text x="384" y="123" fill="#e8eaee" font-size="16" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Positions</text>
+<text x="354" y="152" fill="#a7aebb" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Each open is its own position:</text>
+<text x="354" y="171" fill="#a7aebb" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">own leverage, entry, collateral.</text>
+<text x="354" y="190" fill="#a7aebb" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Never long and short together.</text>
+<line x1="626" y1="146" x2="638" y2="146" stroke="#a7aebb" stroke-width="1.6" marker-end="url(#arrow-muted)"/>
+<rect x="640" y="90" width="288" height="112" rx="10" fill="#191c22" stroke="#5ee08f" stroke-width="1.6"/>
+<circle cx="666" cy="118" r="13" fill="#191c22" stroke="#5ee08f" stroke-width="2"/>
+<text x="666" y="123" fill="#5ee08f" font-size="14" font-weight="700" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">3</text>
+<text x="688" y="123" fill="#e8eaee" font-size="16" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Close a position</text>
+<text x="658" y="152" fill="#a7aebb" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Reduce-only: it can only make</text>
+<text x="658" y="171" fill="#a7aebb" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">the position smaller.</text>
+<text x="658" y="190" fill="#a7aebb" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Oldest position first (FIFO).</text>
+<text x="32" y="236" fill="#e8eaee" font-size="15" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">A close of 0.0150 BTC, oldest first</text>
+<rect x="32" y="250" width="200.0" height="34" rx="4" fill="#191c22" stroke="#5ee08f" stroke-width="2"/>
+<rect x="232.0" y="250" width="100.0" height="34" rx="4" fill="#191c22" stroke="#5ee08f" stroke-width="2"/>
+<rect x="332.0" y="250" width="300.0" height="34" rx="4" fill="#191c22" stroke="#f6bd5a" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="132.0" y="272" fill="#5ee08f" font-size="13" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">2x · 0.0100 · 12:59</text>
+<text x="282.0" y="272" fill="#5ee08f" font-size="13" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">4x · 0.0050</text>
+<text x="482.0" y="272" fill="#f6bd5a" font-size="13" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">4x · 0.0150 · 13:00</text>
+<text x="32" y="306" fill="#5ee08f" font-size="13" font-weight="600" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">closes (reduce-only)</text>
+<text x="632" y="306" fill="#f6bd5a" font-size="13" font-weight="600" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">stays open: 0.0150 BTC at 4x</text>
+<text x="660" y="264" fill="#a7aebb" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">The form shows this plan</text>
+<text x="660" y="282" fill="#a7aebb" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">before you start, with the</text>
+<text x="660" y="300" fill="#a7aebb" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">margin level after the close.</text>
+<text x="32" y="352" fill="#e8eaee" font-size="15" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Margin level = equity ÷ used margin × 100</text>
+<rect x="32" y="392" width="143.36" height="12" rx="3" fill="#ff8a80" stroke="#ff8a80" stroke-width="1.2"/>
+<rect x="175.36" y="392" width="143.36" height="12" rx="0" fill="#f6bd5a" stroke="#f6bd5a" stroke-width="1.2"/>
+<rect x="318.72" y="392" width="609.28" height="12" rx="3" fill="#5ee08f" stroke="#5ee08f" stroke-width="1.2"/>
+<line x1="175.36" y1="382" x2="175.36" y2="414" stroke="#e8eaee" stroke-width="2"/>
+<line x1="318.72" y1="382" x2="318.72" y2="414" stroke="#e8eaee" stroke-width="2"/>
+<text x="175.36" y="432" fill="#ff8a80" font-size="13" font-weight="700" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">40% margin stop</text>
+<text x="324.72" y="378" fill="#f6bd5a" font-size="13" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">80% margin call</text>
+<circle cx="928.0" cy="398" r="7" fill="#191c22" stroke="#e8eaee" stroke-width="2"/>
+<text x="928.0" y="378" fill="#e8eaee" font-size="13" font-weight="600" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">sample: 811%</text>
+<text x="32" y="470" fill="#e8eaee" font-size="14" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">At the margin stop (the pair's margin_stop, 40% today), the simulated exchange</text>
+<text x="32" y="490" fill="#e8eaee" font-size="14" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">liquidates every position at the mark of its pair. A running chase ends as liquidated.</text>
+<text x="32" y="516" fill="#a7aebb" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Mark = the mid of the last valid public book. The form shows a notice of each liquidation.</text>
+</svg>
