@@ -7,6 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/erickb336/order-chaser/actions/workflows/check.yml"><img alt="checks" src="https://github.com/erickb336/order-chaser/actions/workflows/check.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="licence: MIT" src="https://img.shields.io/badge/licence-MIT-blue.svg"></a>
 </p>
 
 **Order chaser is a local tool for Kraken Pro that chases a post-only limit order at the best bid, never above a cap, and sends one IOC for the rest at the end.**
@@ -81,7 +82,7 @@ The tool is one Python server on 127.0.0.1 and five pages. A pure core decides e
 | Core | `src/order_chaser/core.py` | `step(chase, event) -> (chase, commands)`. No I/O, no clock. All chase rules are here. |
 | Simulator | `src/order_chaser/sim.py` | The dry-run gateway and the simulated margin account. It answers the core's commands like an exchange. A later version puts the Kraken gateway in its place. |
 | Feed | `src/order_chaser/feed.py`, `book.py` | Public WebSocket v2 book (depth 10, CRC32 checksum) and trades; REST AssetPairs for minimums, tick size and pair status. |
-| Store | `src/order_chaser/db.py` | SQLite: one row for each chase, an append-only event log, a table that maps each order id (leg) to its chase, and the simulated account. |
+| Database | `src/order_chaser/db.py` | SQLite: one row for each chase, an append-only event log, a table that maps each order id (leg) to its chase, and the simulated account. |
 | Server | `src/order_chaser/server.py` | Runs the chase, serves the pages, pushes updates by server-sent events. |
 
 ### Chase states
@@ -196,7 +197,7 @@ uv run pytest -q
 
 To see the rare chase states (amend rejected, disconnected, fallback, rest below the minimum, rate limit near) without waiting for the market, run `uv run python scripts/demo_states.py /tmp/oc-demo` and open <http://127.0.0.1:5180/chase>. It drives the real app with a fake feed and sample prices.
 
-The page tests (`tests/test_pages.py`) drive the real pages in Google Chrome with a fake feed. Each test starts the app on a free port, so the tests also run while the tool runs on 5180. They need node and a one-time `npm install` in `tests/pages` (playwright-core, pinned; it downloads no browser). Without them, they skip. Set `OC_SHOTS=/some/folder` to keep their screenshots.
+The page tests (`tests/test_pages.py`) drive the real pages in Google Chrome with a fake feed. Each test starts the app on a free port, so the tests also run while the tool runs on 5180. They need node and a one-time `npm ci` in `tests/pages` (playwright-core, pinned; it downloads no browser). Without `tests/pages/node_modules`, they skip. The CI checks on GitHub do not install them, so the page tests skip there; run them on your Mac. Set `OC_SHOTS=/some/folder` to keep their screenshots.
 
 `tests/test_margin.py` has a random-run probe: many seeded margin chases on random markets, run by the server's engine, which check every rule after each run. After each liquidation (during a chase, on the book of its last fill, and with no chase) it checks what the pages read: the server's account is the simulated account, the close list has no row of a closed position, and the result of the chase says "liquidated" and offers no close. The test runs 600 seeds. For the counts of a larger probe, run `uv run python tests/test_margin.py 5000`.
 
@@ -239,7 +240,7 @@ OC_SHOTS=/tmp/oc-shots uv run pytest -q tests/test_pages.py
 
 **The data folder.** The tool keeps one SQLite file, `order-chaser.sqlite3`, in `~/Library/Application Support/order-chaser` (or the folder of `--data-dir` or `ORDER_CHASER_DATA`). It holds each chase, an append-only event log, the order ids of each chase, and the simulated account. To start again from an empty account, stop the tool and move the file away.
 
-**The design.** `design/` holds the clickable prototype of the pages, with sample data. The README graphics come from `docs/assets/graphics.py`: run `python3 docs/assets/graphics.py` to draw them again in light and dark.
+**The design.** `design/` holds the clickable prototype of the pages, with sample data. The README graphics come from `scripts/graphics.py`: run `python3 scripts/graphics.py` to draw them again, in light and dark, into `docs/assets/`.
 
 ## Credits
 
@@ -247,4 +248,4 @@ The prices come from Kraken's public market data. Kraken and Kraken Pro are name
 
 ## Licence
 
-No licence yet.
+MIT. See [LICENSE](LICENSE).

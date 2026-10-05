@@ -1,6 +1,6 @@
 """Draw the README graphics in a light and a dark version, and check their contrast.
 
-Run from the repository root:  python3 docs/assets/graphics.py
+Run from the repository root:  python3 scripts/graphics.py
 It writes hero, walkthrough, states and margin, each as -light.svg and -dark.svg,
 and stops with an error if a text colour is below 4.5:1 on a background it sits on.
 All prices are sample data. The script uses only the Python standard library.
@@ -8,7 +8,7 @@ All prices are sample data. The script uses only the Python standard library.
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-OUT = Path(__file__).resolve().parent
+OUT = Path(__file__).resolve().parent.parent / "docs" / "assets"
 
 THEMES = {
     "dark": dict(bg="#0f1115", card="#191c22", line="#3a404b", fg="#e8eaee", muted="#a7aebb",

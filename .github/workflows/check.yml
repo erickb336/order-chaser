@@ -1,0 +1,19 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.22" # matches uv_build>=0.12.22,<0.13.0 in pyproject.toml
+      # The page tests skip here: CI has no tests/pages/node_modules.
+      - run: uv run pytest -q
