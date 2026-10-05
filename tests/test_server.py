@@ -803,7 +803,7 @@ def test_a_slow_gateway_call_does_not_block_and_the_commands_go_out_in_order(set
 
     assert call(eng.start, "BTC/USD", "buy", D("0.05"), None, 120) == []
     assert (eng.chase.phase, sent) == ("placing", ["Place"])          # start returned while the Place waits
-    assert call(eng.user, "stop") is True                              # the user still reaches the core
+    assert call(eng.user, "stop") is None                              # the user still reaches the core (no reason to ignore it)
     assert sent == ["Place"]                                           # one call at a time: the next command waits
 
     async def open_gate():

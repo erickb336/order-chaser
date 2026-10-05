@@ -22,6 +22,8 @@ create table if not exists leg (
   id text primary key, chase_id text not null references chase(id));
 create table if not exists sim_account (
   id integer primary key check (id = 1), state text not null);
+create table if not exists setting (
+  name text primary key, value text not null);
 """
 
 
@@ -59,6 +61,8 @@ class Db:
         self.cx = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)  # one event loop uses it
         self.cx.row_factory = sqlite3.Row
         self.cx.executescript(SCHEMA)
+        if "txid" not in {r[1] for r in self.cx.execute("pragma table_info(leg)")}:
+            self.cx.execute("alter table leg add column txid text")   # live: Kraken's order id of the leg
 
     def save(self, c: core.Chase, mode: str, now: float) -> None:
         self.cx.execute(
@@ -74,6 +78,24 @@ class Db:
         """The chase id of a leg's cl_ord_id. A chase of an earlier build has no leg rows: its id is its only leg."""
         r = self.cx.execute("select chase_id from leg where id = ? union select id from chase where id = ?", (leg, leg)).fetchone()
         return r[0] if r else None
+
+    def set_txid(self, leg: str, txid: str) -> None:
+        self.cx.execute("update leg set txid = ? where id = ?", (txid, leg))
+
+    def txids(self, chase_id: str) -> dict[str, str]:
+        rows = self.cx.execute("select id, txid from leg where chase_id = ? and txid is not null", (chase_id,))
+        return {r[0]: r[1] for r in rows}
+
+    def setting(self, name: str) -> str | None:
+        r = self.cx.execute("select value from setting where name = ?", (name,)).fetchone()
+        return r[0] if r else None
+
+    def set_setting(self, name: str, value: str | None) -> None:
+        if value is None:
+            self.cx.execute("delete from setting where name = ?", (name,))
+        else:
+            self.cx.execute("insert into setting(name, value) values (?, ?) on conflict(name) do update set value=excluded.value",
+                            (name, value))
 
     def load_account(self) -> str | None:
         """The simulated margin account of the dry run, as JSON; None before the first margin chase."""
@@ -92,6 +114,8 @@ class Db:
                         (chase_id, entry.t, at, entry.kind, entry.text))
 
     def unfinished(self) -> list[tuple[core.Chase, float]]:
+        """The chases that did not end, with the last time the tool ran them. A live chase that a restart could not
+        reconcile yet (phase "restart") keeps its first last_seen."""
         rows = self.cx.execute("select state, updated from chase where phase != 'done'").fetchall()
         return [(core.from_json(r["state"]), r["updated"]) for r in rows]
 

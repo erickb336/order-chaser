@@ -72,8 +72,8 @@ class KrakenRest:
     """One for each process: the nonce and the rate counter belong to the key. Set .key before a call."""
 
     def __init__(self, key: Key | None, http: httpx.AsyncClient, clock=time.time, rate: RateCounter | None = None,
-                 sleep=asyncio.sleep) -> None:
-        self.key, self.http, self.clock, self.sleep = key, http, clock, sleep
+                 sleep=asyncio.sleep, url: str = URL) -> None:
+        self.key, self.http, self.clock, self.sleep, self.url = key, http, clock, sleep, url
         self.rate = rate or RateCounter()
         self.nonce = 0
 
@@ -90,9 +90,10 @@ class KrakenRest:
         path = f"/0/private/{method}"
         nonce = self.next_nonce()
         data = urllib.parse.urlencode({"nonce": nonce, **params})
-        r = await self.http.post(URL + path, content=data, headers={
+        r = await self.http.post(self.url + path, content=data, headers={
             "API-Key": self.key.api_key, "API-Sign": sign(self.key.secret, path, nonce, data),
             "Content-Type": "application/x-www-form-urlencoded; charset=utf-8"})
+        r.raise_for_status()   # a 5xx (or a proxy page) is no answer from Kraken: httpx.HTTPStatusError
         body = r.json()
         if body.get("error"):
             if "EAPI:Rate limit exceeded" in body["error"]:
