@@ -23,7 +23,7 @@ function mrender(c, acct) {
   }
   switch (c.outcome) {
     case 'filled': line = `All of it filled${pctM === 100 ? ' as maker' : ''} in ${dur}${m.close ? ', reduce-only' : ''}. The tool never moved ${w.above} the ${w.limitWord}.`; break;
-    case 'stopped': line = `You stopped the chase at ${dur}. The simulated exchange confirmed the cancel.`; break;
+    case 'stopped': line = `You stopped the chase at ${dur}. ${OC.stopCancelled(c) ? 'The simulated exchange confirmed the cancel.' : 'No order rested, so there was nothing to cancel.'}`; break;
     case 'notfilled': {   // the cause that the tool knows, as the chase page states it
       const ioc = `${m.close ? 'reduce-only ' : ''}IOC`;
       line = c.end_ask == null ? `${c.feed_ok ? 'The order book was not valid at the end' : `The ${OC.mmss(c.timeout)} timeout passed while the public Kraken price feed was lost`}. With no valid price, the tool sent no ${ioc}.`
@@ -46,6 +46,7 @@ function mrender(c, acct) {
   const stays = m.close && open ? `Stays open: ${e.stays}.` : null;
   if (gone === 'Liquidated by the simulated exchange') todo = ['The margin level is for the whole account: the form lists the positions that are left, under "Close a position".'];
   if (c.outcome === 'ended' && open) todo = [OC.stillOpen(c)];
+  const n = OC.newOrders(c), times = k => `${k} time${k === 1 ? '' : 's'}`;
   const level = acct && acct.level != null ? Math.round(Number(acct.level)) + '%' : 'no position';
   $('out').innerHTML = `
   <div class="mgstrip" style="margin-bottom:16px">MARGIN · ${m.close ? `close ${c.dir}, reduce-only` : `open ${c.dir}, ${m.leverage}x`} · simulated account: no position is on Kraken</div>
@@ -64,7 +65,8 @@ function mrender(c, acct) {
     ${rest ? `<div class="note ${m.close || c.outcome === 'liquidated' ? 'bad' : 'warn'}" style="margin-top:16px" id="notclosed"><b>${rest}</b></div>` : ''}
     ${stays ? `<div class="note plain" style="margin-top:${rest ? 8 : 16}px" id="stays">${stays}</div>` : ''}
     ${todo ? `<div class="note info small" style="margin-top:12px"><b>What to do now</b><ul style="margin:4px 0 0;padding-left:18px">${todo.map(x => `<li>${x}</li>`).join('')}</ul></div>` : ''}
-    ${c.legs.length > 1 ? `<p class="small" id="replacenote" style="margin:12px 0 0"><b>Cancel and replace: ${c.legs.length - 1} time${c.legs.length > 2 ? 's' : ''}.</b> The simulated exchange refused to amend this margin order, so the tool cancelled and placed a new order for each move. ${OC.REPLACE_COST}</p>` : ''}
+    ${n.again ? `<p class="small" id="againnote" style="margin:12px 0 0"><b>First order placed again: ${times(n.again)}.</b> The simulated exchange rejected it, so the tool placed it again after the wait.</p>` : ''}
+    ${n.replaced ? `<p class="small" id="replacenote" style="margin:12px 0 0"><b>Cancel and replace: ${times(n.replaced)}.</b> The simulated exchange refused to amend this margin order, so the tool cancelled and placed a new order for each move. ${OC.REPLACE_COST}</p>` : ''}
     <div class="row" style="margin-top:18px">${open ? `<a class="btn primary" href="${OC.closeLink(c)}">${OC.closeText(c, acct)}</a>` : '<a class="btn primary" href="/new">New chase</a>'}<a class="btn" href="/history">History</a></div>
   </div>
   <div class="grid2" style="margin-top:16px">
@@ -131,7 +133,7 @@ function render(c) {
       break;
     case 'stopped':
       badge = ['plain', 'Stopped'];
-      line = `You stopped the chase at ${dur}. The simulated exchange confirmed the cancel.`;
+      line = `You stopped the chase at ${dur}. ${OC.stopCancelled(c) ? 'The simulated exchange confirmed the cancel.' : 'No order rested, so there was nothing to cancel.'}`;
       restText = `Not filled (simulated): ${OC.qty(rest)} ${B}, because you stopped the chase. A dry run sends no orders to Kraken.`;
       break;
     case 'ended': {
