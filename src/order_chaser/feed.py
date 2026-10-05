@@ -20,6 +20,10 @@ REST_PAIRS = "https://api.kraken.com/0/public/AssetPairs"
 PAIRS = ("BTC/USD", "ETH/USD", "SOL/USD")
 
 
+def _limit(v) -> Decimal | None:
+    return None if v is None else Decimal(str(v))
+
+
 def parse_pairs(result: dict) -> dict[str, Pair]:
     out = {}
     for symbol in PAIRS:
@@ -30,7 +34,10 @@ def parse_pairs(result: dict) -> dict[str, Pair]:
         out[symbol] = Pair(symbol=symbol, base=base, quote=quote, tick=Decimal(r["tick_size"]),
                            ordermin=Decimal(r["ordermin"]), costmin=Decimal(r["costmin"]),
                            price_decimals=int(r["pair_decimals"]), qty_decimals=int(r["lot_decimals"]),
-                           status=r["status"])
+                           status=r["status"], leverage_buy=tuple(r.get("leverage_buy", ())),
+                           leverage_sell=tuple(r.get("leverage_sell", ())), margin_call=int(r.get("margin_call", 0)),
+                           margin_stop=int(r.get("margin_stop", 0)), long_limit=_limit(r.get("long_position_limit")),
+                           short_limit=_limit(r.get("short_position_limit")))
     return out
 
 

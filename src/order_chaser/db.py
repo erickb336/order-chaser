@@ -18,6 +18,10 @@ create table if not exists event (
   seq integer primary key autoincrement, chase_id text not null references chase(id),
   t real not null, at real not null, kind text not null, text text not null);
 create index if not exists event_chase on event(chase_id, seq);
+create table if not exists leg (
+  id text primary key, chase_id text not null references chase(id));
+create table if not exists sim_account (
+  id integer primary key check (id = 1), state text not null);
 """
 
 
@@ -62,6 +66,22 @@ class Db:
             "on conflict(id) do update set phase=excluded.phase, outcome=excluded.outcome, "
             "updated=excluded.updated, state=excluded.state",
             (c.id, c.started, mode, c.phase, c.outcome, now, core.to_json(c)))
+        # Each leg's cl_ord_id leads to its chase (an execution report names the leg, not the chase).
+        self.cx.executemany("insert or ignore into leg(id, chase_id) values (?, ?)",
+                            [(leg, c.id) for leg in (*c.legs, c.ioc_id)])
+
+    def chase_of(self, leg: str) -> str | None:
+        """The chase id of a leg's cl_ord_id. A chase of an earlier build has no leg rows: its id is its only leg."""
+        r = self.cx.execute("select chase_id from leg where id = ? union select id from chase where id = ?", (leg, leg)).fetchone()
+        return r[0] if r else None
+
+    def load_account(self) -> str | None:
+        """The simulated margin account of the dry run, as JSON; None before the first margin chase."""
+        r = self.cx.execute("select state from sim_account where id = 1").fetchone()
+        return r[0] if r else None
+
+    def save_account(self, state: str) -> None:
+        self.cx.execute("insert into sim_account(id, state) values (1, ?) on conflict(id) do update set state=excluded.state", (state,))
 
     def touch(self, chase_id: str, now: float) -> None:
         """Heartbeat: after a crash, "updated" tells when the tool last ran."""
