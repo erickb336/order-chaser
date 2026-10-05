@@ -1,0 +1,33 @@
+{
+  "note": "SAMPLE data, not recorded from Kraken. The shapes follow Kraken's WebSocket v2 executions documentation. Chase id ocfix00000001.",
+  "messages": [
+    {"channel": "executions", "type": "update", "data": [
+      {"exec_type": "new", "order_id": "OFIX01-AAAAA-BBBBBB", "cl_ord_id": "ocfix00000001", "symbol": "BTC/USD", "side": "buy",
+       "order_type": "limit", "order_qty": 0.05, "limit_price": 62400.0, "order_status": "new", "cum_qty": 0.0,
+       "timestamp": "2026-10-04T09:52:04.000000Z"}]},
+    {"channel": "executions", "type": "update", "data": [
+      {"exec_type": "trade", "order_id": "OFIX01-AAAAA-BBBBBB", "cl_ord_id": "ocfix00000001", "symbol": "BTC/USD", "side": "buy",
+       "order_status": "partially_filled", "last_qty": 0.02, "last_price": 62400.0, "liquidity_ind": "m", "cum_qty": 0.02,
+       "limit_price": 62400.0, "exec_id": "TFIX01", "timestamp": "2026-10-04T09:52:30.000000Z"},
+      {"exec_type": "trade", "order_id": "OOTHER-AAAAA-BBBBBB", "cl_ord_id": "other-bot-7", "symbol": "BTC/USD", "side": "sell",
+       "order_status": "filled", "last_qty": 1.0, "last_price": 62401.0, "liquidity_ind": "t", "cum_qty": 1.0,
+       "exec_id": "TFIX02", "timestamp": "2026-10-04T09:52:31.000000Z"}]},
+    {"channel": "executions", "type": "update", "data": [
+      {"exec_type": "trade", "order_id": "OFIX01-AAAAA-BBBBBB", "cl_ord_id": "ocfix00000001", "symbol": "BTC/USD", "side": "buy",
+       "order_status": "partially_filled", "last_qty": 0.01, "last_price": 62400.0, "liquidity_ind": "m", "cum_qty": 0.03,
+       "limit_price": 62400.0, "exec_id": "TFIX03", "timestamp": "2026-10-04T09:52:40.000000Z"}]},
+    {"channel": "executions", "type": "snapshot", "data": [
+      {"exec_type": "new", "order_id": "OFIX01-AAAAA-BBBBBB", "cl_ord_id": "ocfix00000001", "symbol": "BTC/USD", "side": "buy",
+       "order_type": "limit", "order_qty": 0.05, "limit_price": 62405.5, "order_status": "partially_filled", "cum_qty": 0.035}]},
+    {"channel": "executions", "type": "update", "data": [
+      {"exec_type": "canceled", "order_id": "OFIX01-AAAAA-BBBBBB", "cl_ord_id": "ocfix00000001", "symbol": "BTC/USD", "side": "buy",
+       "order_status": "canceled", "cum_qty": 0.035, "limit_price": 62405.5, "reason": "Cancel all orders after timeout",
+       "timestamp": "2026-10-04T09:53:10.000000Z"}]},
+    {"channel": "executions", "type": "update", "data": [
+      {"exec_type": "trade", "order_id": "OFIX02-AAAAA-BBBBBB", "cl_ord_id": "ocfix00000001-i", "symbol": "BTC/USD", "side": "buy",
+       "order_status": "partially_filled", "last_qty": 0.01, "last_price": 62418.5, "liquidity_ind": "t", "cum_qty": 0.01,
+       "exec_id": "TFIX04", "timestamp": "2026-10-04T09:54:00.000000Z"},
+      {"exec_type": "canceled", "order_id": "OFIX02-AAAAA-BBBBBB", "cl_ord_id": "ocfix00000001-i", "symbol": "BTC/USD", "side": "buy",
+       "order_status": "canceled", "cum_qty": 0.01, "reason": "IOC", "timestamp": "2026-10-04T09:54:00.000000Z"}]}
+  ]
+}
