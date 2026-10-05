@@ -188,17 +188,39 @@ class SimAccount:
 
     @classmethod
     def from_json(cls, s: str) -> SimAccount:
+        """The account from its row. Raises ValueError for a row that is not one: a pair that is not "BASE/QUOTE", a
+        direction that is not long or short, a number that is not finite and above 0, or a liquidation that is no record."""
         d = json.loads(s)
-        a = cls(Decimal(d["cash"]), Decimal(d["allowance"]))
+        a = cls(_num(d["cash"], signed=True), _num(d["allowance"], signed=True))
         a.liquidation = d.get("liquidation")
+        if a.liquidation is not None and not (isinstance(a.liquidation, dict) and isinstance(a.liquidation.get("at"), (int, float))
+                                              and isinstance(a.liquidation.get("positions"), list)):
+            raise ValueError("liquidation")
         for p in d["positions"]:
             if isinstance(p, list):       # the earlier build: [pair, dir, {qty, entry, margin, opened, stop}], one per direction
                 pair, dr, p = p
                 p = {**p, "pair": pair, "dir": dr,
                      "leverage": int((Decimal(p["qty"]) * Decimal(p["entry"]) / Decimal(p["margin"])).quantize(Decimal(1), ROUND_HALF_UP))}
+            if not (isinstance(p.get("pair"), str) and re.fullmatch(r"[A-Z0-9]{1,10}/[A-Z0-9]{1,10}", p["pair"])):
+                raise ValueError("pair")
+            if p.get("dir") not in ("long", "short"):
+                raise ValueError("dir")
+            if type(p.get("leverage")) is not int or not 1 <= p["leverage"] <= 100:
+                raise ValueError("leverage")
             # An earlier build had no id (ref None) for these: each position needs one for the close plan.
-            a.positions.append({**p, "ref": p.get("ref") or f"old{len(a.positions)}", **{f: Decimal(p[f]) for f in cls.NUMS}})
+            a.positions.append({**p, "ref": p.get("ref") or f"old{len(a.positions)}", **{f: _num(p[f]) for f in cls.NUMS}})
         return a
+
+
+def _num(v, signed: bool = False) -> Decimal:
+    """A number of a saved account: finite, and above 0 unless signed. Raises ValueError."""
+    try:
+        d = Decimal(str(v))
+    except ArithmeticError:
+        raise ValueError(f"number {v!r}") from None
+    if not d.is_finite() or not (signed or d > 0):
+        raise ValueError(f"number {v!r}")
+    return d
 
 
 def chase_of(cl_ord_id: str) -> str:
@@ -271,7 +293,12 @@ class SimGateway:
             return "EOrder:Insufficient margin"
         return None
 
-    def send(self, cmd, now: float) -> list:
+    async def send(self, cmd, now: float) -> list:
+        """The gateway call of the engine (async, as the Kraken gateway). The simulated exchange answers at once."""
+        return self.answer(cmd, now)
+
+    def answer(self, cmd, now: float) -> list:
+        """The simulated exchange's answer to one command of the core."""
         o = self.order
         margin = isinstance(cmd, (core.MarginPlace, core.MarginIoc))
         if margin and (why := self._margin_refusal(cmd, now)):

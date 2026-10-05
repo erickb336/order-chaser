@@ -23,24 +23,44 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, R
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import core, feed
+from . import core, feed, keys, rest
 from .db import DEFAULT_DIR, Db, lock_folder
+from .kraken import WS_AUTH, KrakenGateway, others
 from .sim import SimAccount, SimGateway
 
 HOST, PORT = "127.0.0.1", 5180
 WATCH_EVERY = 1.0   # s: at most one pair change each second, so that Kraken does not refuse the subscriptions
 STATIC = Path(__file__).parent / "static"
-PAGES = ("new", "chase", "result", "history", "setup")
-MODE = "dry"   # T2 has only dry runs. No code path sends a private request to Kraken.
+PAGES = ("new", "chase", "result", "history", "setup", "reconcile")
 PLAIN_NUMBER = re.compile(r"[0-9]{1,15}(\.[0-9]{1,18})?")   # ASCII digits only: no "١" or "０"
 NUMBER_MAX = Decimal(10) ** 12
 WHAT = {"buy": "buy", "sell": "sell", "long": "buy", "short": "sell", "close-long": "sell", "close-short": "buy"}  # -> side
 READ_EVERY = 3.0    # s: the account and positions are read at most this often (after fills; never each second)
-# No page of the tool may show inside a frame of another site (clickjacking).
-FRAME_HEADERS = [(b"x-frame-options", b"DENY"), (b"content-security-policy", b"frame-ancestors 'none'")]
+# Every response: no frame of another site (clickjacking), and scripts only from the tool's own files (no inline
+# script, no eval), so that an injected text cannot run before or after a key exists. Inline style attributes stay.
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+       "connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'")
+SECURITY_HEADERS = [(b"x-frame-options", b"DENY"), (b"content-security-policy", CSP.encode()),
+                    (b"x-content-type-options", b"nosniff"), (b"referrer-policy", b"no-referrer")]
 
 
 AMOUNT_TEXT = "Enter the amount as a plain number, such as 0.0500."
+WITHDRAW_NOT_REMOVED = ("This key can withdraw funds. The tool refused it, but macOS did not let it remove the key. "
+                        "Delete the item \"Kraken API key (order-chaser)\" in Keychain Access, and delete the key in Kraken Pro.")
+KEYCHAIN_TEXT = keys.KEYCHAIN_TEXT
+ACCOUNT_ANSWERS = ("no", "yes", "sub")   # Q10: no other tool; another tool (live stays off); "I use a sub-account" (G19 P2)
+OTHERS_TICK_TEXT = ("Tick the box to start: the safety timer can cancel your stop-loss and take-profit orders.")
+FIRST_TICK_TEXT = "Tick the box for your first live order."
+BUSY_TEXT = "A chase runs now. You can start a new chase when it ends."
+TIMER_LEFT_TEXT = ("The safety timer can still be on: within 60 s Kraken cancels ALL open orders on this account, "
+                   "also stop-loss and take-profit orders.")
+KEYING_TEXT = "Setup changes the Kraken API key now. Try again when that ends."
+KEY_BUSY_TEXT = "A live chase runs now. It uses the saved key. Change, test or remove the key when the chase ends."
+NOFUNDS_NOT_REMOVED = ("This key does not have Query Funds, so the tool cannot check that it cannot withdraw. The tool "
+                       "refused it, but macOS did not let it remove the key. Delete the item \"Kraken API key "
+                       "(order-chaser)\" in Keychain Access.")
+STOP_TIMER_TEXT = ("The tool stopped during a live chase. The safety timer stays on: within 60 s Kraken cancels ALL "
+                   "open orders on this account, also stop-loss and take-profit orders.")
 
 
 def number(v) -> Decimal | None:
@@ -69,8 +89,7 @@ class Engine:
     def __init__(self, db: Db, clock=time.time, latency: float = 0.15, rate_start: float = 0.0,
                  refuse_margin_amends: bool = False) -> None:
         self.db, self.clock, self.latency = db, clock, latency
-        saved = db.load_account()
-        self.gw = SimGateway(SimAccount.from_json(saved) if saved else None)
+        self.gw = SimGateway(self._saved_account())
         self.gw.refuse_margin_amends = refuse_margin_amends
         self.account: dict | None = None      # the last read of the (simulated) account and positions
         self.account_due = False              # a fill came after the last read
@@ -85,19 +104,63 @@ class Engine:
         self.rates: dict[str, tuple[float, float]] = {}   # pair -> (estimated counter, at)
         self.rate_start = rate_start
         self.queue: deque = deque()
+        self.tasks: set[asyncio.Task] = set()
         self.draining = False
         self.saved_key: str | None = None
         self.version = 0
         self.touched = 0.0
         self.feed: feed.PublicFeed | None = None
+        self.kgw: KrakenGateway | None = None   # the live gateway (create_app gives it); a dry run uses self.gw
+        self.blocked: str | None = None         # why no live chase can start now (the restart reconcile is not done)
+        self.restart: core.Chase | None = None  # the live chase of the last stop, until the restart reconcile ends it
+        self.reading = {"attempt": 0, "next_in": 0, "error": None}   # the restart reconcile's tries
+        self.starting = False   # a live start holds the one chase slot from its first check to its first order
+        self.sending: object = None   # the command that the drain sends now
+
+    def _saved_account(self) -> SimAccount | None:
+        """The simulated account of the dry run; None (a new account) when the row is not a valid account."""
+        saved = self.db.load_account()
+        try:
+            return SimAccount.from_json(saved) if saved else None
+        except (ValueError, KeyError, TypeError, AttributeError):
+            logging.getLogger("order_chaser").warning(
+                "The saved simulated account is not valid. Margin dry runs start with a new account of 5,000 USD.")
+            return None
 
     # ----- start of the tool -----
     def end_unfinished(self) -> None:
-        """A chase that did not finish before the tool stopped ends now. It is not resumed."""
+        """A chase that did not finish before the tool stopped ends now. It is not resumed. A live chase waits for
+        the restart reconcile (reconcile()); new live chases wait too."""
         now = self.clock()
         for c, last_seen in self.db.unfinished():
             self.chase = c
             self.handle(core.Restarted(now, last_seen))
+        if self.chase is not None and self.chase.phase == "restart":
+            self.restart, self.chase = self.chase, None
+            self.blocked = "The tool reads Kraken to check the live chase of the last stop. New live chases wait for it."
+
+    async def reconcile(self) -> bool:
+        """The restart reconcile (Q5): read the legs of the live chase of the last stop by cl_ord_id, cancel an open
+        leg, record the fills, end the chase. False when Kraken cannot be read: blocked says why."""
+        c = self.restart
+        self.reading["attempt"] += 1
+        try:
+            await self.kgw.open_key()
+            self.kgw.txids.update(self.db.txids(c.id))
+            evs = await self.kgw.reconcile(c)
+        except Exception as e:   # no key, Keychain denied, Kraken refused or did not answer
+            self.reading["error"] = keys.why(e)
+            self.blocked = (f"The tool cannot read Kraken to check the live chase of the last stop. {keys.why(e)} "
+                            "New live chases wait until it can.")
+            self.version += 1
+            return False
+        self.chase = c
+        for ev in evs:
+            self.handle(ev)
+        self.restart = self.blocked = None
+        self.reading["error"] = None
+        self.version += 1
+        return True
 
     # ----- feed callbacks -----
     def on_book(self, book, ok: bool) -> None:
@@ -108,7 +171,8 @@ class Engine:
             fills = self.gw.on_book(book.top_bids(), book.top_asks(), self.clock(), self.watched)
         for ev in fills:
             # A liquidation also reaches a chase that the same book ended (its last fill): the core decides.
-            if self.active or (self.chase and isinstance(ev, core.PositionGone)):
+            # SimGateway never fills a live chase.
+            if self.chase and self.chase.dry and (self.active or isinstance(ev, core.PositionGone)):
                 self.handle(ev)
         if any(getattr(ev, "reason", None) == "liquidated" for ev in fills) or (
                 ok and self.account and self.watched in self.account["unpriced"]):
@@ -120,7 +184,7 @@ class Engine:
         self.version += 1
 
     def on_trade(self, side: str, price: Decimal, qty: Decimal) -> None:
-        if self.active:
+        if self.active and self.chase.dry:
             for ev in self.gw.on_trade(side, price, qty, self.clock()):
                 self.handle(ev)
         self._save_account()
@@ -155,6 +219,8 @@ class Engine:
         if self.active:
             self.handle(core.Tick(self.clock()))
             self.version += 1
+        if self.active and not self.chase.dry:
+            self.kgw.tick(self.clock())
         if self.account_due and self.clock() - self.account["at"] >= READ_EVERY:
             self.read_account()
         if self.active and self.clock() - self.touched >= 2:
@@ -174,11 +240,84 @@ class Engine:
         r, at = self.rates.get(symbol, (self.rate_start, self.clock()))
         return max(0.0, r - (self.clock() - at))
 
+    async def start_live(self, symbol: str, what: str, qty: Decimal, limit: Decimal | None, timeout: int) -> list[str]:
+        """A live spot chase: the checks of a dry run, then the key, the private feed, the safety timer and
+        caffeinate, then the first order. Nothing goes to Kraken when a check fails.
+        Not yet here (U6, with the pages): Setup's checks (Q10, the tested key), the confirm (Q6, Q7), live margin."""
+        if what not in ("buy", "sell"):
+            return ["A live chase is spot only for now. Use a dry run for margin."]
+        if errors := self.start(symbol, what, qty, limit, timeout, check_only=True):
+            return errors
+        if self.tasks:   # the end of the last live chase (timer 0) goes first: it must not cut this chase's timer
+            await asyncio.wait(self.tasks)
+        try:
+            await self.kgw.open_key()
+            await self.kgw.open()
+        except Exception as e:
+            left = not await self.kgw.close()
+            return [f"Nothing was placed. {keys.why(e)}"] + ([TIMER_LEFT_TEXT] if left else [])
+        if errors := self.start(symbol, what, qty, limit, timeout, venue=core.LIVE_VENUE):   # the prices moved
+            await self.kgw.close()
+        return errors
+
+    # ----- setup and the live check (Q6, Q7, Q9, Q10) -----
+    def setup_state(self) -> dict:
+        """What Setup recorded, and why a live chase cannot start now (empty: it can)."""
+        a = json.loads(self.db.setting("account") or "null")    # {"answer", "at"}
+        k = json.loads(self.db.setting("key") or "null")        # {"saved", "tested", "verdict", "permissions"}
+        why = []
+        if a is None:
+            why.append("Answer Setup, step 2: does another bot or API tool use this Kraken account?")
+        elif a["answer"] == "yes":
+            why.append("Setup, step 2: use a Kraken sub-account for this tool. Live chases stay off until you confirm it.")
+        if k is None or k.get("verdict") in ("withdraw", "nofunds"):
+            why.append("Save a Kraken API key in Setup, step 3.")
+        elif k.get("verdict") != "ok":
+            why.append("Test the Kraken API key in Setup, step 3. It must pass.")
+        if self.blocked:
+            why.append(self.blocked)
+        return {"account": a, "key": k, "ready": not why, "why": why, "first": not self.db.any_live(),
+                "unlocked": self.kgw is not None and self.kgw.rest.key is not None}   # Q9: macOS asked this start
+
+    async def live_check(self, symbol: str) -> dict:
+        """The checks before a live start: Setup, live prices, the key (macOS asks one time at each start, Q9),
+        the private feed's token, and the other open orders of the account (Q7). Nothing changes on Kraken."""
+        s = self.setup_state()
+        pair = self.pairs.get(symbol)
+        out = {"errors": list(s["why"]), "first": s["first"], "min_qty": str(pair.ordermin) if pair else None,
+               "others": None}
+        if pair is None:
+            out["errors"].append("Unknown pair, or the pair list did not load.")
+        elif symbol != self.watched or not self.fresh():
+            out["errors"].append("Start needs live prices.")
+        if out["errors"]:
+            return out
+        try:
+            await self.kgw.open_key()
+            got = await self.kgw.rest.call("OpenOrders")
+            await self.kgw.rest.call("GetWebSocketsToken")   # Access WebSockets API: the private feed can connect
+        except Exception as e:
+            out["errors"].append(f"Nothing was placed. {keys.why(e)}")
+            return out
+        out["others"] = others(got.get("open", {}))
+        return out
+
+    def on_private(self, ev) -> None:
+        if isinstance(ev, core.OthersCancelled) and self.chase and self.chase.id == ev.id:
+            self.handle(ev)                     # also after the chase ended (C8)
+        elif self.active and not self.chase.dry:
+            self.handle(ev)
+
+    def on_private_link(self, up: bool) -> None:
+        if self.active and not self.chase.dry:
+            self.handle(core.PrivateBack(self.clock()) if up else core.PrivateLost(self.clock()))
+
     def start(self, symbol: str, what: str, qty: Decimal, limit: Decimal | None, timeout: int,
-              leverage: int | None = None) -> list[str]:
-        """what: buy or sell (spot); long or short (a margin open with leverage); close-long or close-short."""
+              leverage: int | None = None, venue: str = core.SIM_VENUE, check_only: bool = False) -> list[str]:
+        """what: buy or sell (spot); long or short (a margin open with leverage); close-long or close-short.
+        check_only: the checks only, no chase."""
         if self.active:
-            return ["A chase runs now. You can start a new chase when it ends."]
+            return [BUSY_TEXT]
         pair = self.pairs.get(symbol)
         if pair is None:
             return ["Unknown pair, or the pair list did not load."]
@@ -199,11 +338,11 @@ class Engine:
                 margin = core.Margin(core.average(parts)[2], True, parts)
             elif not errors:
                 margin = core.Margin(leverage)
-        if errors:
+        if errors or check_only:
             return errors
         self.gw.pair = pair
         c, cmds = core.begin("oc" + uuid.uuid4().hex[:12], pair, side, qty, self.bid, self.ask, timeout,
-                             self.clock(), core.SIM_VENUE, limit, self.rate_for(symbol), margin)
+                             self.clock(), venue, limit, self.rate_for(symbol), margin)
         self._apply(c, cmds)
         return []
 
@@ -217,32 +356,65 @@ class Engine:
         return {**core.plan_words(parts, qty, pair, now), "level_now": acc.level(now),
                 "level_after": core.close_preview(parts, qty, acc.equity(now), acc.used(), mark and mark[0])}
 
-    def user(self, action: str) -> bool:
+    def user(self, action: str) -> str | None:
+        """Stop or Fill the rest now. None: done; else the reason why the tool ignored it (the page shows it)."""
         if not self.active:
-            return False
-        self.handle(core.UserStop(self.clock()) if action == "stop" else core.UserFillNow(self.clock()))
-        return True
+            return "No chase runs now."
+        before = self.chase
+        stop = action == "stop"
+        self.handle(core.UserStop(self.clock()) if stop else core.UserFillNow(self.clock()))
+        if self.chase.exit == ("stop" if stop else "fillnow") and before.exit != self.chase.exit or self.chase.phase == "done" and before.phase != "done":
+            return None
+        c = before
+        if c.phase == "ioc":
+            return "The IOC for the rest is at Kraken now. It ends the chase in a moment."
+        if c.exit == "stop":
+            return "Stop is already under way: the tool is cancelling the order."
+        if c.exit in core.GONE:
+            return "The position is gone. The chase ends now."
+        if c.exit is not None:
+            return "The chase already ends: the tool cancels the order and fills the rest with one IOC."
+        if not stop and c.phase == "feed_lost":
+            return "The price feed is lost, so there is no valid price for the IOC. Stop the chase, or wait for the feed."
+        return "The tool cannot do that in this state of the chase."
 
     def handle(self, ev) -> None:
         was = self.chase.phase
         c, cmds = core.step(self.chase, ev)
         self._apply(c, cmds)
+        if not c.dry and c.phase == "done" and was != "done":
+            self._spawn(self._end_live(c))
         if c.margin is not None and isinstance(ev, core.Filled):
             self.account_due = True               # tick() reads it, at most every 3 s
         if c.margin is not None and c.phase == "done" and was != "done":
             self.read_account(force=True)         # at the end of a margin chase
 
+    async def _end_live(self, c: core.Chase) -> None:
+        """Timer 0, no private feed, caffeinate off. The chase log says so when the timer can still be on."""
+        if not await self.kgw.close(noanswer=c.outcome == "noanswer"):
+            self.db.log(c.id, core.Log(self.clock() - c.started, TIMER_LEFT_TEXT, "bad"), self.clock())
+            self.version += 1
+
+    def _spawn(self, coro) -> None:
+        task = asyncio.get_running_loop().create_task(coro)
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+
     def _apply(self, c: core.Chase, cmds: list) -> None:
         self.chase = c
+        if not c.dry:
+            self.kgw.chase = c
         now = self.clock()
         # Leave out what each book message changes: a book message alone does not write the chase.
         key = core.to_json(dataclasses.replace(c, bid=None, ask=None, book_at=None, rate=0.0, rate_at=0.0, book_ok=True))
         if key != self.saved_key:
-            self.db.save(c, MODE, now)
+            self.db.save(c, "dry" if c.dry else "live", now)
             self.saved_key = key
         for cmd in cmds:
             if isinstance(cmd, core.Log):
                 self.db.log(c.id, cmd, now)
+            elif isinstance(cmd, core.Query) and (cmd in self.queue or cmd == self.sending):
+                pass                                # at most one read of a leg waits: its answer serves both
             else:
                 self.queue.append(cmd)
         if c.phase == "done":
@@ -250,26 +422,43 @@ class Engine:
         self.version += 1
         if self.queue and not self.draining:
             if self.latency:
-                asyncio.get_running_loop().call_later(self.latency, self._drain)
+                self.draining = True   # the commands wait for the (simulated) latency; new ones join the queue
+                asyncio.get_running_loop().call_later(self.latency, self._start_drain)
             else:
-                self._drain()
+                self._start_drain()
 
-    def _drain(self) -> None:
-        """Send the queued commands to the gateway, one at a time, and handle its answers."""
+    def _start_drain(self) -> None:
+        """Run the drain as an eager task: it runs now, up to the first gateway call that waits (the network).
+        A gateway that answers at once (the simulator) so finishes the drain before this returns, as before.
+        An error in that part reaches the caller; an error after a wait is logged."""
+        task = asyncio.Task(self._drain(), loop=asyncio.get_running_loop(), eager_start=True)
+        if task.done():
+            task.result()
+        else:
+            task.add_done_callback(lambda t: t.cancelled() or t.exception() is None
+                                   or logging.getLogger(__name__).error("drain failed", exc_info=t.exception()))
+
+    async def _drain(self) -> None:
+        """Send the queued commands to the gateway, one at a time, and handle its answers. While a call waits,
+        new events still reach the core; their commands join the queue and go out in order after it."""
         self.draining = True
         try:
             while self.queue:
-                cmd = self.queue.popleft()
-                for ev in self.gw.send(cmd, self.clock()):
+                self.sending = cmd = self.queue.popleft()
+                evs = await (self.gw if self.chase.dry else self.kgw).send(cmd, self.clock())
+                self.sending = None
+                for ev in evs:
                     self.handle(ev)
         finally:
             self.draining = False
+            self.sending = None
             self._save_account()
 
     # ----- what the page sees -----
-    def view(self, c: core.Chase | None, mode: str = MODE) -> dict | None:
+    def view(self, c: core.Chase | None) -> dict | None:
         if c is None:
             return None
+        mode = "dry" if c.dry else "live"
         d = json.loads(json.dumps(dataclasses.asdict(c), default=_plain))
         d["summary"] = json.loads(json.dumps(core.summary(c), default=_plain))
         d["events"] = self.db.events(c.id)
@@ -285,13 +474,18 @@ class Engine:
             d["open_now"] = any(p["ref"] in ids for p in self.gw.account.positions)
         if c.phase != "done":
             d["rate"] = max(0.0, c.rate - (self.clock() - c.rate_at))
+        if not c.dry:
+            d["txids"] = self.db.txids(c.id)
+        if not c.dry and c.phase != "done" and self.kgw.chase is c:
+            d["timer"] = dict(self.kgw.timer)
+            d["awake"] = self.kgw.awake is not None
         return d
 
     def snapshot(self) -> dict:
         now = self.clock()
         return {
             "now": now,
-            "mode": MODE,
+            "live": self.setup_state(),
             "watched": self.watched,
             "feed": {"bid": str(self.bid) if self.bid else None, "ask": str(self.ask) if self.ask else None,
                      "ok": self.book_ok, "fresh": self.fresh(), "age": None if self.book_at is None else now - self.book_at,
@@ -301,6 +495,7 @@ class Engine:
             "rate": self.rate_for(self.watched),
             "account": self.account,
             "chase": self.view(self.chase),
+            "restart": self.view(self.restart) and {**self.view(self.restart), "reading": self.reading},
         }
 
 
@@ -308,7 +503,7 @@ class Engine:
 
 class Guard:
     """Refuse a foreign Host, and a state-changing request (any method but GET and HEAD, and any WebSocket)
-    without our Origin and session token. Every HTTP response forbids framing."""
+    without our Origin and session token. Every HTTP response carries SECURITY_HEADERS."""
 
     def __init__(self, app, token: str, port: int = PORT) -> None:
         self.app, self.token = app, token
@@ -337,7 +532,7 @@ class Guard:
         if scope["type"] == "http":
             async def framed(msg):
                 if msg["type"] == "http.response.start":
-                    msg = {**msg, "headers": [*msg.get("headers", []), *FRAME_HEADERS]}
+                    msg = {**msg, "headers": [*msg.get("headers", []), *SECURITY_HEADERS]}
                 await send(msg)
             if reason:
                 await PlainTextResponse(reason, status_code=403)(scope, receive, framed)
@@ -352,13 +547,23 @@ class Guard:
 # ---------- App ----------
 
 def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, clock=time.time, latency: float = 0.15,
-               port: int = PORT, refuse_margin_amends: bool = False):
-    """connect=False leaves out the Kraken feed and the pair list: tests drive the engine."""
+               port: int = PORT, refuse_margin_amends: bool = False, kraken_transport: httpx.AsyncBaseTransport | None = None,
+               kraken_url: str = rest.URL, kraken_ws: str = WS_AUTH, awake_cmd: list[str] | None = None):
+    """connect=False leaves out the Kraken feed and the pair list: tests drive the engine.
+    kraken_transport, kraken_url, kraken_ws: where the private calls go (tests give a local fake Kraken).
+    awake_cmd: the command that keeps the Mac awake during a live chase (caffeinate -i)."""
+    keys.backend()   # ORDER_CHASER_KEYRING=memory with a real keyring: the tool does not start (keys.RealKeyring)
     token = secrets.token_urlsafe(32)
     db = Db(data_dir)
     eng = Engine(db, clock=clock, latency=latency, rate_start=rate_start, refuse_margin_amends=refuse_margin_amends)
+    # One REST client for each process: the nonce and the rate counter belong to the key.
+    store = keys.KeyStore()
+    kraken = rest.KrakenRest(None, httpx.AsyncClient(transport=kraken_transport, timeout=10), url=kraken_url)
+    eng.kgw = KrakenGateway(kraken, store.read, kraken_ws, clock, awake_cmd)
+    eng.kgw.on_event, eng.kgw.on_link, eng.kgw.on_txid = eng.on_private, eng.on_private_link, db.set_txid
     page_cache: dict[str, str] = {}
     watched_at = [float("-inf")]
+    keying = [False]   # a key save, test or remove runs (key_call): a live start is refused until it ends
 
     def page(name: str) -> str:
         if name not in page_cache:
@@ -366,7 +571,7 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         return page_cache[name].replace("{{TOKEN}}", token)
 
     async def index(request: Request):
-        return RedirectResponse("/chase" if eng.active else "/new")
+        return RedirectResponse("/reconcile" if eng.restart else "/chase" if eng.active else "/new")
 
     async def html(request: Request):
         name = request.url.path.strip("/")
@@ -436,23 +641,56 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
                  else None)
         if error:
             return JSONResponse({"errors": [error]}, status_code=400)
-        errors = eng.start(pair, what, qty, limit, timeout, lev)
+        mode = d.get("mode", "dry")
+        if mode == "live" and keying[0]:
+            return JSONResponse({"errors": [KEYING_TEXT]}, status_code=409)
+        if mode == "live":
+            errors = await live_start(d, pair, what, qty, limit, timeout)
+        elif mode == "dry":
+            errors = [BUSY_TEXT] if eng.starting else eng.start(pair, what, qty, limit, timeout, lev)
+        else:
+            errors = ['Send the mode "dry" or "live".']
         if errors:
             return JSONResponse({"errors": errors}, status_code=400)
         return JSONResponse({"id": eng.chase.id})
 
+    async def live_start(d: dict, pair: str, what: str, qty: Decimal, limit: Decimal | None, timeout: int) -> list[str]:
+        """A live chase starts only after the live check, with its ticks (Q6, Q7). It claims the one chase slot
+        before its first wait: a second start is refused and touches nothing (the gateway is the first start's)."""
+        if eng.active or eng.starting:
+            return [BUSY_TEXT]
+        eng.starting = True
+        try:
+            return await live_check_and_start(d, pair, what, qty, limit, timeout)
+        finally:
+            eng.starting = False
+
+    async def live_check_and_start(d: dict, pair: str, what: str, qty: Decimal, limit: Decimal | None,
+                                   timeout: int) -> list[str]:
+        chk = await eng.live_check(pair)
+        if chk["errors"]:
+            return chk["errors"]
+        p = eng.pairs[pair]
+        if chk["first"] and qty != p.ordermin:
+            return [f"Your first live order uses the Kraken minimum: {core.fmt_qty(p.ordermin)} {p.base}."]
+        if chk["first"] and d.get("first_ok") is not True:
+            return [FIRST_TICK_TEXT]
+        if any(o["protect"] for o in chk["others"]) and d.get("others_ok") is not True:
+            return [OTHERS_TICK_TEXT]
+        return await eng.start_live(pair, what, qty, limit, timeout)
+
     async def action(request: Request):
-        ok = eng.user(request.url.path.rsplit("/", 1)[1])
-        return JSONResponse({"ok": ok}, status_code=200 if ok else 409)
+        why = eng.user(request.url.path.rsplit("/", 1)[1])
+        return JSONResponse({"ok": why is None, "reason": why}, status_code=200 if why is None else 409)
 
     async def one(request: Request):
         got = db.get(request.path_params["id"])
         if not got:
             return JSONResponse({"error": "not found"}, status_code=404)
-        c, mode = got
+        c, _ = got
         if eng.chase and eng.chase.id == c.id:
             c = eng.chase
-        return JSONResponse(eng.view(c, mode))
+        return JSONResponse(eng.view(c))
 
     async def history(request: Request):
         rows = []
@@ -477,12 +715,21 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
             tasks.append(asyncio.create_task(eng.feed.run()))
             tasks.append(asyncio.create_task(_pairs_loop(eng)))
         tasks.append(asyncio.create_task(_tick_loop(eng)))
+        if eng.restart:
+            tasks.append(asyncio.create_task(_reconcile_loop(eng)))
         yield
-        for t in tasks:
-            t.cancel()
+        if eng.tasks:   # the end of a live chase that just ended: timer 0 (else it cancels other orders later)
+            await asyncio.wait(eng.tasks, timeout=3)
+        # A live chase that the stop cuts keeps its safety timer: Kraken cancels its order within 60 s.
+        if eng.active and not eng.chase.dry and eng.kgw.timer["on"]:
+            logging.getLogger("order_chaser").warning(STOP_TIMER_TEXT)
+        for t in tasks + [eng.kgw.task]:
+            if t is not None:
+                t.cancel()
         for t in tasks:
             with contextlib.suppress(BaseException):
                 await t
+        await kraken.http.aclose()
 
     async def account(request: Request):
         return JSONResponse(eng.read_account())
@@ -502,6 +749,99 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
             return JSONResponse({"errors": errors}, status_code=400)
         return JSONResponse(json.loads(json.dumps(eng.close_preview(pair.symbol, d, qty), default=_plain)))
 
+    # ----- Setup (Q10, G19) and the live check -----
+
+    async def setup_get(request: Request):
+        return JSONResponse({**eng.setup_state(), "host": f"{HOST}:{port}"})
+
+    async def setup_post(request: Request):
+        d = await body(request)
+        if d.get("account") not in ACCOUNT_ANSWERS:
+            return JSONResponse({"errors": ['Send the account answer "no", "yes" or "sub".']}, status_code=400)
+        db.set_setting("account", json.dumps({"answer": d["account"], "at": eng.clock()}))
+        eng.version += 1
+        return JSONResponse(eng.setup_state())
+
+    async def live_check(request: Request):
+        d = await body(request)
+        if not isinstance(d.get("pair"), str):
+            return JSONResponse({"errors": ["Unknown pair."]}, status_code=400)
+        return JSONResponse(await eng.live_check(d["pair"]))
+
+    def key_state(**k) -> None:
+        db.set_setting("key", json.dumps(k) if k else None)
+        eng.version += 1
+
+    # ----- the Kraken API key (T4 U2): token + Origin guard (Guard), JSON only, never logged or sent back -----
+
+    def key_call(handler):
+        """A key save, test or remove changes the key in memory. It is refused while a live chase starts, runs or
+        ends (its end task cancels the leg and sets the timer to 0), and while another key call runs. A live start
+        is refused while it runs. So the key never changes under a live chase."""
+        async def run(request: Request):
+            if keying[0]:
+                return JSONResponse({"errors": [KEYING_TEXT]}, status_code=409)
+            if eng.starting or eng.tasks or eng.active and not eng.chase.dry:
+                return JSONResponse({"errors": [KEY_BUSY_TEXT]}, status_code=409)
+            keying[0] = True   # no wait between the check and this line: one key call at a time
+            try:
+                return await handler(request)
+            finally:
+                keying[0] = False
+        return run
+
+    @key_call
+    async def key_save(request: Request):
+        d = await body(request)
+        key = keys.parse(d.get("api_key"), d.get("private_key"))
+        if key is None:
+            return JSONResponse({"errors": [keys.SHAPE_TEXT]}, status_code=400)
+        try:
+            await asyncio.to_thread(store.save, key)   # a macOS prompt must not stop the chase loop
+        except Exception:   # the text of a Keychain error is not shown: say what to do
+            return JSONResponse({"errors": [KEYCHAIN_TEXT]}, status_code=503)
+        kraken.key = None                              # the next live call takes the new key (from memory)
+        key_state(saved=eng.clock(), tested=None, verdict=None, permissions=None)
+        return JSONResponse({"saved": True})
+
+    @key_call
+    async def key_remove(request: Request):
+        try:
+            await asyncio.to_thread(store.remove)
+        except Exception:
+            return JSONResponse({"errors": [KEYCHAIN_TEXT]}, status_code=503)
+        kraken.key = None
+        key_state()
+        return JSONResponse({"removed": True})
+
+    @key_call
+    async def key_test(request: Request):
+        """Test each permission of the saved key with calls that change nothing. A key that can withdraw is
+        removed from the Keychain at once (Q4). So is a key with Query Funds off: the tool cannot check it."""
+        try:
+            kraken.key = await asyncio.to_thread(store.read)
+        except Exception:
+            return JSONResponse({"errors": [KEYCHAIN_TEXT]}, status_code=503)
+        if kraken.key is None:
+            key_state()
+            return JSONResponse({"errors": ["No key is saved. Paste the key first."]}, status_code=409)
+        p = await rest.check(kraken)
+        removed = False
+        if p.verdict in ("withdraw", "nofunds"):
+            kraken.key = None
+            try:
+                await asyncio.to_thread(store.remove)
+                removed = True
+            except Exception:
+                key_state(saved=eng.clock(), tested=eng.clock(), verdict=p.verdict, permissions=p.on)
+                text = WITHDRAW_NOT_REMOVED if p.verdict == "withdraw" else NOFUNDS_NOT_REMOVED
+                return JSONResponse({"errors": [text]}, status_code=503)
+            key_state(saved=None, tested=eng.clock(), verdict=p.verdict, permissions=p.on)   # the page says why
+        else:
+            saved = (eng.setup_state()["key"] or {}).get("saved", eng.clock())
+            key_state(saved=saved, tested=eng.clock(), verdict=p.verdict, permissions=p.on)
+        return JSONResponse({"verdict": p.verdict, "permissions": p.on, "error": p.error, "removed": removed})
+
     async def no_icon(request: Request):
         return PlainTextResponse("", status_code=204)
 
@@ -509,12 +849,25 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         Route("/api/state", state), Route("/api/stream", stream),
         Route("/api/watch", watch, methods=["POST"]), Route("/api/chase", start, methods=["POST"]),
         Route("/api/chase/stop", action, methods=["POST"]), Route("/api/chase/fillnow", action, methods=["POST"]),
+        Route("/api/key", key_save, methods=["POST"]), Route("/api/key/remove", key_remove, methods=["POST"]),
+        Route("/api/key/test", key_test, methods=["POST"]),
+        Route("/api/setup", setup_get), Route("/api/setup", setup_post, methods=["POST"]),
+        Route("/api/live/check", live_check, methods=["POST"]),
         Route("/api/chase/{id:str}", one), Route("/api/history", history), Route("/api/account", account), Route("/api/plan", plan),
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
-    app.state.engine, app.state.token = eng, token
+    app.state.engine, app.state.token, app.state.keys = eng, token, store
     return Guard(app, token, port)
+
+
+async def _reconcile_loop(eng: Engine) -> None:
+    """The restart reconcile: try until Kraken can be read, 2, 4, 8 then 15 s apart. New live chases wait."""
+    wait = 2
+    while not await eng.reconcile():
+        eng.reading["next_in"] = wait
+        await asyncio.sleep(wait)
+        wait = min(wait * 2, 15)
 
 
 async def _tick_loop(eng: Engine) -> None:
@@ -538,9 +891,16 @@ async def _pairs_loop(eng: Engine) -> None:
             await asyncio.sleep(30)
 
 
+def _port(v: str) -> int:
+    """--port: a whole number from 1 to 65535."""
+    if not re.fullmatch(r"[0-9]{1,5}", v) or not 1 <= int(v) <= 65535:
+        raise argparse.ArgumentTypeError(f"{v!r} is not a port: use a number from 1 to 65535")
+    return int(v)
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser(prog="order-chaser", description="Kraken order chaser (dry run only) on http://127.0.0.1:5180")
-    ap.add_argument("--port", type=int, default=PORT, help="port on 127.0.0.1 (default: 5180)")
+    ap = argparse.ArgumentParser(prog="order-chaser", description="Kraken order chaser (dry run and live) on http://127.0.0.1:5180")
+    ap.add_argument("--port", type=_port, default=PORT, help="port on 127.0.0.1, 1 to 65535 (default: 5180)")
     ap.add_argument("--data-dir", type=Path, default=Path(os.environ.get("ORDER_CHASER_DATA", DEFAULT_DIR)),
                     help="folder for the SQLite file (default: ~/Library/Application Support/order-chaser)")
     ap.add_argument("--rate-start", type=float, default=0.0,
@@ -554,7 +914,10 @@ def main() -> None:
         lock = lock_folder(a.data_dir)  # noqa: F841  (held until the process ends)
     except BlockingIOError:
         raise SystemExit(f"Another order chaser runs on {a.data_dir}. Stop it first.")
-    print(f"Order chaser (DRY RUN: no real orders) on http://{HOST}:{a.port}  data: {a.data_dir}")
+    print(f"Order chaser on http://{HOST}:{a.port}  data: {a.data_dir}  (a chase is a dry run unless you choose Live)")
+    try:
+        app = create_app(a.data_dir, rate_start=a.rate_start, port=a.port, refuse_margin_amends=a.refuse_margin_amends)
+    except keys.RealKeyring as e:
+        raise SystemExit(str(e))
     # A short graceful shutdown: an open page (SSE) must not keep a stopped tool alive.
-    uvicorn.run(create_app(a.data_dir, rate_start=a.rate_start, port=a.port, refuse_margin_amends=a.refuse_margin_amends), host=HOST, port=a.port, log_level="warning",
-                timeout_graceful_shutdown=2)
+    uvicorn.run(app, host=HOST, port=a.port, log_level="warning", timeout_graceful_shutdown=2)

@@ -33,7 +33,7 @@ def resting(**kw):
 
 
 def beat(c, t):
-    """The book again at time t, as the feed re-sends it on each heartbeat: the prices are fresh."""
+    """The book again at time t (a book message with no change): the prices are fresh."""
     return Book(t, c.bid, c.ask, True)
 
 
@@ -136,6 +136,23 @@ def test_timeout_fallback_is_cancel_then_canceled_event_then_reread_then_ioc_for
     assert (c.phase, c.outcome, c.filled) == ("done", "filled", D("0.050"))
 
 
+def test_no_amend_or_new_order_at_or_after_the_timeout_the_first_event_after_it_starts_the_cancel():
+    # ORDER-AFTER-TIMEOUT: a Book after the timeout and before the next Tick amended the order.
+    c = resting()
+    c, cmds = run(c, Book(T0 + 120, D("62418.2"), D("62418.5"), True))     # the bid rose, at the timeout: no amend
+    assert cmds == [Cancel("oc-1")] and (c.phase, c.exit) == ("cancelling", "timeout")
+    # An amend in flight at the timeout: its answer after the timeout cancels; it does not amend again.
+    c = resting()
+    c, cmds = run(c, Book(T0 + 118, D("62418.2"), D("62418.5"), True))
+    assert cmds == [Amend("oc-1", D("62418.2"))]
+    c, cmds = run(c, Amended(T0 + 121), Book(T0 + 121.5, D("62418.4"), D("62418.5"), True))
+    assert cmds == [Cancel("oc-1")] and c.exit == "timeout"
+    # A refused first order: the book after the timeout places no new order; it reads the fills for the IOC.
+    c, _ = start()
+    c, cmds = run(c, Rejected(T0 + 1, "place", "would_cross"), Book(T0 + 125, D("62418.0"), D("62418.5"), True))
+    assert cmds == [Query("oc-1")] and (c.phase, c.exit) == ("reread", "timeout")
+
+
 def test_ioc_that_fills_nothing_above_the_cap_ends_as_not_filled():
     c = resting()
     c, texts = logs(c, Filled(T0 + 31, D("0.018"), D("62418.1"), True, cum=D("0.018")),
@@ -183,7 +200,7 @@ def test_never_buys_more_than_asked_on_random_markets():
                 cmd = queue.pop(0)
                 if isinstance(cmd, (Place, Ioc)):
                     sent_qty += cmd.qty
-                for ev in gw.send(cmd, now):
+                for ev in gw.answer(cmd, now):
                     c, more = core.step(c, ev)
                     queue += [x for x in more if not isinstance(x, core.Log)]
             now += rnd.choice([0.5, 1, 3])
@@ -527,7 +544,7 @@ def test_sim_fills_a_resting_order_as_maker_when_the_book_crosses_it():
     # when the opposite side comes to or through it.
     gw = SimGateway()
     gw.on_book([(D("100.0"), D("1"))], [(D("100.2"), D("1"))], T0)
-    assert gw.send(Place("oc-1", "buy", D("100.1"), D("0.05")), T0) == [Placed(T0)]
+    assert gw.answer(Place("oc-1", "buy", D("100.1"), D("0.05")), T0) == [Placed(T0)]
     crossed = [(D("100.0"), D("0.02")), (D("100.1"), D("0.01")), (D("100.2"), D("5"))]
     assert gw.on_book([(D("99.9"), D("1"))], crossed, T0 + 1) == [
         Filled(T0 + 1, D("0.03"), D("100.1"), True, "chase", D("0.03"), "oc-1")]
@@ -537,14 +554,14 @@ def test_sim_fills_a_resting_order_as_maker_when_the_book_crosses_it():
     more = [(D("100.0"), D("0.10")), (D("100.1"), D("0.01")), (D("100.2"), D("5"))]
     assert gw.on_book([(D("99.9"), D("1"))], more, T0 + 3) == [
         Filled(T0 + 3, D("0.02"), D("100.1"), True, "chase", D("0.05"), "oc-1")]
-    assert gw.send(Query("oc-1"), T0 + 3) == [OrderState(T0 + 3, False, D("0.05"), D("100.1"), "oc-1")]
+    assert gw.answer(Query("oc-1"), T0 + 3) == [OrderState(T0 + 3, False, D("0.05"), D("100.1"), "oc-1")]
 
 
 def test_sim_does_not_refill_from_a_level_that_flickers_out_and_back():
     # Seen in a live dry run: an ask that leaves and comes back at our price filled the same size again and again.
     gw = SimGateway()
     gw.on_book([(D("100.0"), D("1"))], [(D("100.2"), D("1"))], T0)
-    gw.send(Place("oc-1", "buy", D("100.1"), D("1")), T0)
+    gw.answer(Place("oc-1", "buy", D("100.1"), D("1")), T0)
     at_our_price = [(D("100.1"), D("0.3")), (D("100.2"), D("5"))]
     away = [(D("100.2"), D("5"))]
     assert gw.on_book([(D("100.0"), D("1"))], at_our_price, T0 + 1) == [
@@ -556,7 +573,7 @@ def test_sim_does_not_refill_from_a_level_that_flickers_out_and_back():
 def test_sim_fills_a_resting_sell_when_the_bid_rises_through_it():
     gw = SimGateway()
     gw.on_book([(D("99.8"), D("1"))], [(D("100.0"), D("1"))], T0)
-    gw.send(Place("oc-1", "sell", D("99.9"), D("0.05")), T0)
+    gw.answer(Place("oc-1", "sell", D("99.9"), D("0.05")), T0)
     assert gw.on_book([(D("99.9"), D("0.01")), (D("99.8"), D("1"))], [(D("100.0"), D("1"))], T0 + 1) == [
         Filled(T0 + 1, D("0.01"), D("99.9"), True, "chase", D("0.01"), "oc-1")]
 
@@ -708,7 +725,7 @@ def test_sim_a_sell_print_takes_bid_liquidity_so_the_ask_side_never_fills_it_aga
     # prints below its price and from asks at or below it, so one quantity cannot fill it twice.
     gw = SimGateway()
     gw.on_book([(D("99.9"), D("0.3"))], [(D("100.1"), D("1"))], T0)
-    gw.send(Place("oc-1", "buy", D("100.0"), D("1")), T0)
+    gw.answer(Place("oc-1", "buy", D("100.0"), D("1")), T0)
     assert gw.on_trade("sell", D("99.9"), D("0.3"), T0 + 1) == [Filled(T0 + 1, D("0.3"), D("100.0"), True, "chase", D("0.3"), "oc-1")]
     assert gw.on_book([], [(D("100.1"), D("1"))], T0 + 1) == []     # the bid at 99.9 is gone: nothing more
     # A seller whose remainder rests as an ask at 99.9 is new liquidity: it fills once, the print does not repeat.
@@ -730,7 +747,7 @@ def replay_recorded_feed(price, qty):
         if m["channel"] == "book":
             assert book.apply(m["data"][0], m["type"] == "snapshot")
             if i == 0:
-                assert gw.send(core.Place("oc-1", "buy", D(price), D(qty)), 0) == [core.Placed(0)]
+                assert gw.answer(core.Place("oc-1", "buy", D(price), D(qty)), 0) == [core.Placed(0)]
             got = gw.on_book(book.top_bids(), book.top_asks(), i)
         elif m["channel"] == "trade":
             got = [f for t in m["data"] for f in gw.on_trade(t["side"], D(str(t["price"])), D(str(t["qty"])), i)]
@@ -758,4 +775,4 @@ def test_one_name_for_the_dry_run_venue_in_every_page_and_log():
     src = Path(core.__file__).parent
     files = [*sorted((src / "static").glob("*.*")), src / "core.py", src / "server.py"]
     assert [f.name for f in files if "the simulation" in f.read_text()] == []
-    assert [f.name for f in files if "simulated exchange" in f.read_text()] == ["app.js", "chase.html", "new.html", "result.html", "core.py"]
+    assert [f.name for f in files if "simulated exchange" in f.read_text()] == ["app.js", "chase.html", "chase.js", "new.js", "result.js", "core.py"]

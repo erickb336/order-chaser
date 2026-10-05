@@ -102,16 +102,25 @@ function chrome(page) {
   top.className = 'top';
   const on = p => p.includes(page) ? 'on' : '';
   top.innerHTML = '<div class="brand"><span class="dot"></span>Order chaser</div>' +
-    `<nav class="nav"><a href="/" class="${on(['new', 'chase'])}">Chase</a><a href="/history" class="${on(['history', 'result'])}">History</a><a href="/setup" class="${on(['setup'])}">Setup</a></nav>` +
-    '<span class="spacer"></span><span class="badge dry">DRY RUN: no real orders</span><span class="conn" id="conn" role="status"><i></i><span>Kraken feed: connecting…</span></span>' +
-    `<span class="badge plain mono">${esc(location.host)}</span>`;
+    `<nav class="nav"><a href="/" class="${on(['new', 'chase'])}">Chase</a><a href="/history" class="${on(['history', 'result', 'reconcile'])}">History</a><a href="/setup" class="${on(['setup'])}">Setup</a></nav>` +
+    '<span class="spacer"></span><span id="modebadge"></span><span class="conn" id="conn" role="status"><i></i><span>Kraken feed: connecting…</span></span>' +
+    `<span class="badge plain mono" title="The real host and port, read from the page address">${esc(location.host)}</span>`;
   app.prepend(top);
   const strip = document.createElement('div');
-  strip.className = 'drystrip';
   strip.style.marginBottom = '16px';
-  strip.id = 'drystrip';
-  strip.textContent = 'DRY RUN: no real orders. No order goes to Kraken. Prices are live public prices; fills are simulated.';
+  strip.id = 'modestrip';
   top.after(strip);
+  setMode(false);
+}
+// The mode marker of every page: LIVE (orange) for a page about a live chase, else DRY RUN.
+function setMode(live, text) {
+  const b = $('modebadge'), s = $('modestrip');
+  if (!b || b.dataset.live === String(live) && !text) return;
+  b.dataset.live = String(live);
+  b.innerHTML = live ? '<span class="badge live">LIVE: real orders</span>' : '<span class="badge dry">DRY RUN: no real orders</span>';
+  s.className = live ? 'livestrip' : 'drystrip';
+  s.textContent = text || (live ? 'LIVE: this chase sends real orders to your Kraken account.'
+    : 'DRY RUN: no real orders. No order goes to Kraken. Prices are live public prices; fills are simulated.');
 }
 
 function conn(snap) {
@@ -147,13 +156,14 @@ const LABEL = {
   ratenear: 'Rate limit near', ended: 'Ended: tool stopped or restarted', stopped: 'Stopped by you', stopping: 'Stopping', refused: 'Order rejected',
   pageoffline: 'Page lost the tool', cancelfail: 'Cancel failed',
   replacing: 'Amend refused: cancel and replace', placeagain: 'Order rejected: placing again', liquidated: 'Liquidated', nopos: 'Ended: position closed',
+  timer: 'Ended: the safety timer fired', venuecancel: 'Ended: Kraken cancelled the order', noanswer: 'Ended: Kraken did not answer',
 };
 const TONE = {
   placing: 'you', resting: 'you', amending: 'you', partial: 'fill', filled: 'fill', fallback: 'warn', notfilled: 'bad', belowmin: 'bad',
   rejected: 'warn', disconnected: 'bad', ratenear: 'warn', ended: 'bad', stopped: 'muted', stopping: 'muted', refused: 'bad', pageoffline: 'bad', cancelfail: 'bad',
-  replacing: 'warn', placeagain: 'warn', liquidated: 'bad', nopos: 'warn',
+  replacing: 'warn', placeagain: 'warn', liquidated: 'bad', nopos: 'warn', timer: 'bad', venuecancel: 'bad', noanswer: 'bad',
 };
-const DONE = ['filled', 'notfilled', 'belowmin', 'stopped', 'ended', 'refused', 'cancelfail', 'liquidated', 'nopos'];
+const DONE = ['filled', 'notfilled', 'belowmin', 'stopped', 'ended', 'refused', 'cancelfail', 'liquidated', 'nopos', 'timer', 'venuecancel', 'noanswer'];
 const SIM = ' (Simulated. No order goes to Kraken.)';
 const DRY_TODO = 'Nothing to check in Kraken Pro: a dry run sends no orders.';
 const LIVE_CANCEL_TODO = 'Check Kraken Pro for an open order and cancel it there.';
@@ -363,7 +373,7 @@ function copy(st, c, snap, ageOff) {
     case 'refused': {
       const last = c.events.filter(e => e.kind === 'bad').pop();
       t.title = 'Stopped: the order was rejected';
-      t.sub = (last ? last.text + ' ' : '') + 'Nothing filled. No order of yours rests on the simulated exchange.';
+      t.sub = (last ? esc(last.text) + ' ' : '') + 'Nothing filled. No order of yours rests on the simulated exchange.';
       break;
     }
     case 'cancelfail':
@@ -371,12 +381,61 @@ function copy(st, c, snap, ageOff) {
       t.sub = `The simulated exchange rejected the cancel 3 times and still showed the order as open. The tool stopped the chase and sent no IOC. You ${w.bought} ${qty(filled)} of ${qty(c.qty)} ${B}.`;
       t.todo = [c.mode === 'live' ? LIVE_CANCEL_TODO : DRY_TODO];
       break;
+    case 'timer':
+      t.title = 'Ended: the safety timer fired';
+      t.sub = `The tool did not renew the safety timer in time, so Kraken cancelled all your orders, also this one. ${qty(filled)} of ${qty(c.qty)} ${B} filled. The tool sent no IOC.`;
+      t.todo = ['Check your other orders in Kraken Pro. The list below shows the ones that Kraken cancelled. The tool does not place them again.'];
+      break;
+    case 'venuecancel':
+      t.title = 'Ended: Kraken cancelled the order';
+      t.sub = `Kraken cancelled the order, and the tool did not ask for it. ${qty(filled)} of ${qty(c.qty)} ${B} filled. The tool sent no IOC.`;
+      t.todo = [LIVE_CANCEL_TODO];
+      break;
+    case 'noanswer':
+      t.title = 'Ended: Kraken did not answer';
+      t.sub = `Kraken did not answer the reads of the order for 60 s. The tool stopped the chase. The safety timer cancels the order on Kraken within 60 s. The tool counted ${qty(filled)} of ${qty(c.qty)} ${B} filled: Kraken can have filled more.`;
+      t.todo = ['Check the order and its fills in Kraken Pro.', 'The safety timer also cancels your other orders on the account.'];
+      break;
     case 'pageoffline':
       t.title = 'This page lost the tool';
       t.sub = `This page cannot reach the tool at ${location.host}. The values below are from ${Math.round(ageOff)} s ago. If the tool still runs, the chase continues without this page. Restart the tool with "uv run order-chaser" if it stopped.`;
       break;
   }
+  return c.mode === 'live' ? liveWords(t) : t;
+}
+
+// A live chase: the copy names Kraken, not the simulated exchange, and has no simulation note.
+function liveWords(t) {
+  const fix = x => typeof x !== 'string' ? x : x.split(SIM).join('').replace(/[Tt]he simulated exchange/g, m => m[0] === 'T' ? 'Kraken' : 'Kraken')
+    .replace(/The tool simulates a/g, 'The tool places a').replace(/simulated /g, '').replace(DRY_TODO, LIVE_CANCEL_TODO).replace(/a dry run/g, 'a live chase');
+  for (const k of ['title', 'sub', 'note']) t[k] = fix(t[k]);
+  if (t.steps) t.steps = t.steps.map(([a, b]) => [a, fix(b)]);
+  if (t.todo) t.todo = t.todo.map(fix);
   return t;
+}
+
+// The live panel of a chase: the safety timer, the private feed, the Mac awake; after the end, the Kraken ids and
+// the other orders that the safety timer cancelled (C8), stop-loss and take-profit first.
+function livePanel(c) {
+  if (c.mode !== 'live') return '';
+  const rows = [];
+  if (c.phase !== 'done' && c.timer) {
+    const tm = c.timer;
+    rows.push(tm.on ? `<div id="timerline"><b>Safety timer: on.</b> Renewed at ${clock(tm.renewed_at)}. If the tool stops, Kraken cancels ALL orders on this account at ${clock(tm.deadline)}, also stop-loss and take-profit orders. The tool renews it every 20 s.</div>`
+      : '<div id="timerline"><b>Safety timer: setting it.</b> No order rests without it.</div>');
+    rows.push(c.pfeed_ok ? '<div>Private feed of your fills: connected.</div>'
+      : '<div class="tone-warn" id="pfeedline"><b>Private feed of your fills: lost.</b> The tool reads the order by REST every 5 s. Amends are paused until the feed is back.</div>');
+    if (c.awake) rows.push('<div class="muted">Your Mac stays awake until the chase ends (caffeinate).</div>');
+  }
+  if (c.others_cancelled && c.others_cancelled.length) {
+    const prot = c.others_cancelled.filter(o => /^(stop-loss|take-profit|trailing-stop)/.test(o[0])).length;
+    rows.push(`<div class="note bad small" id="othersgone" role="status"><b>Kraken also cancelled ${c.others_cancelled.length} of your other open orders</b>${prot ? `, ${prot} of them stop-loss or take-profit orders. Those positions have no stop-loss or take-profit now` : ''}. Place them again in Kraken Pro. The tool does not place them for you.` +
+      '<table class="kv" style="margin-top:8px"><tr><th style="text-align:left">Type</th><th style="text-align:left">Pair</th><th style="text-align:left">Order</th></tr>' +
+      c.others_cancelled.map(([ty, pr, tx]) => `<tr><td style="text-align:left">${/^(stop|take|trailing)/.test(ty) ? '<b>' + esc(ty) + '</b>' : esc(ty)}</td><td style="text-align:left">${esc(pr)}</td><td style="text-align:left">${esc(tx)}</td></tr>`).join('') + '</table></div>');
+  } else if (c.others_cancelled) rows.push('<div>Kraken cancelled no other order of the account.</div>');
+  const ids = Object.entries(c.txids || {});
+  if (ids.length) rows.push('<div class="tiny muted" id="krakenids">Kraken order ids: ' + ids.map(([leg, tx]) => `<span class="mono">${esc(tx)}</span> (our id <span class="mono">${esc(leg)}</span>)`).join(', ') + '</div>');
+  return rows.length ? `<div class="card small" id="livepanel" style="margin-top:14px;display:grid;gap:8px">${rows.join('')}</div>` : '';
 }
 
 // The cost of a cancel and replace, in plain words (shown while it runs and in the result).
@@ -476,5 +535,5 @@ function eventLog(c) {
   return `<ul class="log">${c.events.slice().reverse().map(e => `<li><span class="ts">${mmss(e.t)}</span><span class="${kind[e.kind] || ''}">${esc(e.text)}</span></li>`).join('')}</ul>`;
 }
 
-return { newOrders, stopCancelled, closeBadge, stillOpen, planLine, markNote, clock, closeLink, closeText, gauge, orderName, positionLine, MARGIN_FEES, REPLACE_COST, TOKEN, $, esc, beyond, pct, fillWord, againText, restBelowMin, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
+return { setMode, newOrders, stopCancelled, livePanel, closeBadge, stillOpen, planLine, markNote, clock, closeLink, closeText, gauge, orderName, positionLine, MARGIN_FEES, REPLACE_COST, TOKEN, $, esc, beyond, pct, fillWord, againText, restBelowMin, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
 })();

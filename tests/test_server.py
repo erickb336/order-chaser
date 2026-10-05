@@ -6,6 +6,7 @@ import json
 import re
 import time
 import zlib
+from html.parser import HTMLParser
 from decimal import Decimal as D
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from starlette.testclient import TestClient
 from order_chaser import core, feed
 from order_chaser.book import OrderBook
 from order_chaser.db import Db, lock_folder
-from order_chaser.server import create_app
+from order_chaser.server import PAGES, create_app
 
 BASE = "http://127.0.0.1:5180"
 ORIGIN = {"Origin": BASE}
@@ -234,7 +235,7 @@ def test_one_dry_run_end_to_end_on_a_fake_feed(setup):
     assert (mid["phase"], mid["price"], mid["filled"]) == ("resting", "62418.1", "0.018")
 
     clock.t += 60
-    call(f._handle, {"channel": "heartbeat"})                                # no book change: the book is still valid
+    call(f._handle, kb.msg("update", [], []))                                # a book message with no change: still valid
     call(eng.tick)                                                           # timeout: fallback
     c = client.get(f"/api/chase/{cid}").json()
     texts = [e["text"] for e in c["events"]]
@@ -384,17 +385,57 @@ def test_a_floor_of_0_does_not_start_a_chase(setup):
     assert (r.status_code, r.json()) == (400, {"errors": ["The floor must be above 0."]})
 
 
-@pytest.mark.parametrize("path", ["/", "/chase", "/new", "/api/state", "/static/app.js"])
-def test_every_response_forbids_framing(setup, path):
-    # CLICKJACK-ONE-CLICK
+def csp_of(r) -> dict[str, str]:
+    return {d.split()[0]: " ".join(d.split()[1:]) for d in r.headers["content-security-policy"].split(";")}
+
+
+@pytest.mark.parametrize("path", ["/", *(f"/{p}" for p in PAGES), "/api/state", "/static/app.js", "/static/new.js"])
+def test_every_response_sends_the_full_csp(setup, path):
+    # CLICKJACK-ONE-CLICK, and T4 C5: the full CSP comes before any key exists.
     r = setup[0].get(path, follow_redirects=False)
     assert r.headers["x-frame-options"] == "DENY"
-    assert r.headers["content-security-policy"] == "frame-ancestors 'none'"
+    csp = csp_of(r)
+    assert {k: csp.get(k) for k in ("script-src", "connect-src", "frame-ancestors", "object-src", "base-uri")} == {
+        "script-src": "'self'", "connect-src": "'self'", "frame-ancestors": "'none'", "object-src": "'none'", "base-uri": "'none'"}
+    assert "unsafe-inline" not in csp["script-src"] and "unsafe-eval" not in csp["script-src"]
 
 
-def test_a_refused_request_also_forbids_framing(setup):
+def test_a_refused_request_also_sends_the_csp(setup):
     r = setup[0].get("/chase", headers={"Host": "evil.example:5180"})
     assert r.status_code == 403 and r.headers["x-frame-options"] == "DENY"
+    assert csp_of(r)["script-src"] == "'self'"
+
+
+class Scripts(HTMLParser):
+    """The scripts of a page: the src of each, the inline code, and every inline event handler (onclick=...)."""
+    def __init__(self):
+        super().__init__()
+        self.src, self.inline, self.handlers, self.open = [], [], [], False
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        self.handlers += [f"{tag} {k}" for k in a if k.startswith("on")]
+        if tag == "script":
+            self.open = True
+            self.src.append(a.get("src"))
+
+    def handle_endtag(self, tag):
+        self.open = self.open and tag != "script"
+
+    def handle_data(self, data):
+        if self.open and data.strip():
+            self.inline.append(data.strip()[:40])
+
+
+@pytest.mark.parametrize("page", PAGES)
+def test_no_page_has_an_inline_script(setup, page):
+    # The CSP (script-src 'self') blocks inline code; each page must run from its own script files only.
+    client = setup[0]
+    s = Scripts()
+    s.feed(client.get(f"/{page}").text)
+    assert (s.inline, s.handlers) == ([], [])
+    assert s.src == ["/static/app.js", f"/static/{page}.js"]
+    assert [client.get(src).status_code for src in s.src] == [200, 200]
 
 
 def test_the_guard_checks_a_websocket_like_a_state_change():
@@ -457,7 +498,7 @@ def test_a_token_header_that_is_not_ascii_gets_403_with_the_frame_headers(setup)
     assert r.headers["x-frame-options"] == "DENY"
 
 
-def test_start_needs_a_book_at_most_10_s_old_and_a_heartbeat_renews_it(setup):
+def test_start_needs_a_book_at_most_10_s_old_and_only_a_book_message_renews_it(setup):
     # STALE-FEED-FREEZE-AFTER-20S: Start and the running chase use one age limit, core.STALE_AFTER.
     client, app, eng, f, clock, call = setup
     H = started_book(setup)
@@ -465,7 +506,9 @@ def test_start_needs_a_book_at_most_10_s_old_and_a_heartbeat_renews_it(setup):
     clock.t += 10.5
     assert client.get("/api/state").json()["feed"]["fresh"] is False
     assert client.post("/api/chase", headers=H, json=body).json() == {"errors": ["Start needs live prices."]}
-    call(f._handle, {"channel": "heartbeat"})
+    call(f._handle, {"channel": "heartbeat"})                                 # the link is up, the book is still old
+    assert client.get("/api/state").json()["feed"]["fresh"] is False
+    call(f._handle, book_msg("snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")]))
     assert client.get("/api/state").json()["feed"]["fresh"] is True
     assert client.post("/api/chase", headers=H, json=body).status_code == 200
 
@@ -554,7 +597,7 @@ def test_a_book_message_alone_does_not_write_the_chase(setup):
     for i in range(20):
         clock.t += 0.05
         call(f._handle, kb.msg("update", [], [("62419.0", str(3 + i))]))     # a deeper ask changes: no amend
-    call(f._handle, {"channel": "heartbeat"})
+    call(f._handle, kb.msg("update", [], []))
     assert (eng.chase.book_at, saves) == (clock.t, [])                        # valid books, and no write
     call(f._handle, trade_msg("sell", "62417.0", "0.01"))                      # a fill changes the chase: it writes
     assert saves == ["resting"]
@@ -716,11 +759,14 @@ def test_start_takes_one_action_field_and_leverage_only_for_an_open(setup, body,
     assert eng.chase is None
 
 
-def test_the_dry_run_has_no_code_that_reads_a_key_or_calls_a_private_endpoint():
-    # DRY-RUN-READS-KEY (PE): no Kraken key and no private request in this version.
+def test_only_the_rest_client_signs_and_the_dry_run_reaches_no_key():
+    # DRY-RUN-READS-KEY (PE), T4: the signed private calls are only in rest.py (used by POST /api/key/test);
+    # the dry run (core, sim, feed, book, db) imports neither the key store nor the REST client.
     from pathlib import Path
-    src = " ".join(f.read_text() for f in (Path(__file__).parent.parent / "src" / "order_chaser").glob("*.py"))
-    assert [w for w in ("API-Key", "API-Sign", "/0/private", "KRAKEN_KEY", "KRAKEN_API") if w in src] == []
+    files = sorted((Path(__file__).parent.parent / "src" / "order_chaser").glob("*.py"))
+    assert [f.name for f in files if any(w in f.read_text() for w in ("API-Key", "API-Sign", "/0/private"))] == ["rest.py"]
+    dry = ("core.py", "sim.py", "feed.py", "book.py", "db.py")
+    assert [f.name for f in files if f.name in dry and re.search(r"^(from|import) .*\b(keys|rest|keyring)\b", f.read_text(), re.M)] == []
 
 
 def test_an_open_against_a_short_while_its_chase_runs_says_a_chase_runs_first(setup):
@@ -740,3 +786,98 @@ def test_an_open_against_a_short_while_its_chase_runs_says_a_chase_runs_first(se
     assert client.post("/api/chase/stop", headers=H).status_code == 200
     r = client.post("/api/chase", headers=H, json=long)
     assert (r.status_code, r.json()) == (400, {"errors": ["Close the short first. You have an open short position on BTC/USD."]})
+
+
+# ---------- the gateway call is async (T4 U1): a slow gateway does not stop the engine ----------
+
+def test_a_slow_gateway_call_does_not_block_and_the_commands_go_out_in_order(setup):
+    client, app, eng, f, clock, call = setup
+    started_book(setup)
+    sim, sent, gate = eng.gw, [], asyncio.Event()
+
+    async def slow_send(cmd, now):   # the network: each call waits until the test opens the gate
+        sent.append(type(cmd).__name__)
+        await gate.wait()
+        return sim.answer(cmd, now)
+    eng.gw = type("Slow", (), {"send": staticmethod(slow_send), "account": sim.account, "read": sim.read})()
+
+    assert call(eng.start, "BTC/USD", "buy", D("0.05"), None, 120) == []
+    assert (eng.chase.phase, sent) == ("placing", ["Place"])          # start returned while the Place waits
+    assert call(eng.user, "stop") is None                              # the user still reaches the core
+    assert sent == ["Place"]                                           # one call at a time: the next command waits
+
+    async def open_gate():
+        gate.set()
+        while eng.draining:
+            await asyncio.sleep(0.01)
+    call(open_gate)
+    assert sent[:2] == ["Place", "Cancel"]
+    assert (eng.chase.phase, eng.chase.outcome) == ("done", "stopped")
+
+
+def test_a_new_link_and_a_pair_change_at_the_same_time_leave_one_subscription_of_the_new_pair():
+    # U4: run() subscribed the pair of a new link while watch() changed the pair: two pairs stayed subscribed.
+    eth = feed.parse_pairs({"ETH/USD": {"tick_size": "0.01", "ordermin": "0.002", "costmin": "0.5", "pair_decimals": 2,
+                                        "lot_decimals": 8, "status": "online"}})["ETH/USD"]
+
+    class SlowWs:   # each send waits, as the network does: the other task runs in between
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, msg):
+            await asyncio.sleep(0.01)
+            self.sent.append(json.loads(msg))
+
+    async def scenario():
+        f = feed.PublicFeed(lambda b, ok: None, lambda *a: None, lambda *a: None)
+        f.pair, f.ws = PAIRS["BTC/USD"], SlowWs()            # run() has a new link for BTC/USD
+        await asyncio.gather(f._follow(), f.watch(eth), f.watch(eth))
+        return f.ws.sent
+
+    live = set()
+    for m in asyncio.run(scenario()):
+        key = (m["params"]["channel"], m["params"]["symbol"][0])
+        assert (key in live) == (m["method"] == "unsubscribe"), m   # never a second subscribe of the same channel
+        (live.discard if m["method"] == "unsubscribe" else live.add)(key)
+    assert live == {("book", "ETH/USD"), ("trade", "ETH/USD")}
+
+
+def test_a_heartbeat_does_not_renew_the_age_of_the_book(setup):
+    # U4: only a book message renews the book; the heartbeat says only that the link is up.
+    client, app, eng, f, clock, call = setup
+    call(f._handle, book_msg("snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")]))
+    at = eng.book_at
+    clock.t += 5
+    call(f._handle, {"channel": "heartbeat"})
+    assert (eng.book_at, client.get("/api/state").json()["feed"]["age"]) == (at, 5.0)
+
+
+@pytest.mark.parametrize("port", ["0", "65536", "-1", "80a", "99999"])
+def test_the_port_must_be_1_to_65535(port, monkeypatch, capsys):
+    import sys
+    from order_chaser import server
+    monkeypatch.setattr(sys, "argv", ["order-chaser", "--port", port])
+    with pytest.raises(SystemExit):
+        server.main()
+    assert "use a number from 1 to 65535" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("change", [
+    lambda d: d["positions"][0].update(dir="sideways"),
+    lambda d: d["positions"][0].update(pair="BTC/USD<script>"),
+    lambda d: d["positions"][0].update(qty="NaN"),
+    lambda d: d["positions"][0].update(entry="-5"),
+    lambda d: d.update(liquidation="yes"),
+])
+def test_a_saved_account_that_is_not_valid_gives_a_new_account_and_a_warning(tmp_path, change, caplog):
+    from order_chaser.sim import SimAccount
+    good = {"cash": "4000", "allowance": "5000", "liquidation": None, "positions": [
+        {"pair": "BTC/USD", "dir": "long", "ref": "oc1", "qty": "0.05", "entry": "62000", "margin": "1000",
+         "leverage": 3, "opened": 1.0, "stop": 40}]}
+    assert SimAccount.from_json(json.dumps(good)).positions[0]["qty"] == D("0.05")
+    change(good)
+    db = Db(tmp_path)
+    db.save_account(json.dumps(good))
+    guard = create_app(tmp_path, connect=False, latency=0)
+    assert guard.app.state.engine.gw.account.positions == []
+    assert "The saved simulated account is not valid. Margin dry runs start with a new account of 5,000 USD." in caplog.messages

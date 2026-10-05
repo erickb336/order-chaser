@@ -5,27 +5,49 @@
 <link rel="stylesheet" href="/static/style.css"></head>
 <body>
 <main class="app">
-  <div style="max-width:820px">
+  <div style="max-width:840px">
     <h1>Setup for live chases</h1>
-    <p class="muted">A live chase needs a Kraken API key and your choice about the safety timer. A dry run needs neither.</p>
+    <p class="muted">A live chase needs one answer about your Kraken account, a tested Kraken API key in the macOS Keychain, and the safety timer. A dry run needs none of them.</p>
     <div class="row" style="margin-bottom:22px"><a class="btn drybtn" href="/new">Skip setup: start a dry run</a><span class="small muted">You can come back here at any time.</span></div>
     <div class="steps">
       <div class="step done"><div class="no">✓</div><div class="card" style="padding:16px">
         <div class="row"><h2 style="margin:0">1. Local tool</h2><span class="spacer"></span><span class="badge ok">Running</span></div>
-        <p class="small muted" style="margin:6px 0 0">The tool runs on this Mac at localhost:5180 and receives public Kraken prices. Only this Mac can open this page.</p>
+        <p class="small muted" style="margin:6px 0 0">The tool runs on this Mac at <span class="mono" id="host"></span> (read from the page address) and receives public Kraken prices. Only this Mac can open this page.</p>
       </div></div>
-      <div class="step"><div class="no">2</div><div class="card" style="padding:16px">
-        <div class="row"><h2 style="margin:0">2. Kraken API key</h2><span class="spacer"></span><span class="badge plain">Later version</span></div>
-        <p class="small muted" style="margin:6px 0 0">Live trading comes in a later version. This version takes no key and sends no order to Kraken.</p>
-        <p class="small" style="margin:10px 0 0" id="mgline"><span class="badge mg">margin</span> Margin uses the same key and needs no new permission. Create &amp; Modify Orders opens and closes positions, and Query Open Orders &amp; Trades reads them. A margin dry run reads no key: it uses a simulated account of 5,000 USD.</p>
+      <div class="step" id="sA"><div class="no" id="nA">2</div><div class="card" style="padding:16px">
+        <div class="row"><h2 style="margin:0">2. Other tools on this account</h2><span class="spacer"></span><span id="bA"></span></div>
+        <div id="acctbody"></div>
       </div></div>
-      <div class="step"><div class="no">3</div><div class="card" style="padding:16px">
-        <div class="row"><h2 style="margin:0">3. Safety timer</h2><span class="spacer"></span><span class="badge plain">Later version</span></div>
-        <p class="small muted" style="margin:6px 0 0">Live trading comes in a later version. A dry run needs no safety timer: no order rests on Kraken.</p>
+      <div class="step" id="sK"><div class="no" id="nK">3</div><div class="card" style="padding:16px">
+        <div class="row"><h2 style="margin:0">3. Kraken API key</h2><span class="spacer"></span><span id="bK"></span></div>
+        <div id="keybody"></div>
+        <div id="keyform" class="hidden">
+          <div class="note warn small" style="margin:10px 0"><b>Warning: do not turn on Withdraw Funds.</b> The tool refuses a key that can withdraw and removes it from the Keychain.</div>
+          <ol class="how small">
+            <li>In Kraken Pro, open <b>Settings</b>, then <b>API</b>, then <b>Create API key</b>.</li>
+            <li>Turn on <b>Query Funds</b>, <b>Modify Orders</b>, <b>Cancel/Close Orders</b>, <b>Query Open Orders &amp; Trades</b>, <b>Query Closed Orders &amp; Trades</b> and <b>Access WebSockets API</b>.</li>
+            <li>Leave <b>Withdraw Funds</b> off.</li>
+            <li>Recommended: set <b>IP whitelisting</b> to the IP address of this Mac.</li>
+            <li>Save the key. Kraken shows the private key one time only.</li></ol>
+          <p class="tiny muted" style="margin:-4px 0 10px">Check these names against your Kraken key page. They come from the Kraken support article.</p>
+          <div class="grid2"><div class="field"><label class="f" for="k1">API key</label><input class="input mono" id="k1" autocomplete="off" spellcheck="false" placeholder="Paste the API key"></div>
+          <div class="field"><label class="f" for="k2">Private key</label><input class="input mono" id="k2" type="password" autocomplete="off" spellcheck="false" placeholder="Paste the private key"></div></div>
+          <div class="row"><button class="btn primary" id="save" type="button">Save in Keychain and test</button><span class="small muted">The page sends the key one time to the tool on this Mac and clears the fields. The tool keeps it only in the macOS Keychain, never in a file or a log.</span></div>
+        </div>
+        <div id="perms"></div>
+        <div class="row" id="keyacts" style="margin-top:10px"></div>
+        <div class="small" id="keymsg" role="status" aria-live="polite" style="margin-top:8px"></div>
+        <p class="small" style="margin:10px 0 0" id="mgline"><span class="badge mg">margin</span> Margin uses the same key and needs no new permission. Modify Orders opens and closes positions, and Query Open Orders &amp; Trades reads them. Live margin comes only after your go-ahead. A margin dry run reads no key: it uses a simulated account of 5,000 USD.</p>
+      </div></div>
+      <div class="step" id="sT"><div class="no" id="nT">4</div><div class="card" style="padding:16px">
+        <div class="row"><h2 style="margin:0">4. Safety timer</h2><span class="spacer"></span><span id="bT"></span></div>
+        <div class="note warn small" style="margin-top:10px"><b>Warning: if the tool stops during a live chase, Kraken cancels ALL your orders on ALL pairs</b>, also stop-loss and take-profit orders and orders you placed by hand.</div>
+        <p class="small" style="margin:10px 0 0">During a live chase the tool asks Kraken to cancel all orders in 60 s, and renews that request every 20 s. If the tool crashes, the Mac sleeps or the internet stops, the renewals stop and Kraken cancels the orders. Then no chase order rests without control. Each live chase asks you to confirm it.</p>
       </div></div>
     </div>
+    <div id="finish" style="margin-top:20px"></div>
   </div>
 </main>
 <script src="/static/app.js"></script>
-<script>OC.chrome('setup'); OC.stream(() => {});</script>
+<script src="/static/setup.js"></script>
 </body></html>
