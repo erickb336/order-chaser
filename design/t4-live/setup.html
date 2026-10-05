@@ -7,105 +7,129 @@
   <div class="switcher" id="sw"></div>
   <div style="max-width:840px">
     <h1>Setup for live chases</h1>
-    <p class="muted">A live chase needs a Kraken API key in the macOS Keychain and the safety timer. A dry run needs neither.</p>
+    <p class="muted">A live chase needs one answer about your Kraken account, a Kraken API key in the macOS Keychain, and the safety timer. A dry run needs none of them.</p>
     <div class="row" style="margin-bottom:22px"><a class="btn drybtn" href="new.html#dry">Skip setup: start a dry run</a><span class="small muted">You can come back here at any time.</span></div>
     <div class="steps">
       <div class="step done"><div class="no">✓</div><div class="card" style="padding:16px">
         <div class="row"><h2 style="margin:0">1. Local tool</h2><span class="spacer"></span><span class="badge ok">Running</span></div>
         <p class="small muted" style="margin:6px 0 0">The tool runs on this Mac at <span class="mono">127.0.0.1:5180</span> (read from the page address) and receives public Kraken prices. Only this Mac can open this page.</p>
       </div></div>
-      <div class="step" id="s2"><div class="no" id="n2">2</div><div class="card" style="padding:16px">
-        <div class="row"><h2 style="margin:0">2. Kraken API key</h2><span class="spacer"></span><span id="b2"></span></div>
+      <div class="step" id="sA"><div class="no" id="nA">2</div><div class="card" style="padding:16px">
+        <div class="row"><h2 style="margin:0">2. Other tools on this account</h2><span class="spacer"></span><span id="bA"></span></div>
+        <div id="acctbody"></div>
+      </div></div>
+      <div class="step" id="s2"><div class="no" id="n2">3</div><div class="card" style="padding:16px">
+        <div class="row"><h2 style="margin:0">3. Kraken API key</h2><span class="spacer"></span><span id="b2"></span></div>
         <div id="keybody"></div>
       </div></div>
-      <div class="step" id="s3"><div class="no" id="n3">3</div><div class="card" style="padding:16px">
-        <div class="row"><h2 style="margin:0">3. Safety timer</h2><span class="spacer"></span><span id="b3"></span></div>
+      <div class="step" id="s3"><div class="no" id="n3">4</div><div class="card" style="padding:16px">
+        <div class="row"><h2 style="margin:0">4. Safety timer</h2><span class="spacer"></span><span id="b3"></span></div>
         <div id="dmsbody"></div>
       </div></div>
     </div>
     <div id="finish" style="margin-top:20px"></div>
   </div>
 </main>
-<div class="scrim hidden" id="macdlg"><div class="mac" role="dialog" aria-label="macOS Keychain prompt (mock)">
-  <div class="tiny" style="color:#c9ccd3;margin-bottom:6px">macOS dialog (mock, not part of the tool)</div>
-  <div class="t">"order-chaser" wants to use your confidential information stored in "Kraken API key (order-chaser)" in your keychain.</div>
-  <div style="color:#d4d7dd">To allow this, enter the "login" keychain password.</div>
-  <div class="b"><span>Always Allow</span><span>Deny</span><span class="p">Allow</span></div>
-  <p class="tiny" style="color:#d4d7dd;margin:12px 0 0">The prompt is from macOS. The tool cannot click it. Choose <b>Always Allow</b> so that a live chase does not stop at this prompt.</p>
-  <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:8px"><button class="btn sm" data-go="testing">Sample: you click Allow</button><button class="btn sm" data-go="denied">Sample: you click Deny</button></div>
-</div></div>
+<div class="scrim hidden" id="macdlg"></div>
 <script src="assets/proto.js"></script>
 <script>
 OC.chrome('setup', 'dry');
 const $ = OC.$;
-// Kraken's exact key-permission labels (support article "How to create an API key", read 4 Oct 2026).
-// test: the call the tool makes to test the permission. Each call changes nothing on the account.
+// C9: the labels of Kraken's support article "How to create an API key" (read 4 Oct 2026). The key page can name them differently.
+// [kind, label, why, call, what the result means]. C1: Query Funds is required. C2: Cancel/Close is tested with CancelOrder on an unknown id.
 const PERMS = [
-  ['need', 'Modify Orders', 'Places and amends the chase order and the IOC.', 'AddOrder with validate: Kraken checks the order and places nothing'],
-  ['need', 'Cancel/Close Orders', 'Cancels the order and runs the safety timer.', 'CancelAllOrdersAfter with 0 s: turns the timer off, cancels nothing'],
-  ['need', 'Query Open Orders & Trades', 'Reads the open chase order and its fills.', 'OpenOrders'],
-  ['need', 'Query Closed Orders & Trades', 'Reads the fills of an ended order, also after a restart.', 'ClosedOrders'],
-  ['need', 'Access WebSockets API', 'Opens the private feed of your fills. Without it the tool sees no fills.', 'GetWebSocketsToken'],
-  ['opt', 'Query Funds', 'Optional. Shows your balance before a live chase.', 'Balance'],
-  ['off', 'Withdraw Funds', 'Must be off. The tool refuses a key that can withdraw.', 'WithdrawMethods: it must fail with "Permission denied"'],
+  ['need', 'Query Funds', 'Lets the tool check that Withdraw Funds is off, and shows your balance before a live chase.', 'Balance', ''],
+  ['need', 'Modify Orders', 'Places and amends the chase order and the IOC.', 'AddOrder', 'with validate: Kraken checks the order and places nothing'],
+  ['need', 'Cancel/Close Orders', 'Cancels the order and runs the safety timer.', 'CancelOrder', 'for an order id that does not exist. "Unknown order" means on; "Permission denied" means off'],
+  ['need', 'Query Open Orders & Trades', 'Reads the open chase order, its fills and your other open orders.', 'OpenOrders', ''],
+  ['need', 'Query Closed Orders & Trades', 'Reads the fills of an ended order, also after a restart.', 'ClosedOrders', ''],
+  ['need', 'Access WebSockets API', 'Opens the private feed of your fills. Without it the tool sees no fills.', 'GetWebSocketsToken', ''],
+  ['off', 'Withdraw Funds', 'Must be off. The tool refuses a key that can withdraw.', 'WithdrawMethods', 'must fail with "Permission denied". The test is valid only when Query Funds is on'],
 ];
 const NOTNEEDED = 'Deposit Funds, Query Ledger Entries, Export Data';
+const NAMES = '<div class="note plain tiny" style="margin:10px 0 4px"><b>Check these names against your Kraken key page.</b> They come from the Kraken support article. If a name on your key page differs, stop and ask before you create the key.</div>';
 function perms(mode) {
-  const bad = { withdraw: 'Withdraw Funds', missing: 'Access WebSockets API' }[mode];
-  const row = ([kind, name, why, test]) => {
-    let ic = '✓', cls = 'tone-fill', badge = kind === 'off' ? '<span class="badge ok">Off</span>' : kind === 'opt' ? '<span class="badge plain">On (optional)</span>' : '<span class="badge ok">On</span>';
+  const bad = { withdraw: 'Withdraw Funds', missing: 'Access WebSockets API', nofunds: 'Query Funds' }[mode];
+  const row = ([kind, name, why, call, res]) => {
+    let ic = '✓', cls = 'tone-fill', badge = kind === 'off' ? '<span class="badge ok">Off</span>' : '<span class="badge ok">On</span>';
     if (mode === 'testing') { ic = '…'; cls = 'muted'; badge = '<span class="badge plain skel">testing</span>'; }
     if (name === bad) { ic = '✗'; cls = 'tone-bad'; badge = kind === 'off' ? '<span class="badge bad">ON: refused</span>' : '<span class="badge bad">Off: turn it on</span>'; }
-    return `<div class="perm"><span class="${cls}" aria-hidden="true">${ic}</span><div><b>${name}</b><div class="tiny muted">${why} Test: <span class="mono">${test.split(':')[0]}</span>${test.includes(':') ? ':' + test.split(':').slice(1).join(':') : ''}.</div></div>${badge}</div>`;
+    if (mode === 'nofunds' && kind === 'off') { ic = '?'; cls = 'tone-warn'; badge = '<span class="badge warn">Cannot check</span>'; }
+    return `<div class="perm"><span class="${cls}" aria-hidden="true">${ic}</span><div><b>${name}</b><div class="tiny muted">${why} Test: <span class="mono">${call}</span>${res ? ' ' + res : ''}.</div></div>${badge}</div>`;
   };
   const grp = (k, t) => `<div class="permgrp">${t}</div>` + PERMS.filter(p => p[0] === k).map(row).join('');
-  return grp('need', 'Required (5)') + grp('opt', 'Optional (1)') + grp('off', 'Must be off (1)') +
+  return NAMES + grp('need', 'Required (6)') + grp('off', 'Must be off (1)') +
     `<p class="tiny muted" style="margin:10px 0 0">Not needed, leave off: ${NOTNEEDED}. The tool does not use them.</p>`;
 }
 const HOW = `<ol class="how small">
   <li>In Kraken Pro, open <b>Settings</b>, then <b>API</b>, then <b>Create API key</b>.</li>
-  <li>Turn on <b>Modify Orders</b>, <b>Cancel/Close Orders</b>, <b>Query Open Orders &amp; Trades</b>, <b>Query Closed Orders &amp; Trades</b> and <b>Access WebSockets API</b>.</li>
-  <li>Optional: turn on <b>Query Funds</b>.</li>
+  <li>Turn on <b>Query Funds</b>, <b>Modify Orders</b>, <b>Cancel/Close Orders</b>, <b>Query Open Orders &amp; Trades</b>, <b>Query Closed Orders &amp; Trades</b> and <b>Access WebSockets API</b>.</li>
+  <li>Leave <b>Withdraw Funds</b> off.</li>
   <li>Recommended: set <b>IP whitelisting</b> to the IP address of this Mac.</li>
-  <li>Save the key. Kraken shows the private key one time only.</li></ol>`;
-const KEYOK = `<p class="small" style="margin:8px 0 0">The key is in the macOS Keychain as <span class="mono">Kraken API key (order-chaser)</span>. Saved 4 Oct 2026, 09:41. Tested 09:41.</p>
-  <p class="tiny muted" style="margin:4px 0 0">No page shows the key again, also not a part of it. To see or delete it, use Keychain Access.</p>`;
-const S = {
-  empty: { s: 'cur', n: '2', b: '<span class="badge plain">Not set</span>', body: `<div class="note warn small" style="margin:10px 0"><b>Warning: do not turn on Withdraw Funds.</b> The tool refuses a key that can withdraw.</div>${HOW}
-      <div class="grid2"><div class="field"><label class="f" for="k1">API key</label><input class="input mono" id="k1" autocomplete="off" placeholder="Paste the API key"></div>
-      <div class="field"><label class="f" for="k2">Private key</label><input class="input mono" id="k2" type="password" autocomplete="off" placeholder="Paste the private key"></div></div>
-      <div class="row"><button class="btn primary" id="save">Save in Keychain and test</button><span class="small muted">You paste the key one time. The tool stores it only in the macOS Keychain, never in a file or a log.</span></div>` },
-  keychain: { s: 'cur', n: '2', b: '<span class="badge plain">Waiting for macOS</span>', body: '<p class="small" style="margin:8px 0 0">The tool saved the key in the Keychain. macOS now asks if the tool may read it. Answer the macOS dialog.</p><p class="tiny muted">The page fields are empty again. The page does not keep the key.</p>', mac: true },
-  testing: { s: 'cur', n: '2', b: '<span class="badge plain">Testing…</span>', body: '<p class="small muted" style="margin-top:8px">The tool tests each permission with a call that changes nothing. This takes about 5 s.</p>' + perms('testing') },
+  <li>Save the key. Kraken shows the private key one time only.</li></ol>
+  <p class="tiny muted" style="margin:-4px 0 10px">Check these names against your Kraken key page. They come from the Kraken support article.</p>`;
+// C6: the paste fields are not a form. The page sends the key one time to the tool on this Mac, then clears the fields.
+const SAVED = '<b>Saved in your macOS Keychain. The tool never shows it again.</b>';
+const ALLOW = '<div class="note info small" style="margin-top:10px"><b>At each start of the tool, macOS asks one time.</b> Click <b>Allow</b> in that prompt. The tool reads the key then and keeps it only in memory until it stops. The prompt can name <span class="mono">python3</span>, the program that runs the tool. <a href="new.html#unlock">See it at the first live chase</a>.</div>';
+const KEYOK = `<p class="small" style="margin:8px 0 0">${SAVED} The Keychain item is <span class="mono">Kraken API key (order-chaser)</span>. Saved 4 Oct 2026, 09:41. Tested 09:41.</p>
+  <p class="tiny muted" style="margin:4px 0 0">No page shows the key again, also not a part of it. To see or delete it, use Keychain Access.</p>` + ALLOW;
+const KEYFORM = `<div class="note warn small" style="margin:10px 0"><b>Warning: do not turn on Withdraw Funds.</b> The tool refuses a key that can withdraw and removes it from the Keychain.</div>${HOW}
+  <div class="grid2"><div class="field"><label class="f" for="k1">API key</label><input class="input mono" id="k1" name="oc-k1" autocomplete="off" spellcheck="false" placeholder="Paste the API key"></div>
+  <div class="field"><label class="f" for="k2">Private key</label><input class="input mono" id="k2" name="oc-k2" type="password" autocomplete="off" spellcheck="false" placeholder="Paste the private key"></div></div>
+  <div class="row"><button class="btn primary" id="save">Save in Keychain and test</button><span class="small muted">The page sends the key one time to the tool on this Mac and clears the fields. The tool keeps it only in the macOS Keychain, never in a file or a log.</span></div>`;
+const KEY = {
+  account: { s: '', n: '3', b: '<span class="badge plain">After step 2</span>', body: '<p class="small muted" style="margin:8px 0 0">Answer step 2 first. The answer decides which Kraken account the key comes from.</p>' },
+  'acct-yes': { s: '', n: '3', b: '<span class="badge plain">After step 2</span>', body: '<p class="small muted" style="margin:8px 0 0">Create the key in the sub-account, not in your main account.</p>' },
+  empty: { s: 'cur', n: '3', b: '<span class="badge plain">Not set</span>', body: KEYFORM },
+  keychain: { s: 'cur', n: '3', b: '<span class="badge plain">Waiting for macOS</span>', body: `<p class="small" style="margin:8px 0 0">${SAVED}</p><p class="small" style="margin:6px 0 0">To test the key, the tool must read it. macOS now asks if it may. Answer the macOS prompt.</p><p class="tiny muted">The page fields are empty again. The page does not keep the key.</p>`, mac: true },
+  testing: { s: 'cur', n: '3', b: '<span class="badge plain">Testing…</span>', body: '<p class="small muted" style="margin-top:8px">The tool tests each permission with a call that changes nothing. This takes about 5 s.</p>' + perms('testing') },
   denied: { s: 'bad', n: '!', b: '<span class="badge bad">Keychain denied</span>', body: `<div class="note bad small" style="margin-top:10px"><b>macOS did not let the tool read the key.</b> You clicked Deny, or the Keychain is locked. The key is still in the Keychain. No live chase can start until the tool can read it.</div>
-      <ol class="how small"><li>Click <b>Try again</b>.</li><li>In the macOS dialog, click <b>Always Allow</b>.</li></ol>
+      <ol class="how small"><li>Click <b>Try again</b>.</li><li>In the macOS prompt, click <b>Allow</b>.</li></ol>
       <div class="row"><button class="btn primary" id="retry">Try again</button><button class="btn danger">Remove the key from Keychain</button></div>` },
   missing: { s: 'bad', n: '!', b: '<span class="badge bad">Not usable</span>', body: '<div class="note bad small" style="margin-top:10px"><b>The key does not have Access WebSockets API.</b> Without it the tool sees no fills. In Kraken Pro, edit the key and turn on Access WebSockets API. Then click Test again. You do not paste the key again.</div>' + perms('missing') + '<div class="row" style="margin-top:10px"><button class="btn primary" id="retry">Test again</button><button class="btn danger">Remove the key from Keychain</button></div>' },
+  nofunds: { s: 'bad', n: '!', b: '<span class="badge bad">Not usable</span>', body: '<div class="note bad small" style="margin-top:10px"><b>The key does not have Query Funds, so the tool cannot check that Withdraw Funds is off.</b> Without Query Funds, the Withdraw test fails for every key and proves nothing. The tool does not use the key. In Kraken Pro, edit the key and turn on Query Funds. Then click Test again.</div>' + perms('nofunds') + '<div class="row" style="margin-top:10px"><button class="btn primary" id="retry">Test again</button><button class="btn danger">Remove the key from Keychain</button></div>' },
   withdraw: { s: 'bad', n: '!', b: '<span class="badge bad">Refused</span>', body: `<div class="note bad small" style="margin-top:10px"><b>This key can withdraw funds. The tool refused it and removed it from the Keychain.</b> A key that can withdraw is too risky to keep on this Mac. In Kraken Pro, delete this key. Then create a new key without Withdraw Funds and paste it here.</div>` + perms('withdraw') + '<div class="row" style="margin-top:10px"><button class="btn primary" id="again">Paste a new key</button></div>' },
   ok: { s: 'done', n: '✓', b: '<span class="badge ok">Ready</span>', body: KEYOK + perms('ok') + '<div class="row" style="margin-top:10px"><button class="btn sm">Test again</button><button class="btn sm">Replace the key</button><button class="btn sm danger">Remove the key from Keychain</button></div>' },
 };
-S.done = S.ok;
-const ORDER = [['empty', 'First run: no key', 'Key'], ['keychain', 'macOS Keychain prompt'], ['testing', 'Testing the key (loading)'], ['ok', 'Key OK'], ['missing', 'Failure: permission missing', 'Failure'], ['withdraw', 'Refused: withdraw is on'], ['denied', 'Failure: Keychain denied'], ['done', 'Setup complete', 'Success']];
+KEY.done = KEY.ok;
+// Q10: asked one time. "Yes" requires a Kraken sub-account for the chaser.
+const WHYSUB = 'Kraken keeps one safety timer for each account. During a live chase this tool sets that timer and renews it every 20 s. That replaces the timer of any other tool on the account. When the timer fires, Kraken cancels the orders of the other tool too.';
+function acct(id) {
+  if (id === 'account') return { s: 'cur', n: '2', b: '<span class="badge plain">One question</span>', body: `<p class="small" style="margin:8px 0 10px"><b>Does another bot or API tool use this Kraken account?</b></p>
+    <div class="row"><button class="btn" id="ano">No, only this tool</button><button class="btn" id="ayes">Yes</button></div>
+    <p class="tiny muted" style="margin:10px 0 0">Why we ask: ${WHYSUB} You answer one time. You can change the answer here.</p>` };
+  if (id === 'acct-yes') return { s: 'bad', n: '!', b: '<span class="badge warn">Sub-account needed</span>', body: `<div class="note warn small" style="margin-top:10px"><b>Use a Kraken sub-account for the order chaser.</b> ${WHYSUB} In a sub-account, the timer touches only the chaser's orders.</div>
+    <ol class="how small"><li>In Kraken Pro, create a sub-account for the order chaser.</li><li>Move to it only the funds that you want to chase with.</li><li>In step 3, create the API key in the sub-account.</li></ol>
+    <div class="row"><button class="btn primary" id="asub">I use a sub-account for this tool</button><button class="btn sm" id="ano">Change: no other tool</button></div>
+    <p class="tiny muted" style="margin:10px 0 0">You answered Yes on 4 Oct 2026 (sample). Live chases stay off until you confirm the sub-account.</p>` };
+  return { s: 'done', n: '✓', b: '<span class="badge ok">Answered</span>', body: '<p class="small" style="margin:8px 0 0">No other bot or API tool uses this Kraken account. Answered 4 Oct 2026 (sample). <a href="#account">Change</a></p>' };
+}
+const ORDER = [['account', 'First run: other tools?', 'Account (Q10)'], ['acct-yes', 'Yes: sub-account needed'],
+  ['empty', 'Paste the key', 'Key'], ['keychain', 'macOS Keychain prompt'], ['testing', 'Testing the key (loading)'], ['ok', 'Key OK'],
+  ['missing', 'Failure: permission missing', 'Failure'], ['nofunds', 'Failure: Query Funds off'], ['withdraw', 'Refused: withdraw is on'], ['denied', 'Failure: Keychain denied'], ['done', 'Setup complete', 'Success']];
 let cur;
 function draw(id) {
-  cur = id; const st = S[id];
+  cur = id; const st = KEY[id], a = acct(id);
+  $('sA').className = 'step ' + a.s; $('nA').textContent = a.n; $('bA').innerHTML = a.b; $('acctbody').innerHTML = a.body;
   $('s2').className = 'step ' + st.s; $('n2').textContent = st.n; $('b2').innerHTML = st.b; $('keybody').innerHTML = st.body;
+  $('macdlg').innerHTML = st.mac ? OC.macPrompt('setup', [['Sample: you click Allow', 'testing'], ['Sample: you click Deny', 'denied']]) : '';
   $('macdlg').classList.toggle('hidden', !st.mac);
   const ready = id === 'ok' || id === 'done';
-  $('s3').className = 'step ' + (ready ? 'done' : ''); $('n3').textContent = ready ? '✓' : '3';
-  $('b3').innerHTML = ready ? '<span class="badge ok">Accepted</span>' : '<span class="badge plain">After step 2</span>';
-  $('dmsbody').innerHTML = `<div class="note warn small" style="margin-top:10px"><b>Warning: if the tool stops during a live chase, Kraken cancels ALL your orders on ALL pairs</b>, also stop-losses and orders you placed by hand.</div>
+  $('s3').className = 'step ' + (ready ? 'done' : ''); $('n3').textContent = ready ? '✓' : '4';
+  $('b3').innerHTML = ready ? '<span class="badge ok">Accepted</span>' : '<span class="badge plain">After step 3</span>';
+  $('dmsbody').innerHTML = `<div class="note warn small" style="margin-top:10px"><b>Warning: if the tool stops during a live chase, Kraken cancels ALL your orders on ALL pairs</b>, also stop-loss and take-profit orders and orders you placed by hand.</div>
     <p class="small" style="margin:10px 0 6px">During a live chase the tool asks Kraken to cancel all orders in 60 s, and renews that request every 20 s. If the tool crashes, the Mac sleeps or the internet stops, the renewals stop and Kraken cancels the orders. Then no chase order rests without control.</p>
-    <p class="small" style="margin:0">${ready ? '<b>You accepted this on 2 Oct 2026</b> (sample date, from your answer to the setup question). <a href="#">Change</a>' : 'You choose this after the key works.'}</p>`;
+    <p class="small" style="margin:0">${ready ? '<b>You accepted this on 2 Oct 2026</b> (sample date, from your answer to the setup question). <a href="#empty">Change</a>' : 'You choose this after the key works.'}</p>`;
   $('finish').innerHTML = id === 'done'
     ? '<div class="note ok"><b>Setup complete. Live chases are possible.</b> On the form, choose Live. Each live chase asks you to confirm before the first order goes to Kraken.</div><div class="row" style="margin-top:12px"><a class="btn drybtn" href="new.html#dry">Start a dry run</a><a class="btn livebtn" href="new.html#switch">New live chase</a></div>'
-    : '<button class="btn primary" disabled>Live chases are off</button> <span class="small muted">Finish step 2 to turn them on.</span>';
+    : '<button class="btn primary" disabled>Live chases are off</button> <span class="small muted">Finish steps 2 to 4 to turn them on.</span>';
   const go = (b, to) => { const x = $(b); if (x) x.onclick = () => { window.__flow = true; pick(to); }; };
   if (id !== 'testing') window.__flow = false;
-  go('save', 'keychain'); go('retry', 'testing'); go('again', 'empty');
+  go('save', 'keychain'); go('retry', 'testing'); go('again', 'empty'); go('ano', 'empty'); go('ayes', 'acct-yes'); go('asub', 'empty');
+  if ($('save')) $('save').onclick = () => { $('k1').value = ''; $('k2').value = ''; window.__flow = true; pick('keychain'); };
+  document.querySelectorAll('#macdlg [data-go]').forEach(b => b.onclick = () => { window.__flow = true; pick(b.dataset.go); });
   if (id === 'testing' && window.__flow) setTimeout(() => { if (cur === 'testing') pick('ok'); }, 1600);
 }
-document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => { window.__flow = true; pick(b.dataset.go); });
-const pick = OC.switcher($('sw'), 'setup state', ORDER, draw, 'empty');
+const pick = OC.switcher($('sw'), 'setup state', ORDER, draw, 'account');
 </script>
 </body></html>

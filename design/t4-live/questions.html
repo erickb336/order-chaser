@@ -1,30 +1,52 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Questions · Order chaser</title>
+<html lang="en"><head><meta charset="utf-8"><title>Decisions · Order chaser</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="assets/style.css"></head>
 <body>
 <main class="app">
-  <div style="max-width:860px">
-  <h1>Product questions for live trading (T4)</h1>
-  <p class="muted">8 questions. Each has options and a recommendation. The screens show the recommendation now. To decide, tell the chief the number and the option, for example "Q2: B". If you say nothing, the recommendation stays.</p>
-  <div id="qs"></div>
+  <div style="max-width:960px">
+  <h1>Decisions for live trading (T4)</h1>
+  <p class="muted">This page records what the owner decided and what the principal engineer (PE) changed. The screens show all of it. This prototype is the version to build. Nothing is open here: the open product questions are in the designer's report.</p>
+
+  <h2 style="margin-top:22px">The owner's answers (Q1 to Q10)</h2>
+  <p class="small muted">The owner kept every recommendation. Q7 is option A with more (A+). Q9 and Q10 came from the PE review.</p>
+  <div class="card" style="padding:8px 16px"><table class="t dec" id="qa"></table></div>
+
+  <h2 style="margin-top:22px">The PE's changes (C1 to C9)</h2>
+  <div class="card" style="padding:8px 16px"><table class="t dec" id="pe"></table></div>
   </div>
 </main>
 <script src="assets/proto.js"></script>
 <script>
 OC.chrome('questions', 'none');
-const Q = [
-  ['Q1', 'Where do you switch a chase from dry run to live?', [['A', 'On the form, for each chase (the approved mode control).'], ['B', 'One switch in Setup for all chases.'], ['C', 'Two Start buttons: Start dry run and Start live.']], 'A', 'It is the approved form, a dry run stays one click away, and the live confirm guards each live chase.', 'mode.html'],
-  ['Q2', 'In which mode does the form open?', [['A', 'Dry run, each time.'], ['B', 'The mode of your last chase.'], ['C', 'Live, once setup is complete.']], 'A', 'A live order never starts from habit. Cost: one more click for each live chase. Easy to change later.', 'new.html#dry'],
-  ['Q3', 'How do you give the key to the tool?', [['A', 'Paste it once in the Setup page. The tool puts it in the Keychain and the page forgets it.'], ['B', 'Run a terminal command that asks for it with a hidden prompt. The key never passes through the browser.']], 'A', 'You work in pages, not the terminal. The key goes only to 127.0.0.1, one time, under the page CSP and token.', 'setup.html#empty'],
-  ['Q4', 'What does the tool do with a key that has Withdraw Funds?', [['A', 'Refuse it and remove it from the Keychain at once.'], ['B', 'Refuse it, but keep it in the Keychain until you fix the key in Kraken.'], ['C', 'Warn, but use it.']], 'A', 'A key that can withdraw must not stay on the Mac. The fix in Kraken is a new key anyway.', 'setup.html#withdraw'],
-  ['Q5', 'After a crash, the tool finds our order still open on Kraken. What does it do?', [['A', 'Cancel it at once, then show you what filled.'], ['B', 'Continue the chase where it stopped.'], ['C', 'Leave it and ask you first.']], 'A', 'The cap and the timeout are old after a crash. The tool never sends or keeps an order without control. You can chase the rest with a new cap in one click.', 'reconcile.html#open'],
-  ['Q6', 'What marks the first live order?', [['A', 'The confirm asks one time for a check box, and the form sets the amount to the Kraken minimum (0.0001 BTC).'], ['B', 'Nothing special: the normal confirm.'], ['C', 'A check box on every live confirm.']], 'A', 'It makes the very small first test the easy path, and it asks only once. The same moment comes once more for the first live margin order, after your go-ahead.', 'new.html#first'],
-  ['Q7', 'You have other open orders on the account when you start a live chase. What happens?', [['A', 'The confirm warns that the safety timer can cancel them, with the count.'], ['B', 'The tool blocks the live chase until you cancel them or use a sub-account.'], ['C', 'Nothing: you accepted the timer in setup.']], 'A', 'You accepted the timer, but a count at the moment of risk costs nothing. It needs Query Open Orders & Trades, which the key has.', 'new.html#confirm'],
-  ['Q8', 'The private feed of your fills stops during a chase. What does the tool do?', [['A', 'Keep the order, read it by REST every 3 s, and pause amends until the feed is back.'], ['B', 'Cancel the order and end the chase.'], ['C', 'Keep amending as usual.']], 'A', 'The tool misses no fill and does not move an order it cannot see well. The safety timer still covers a crash. REST every 3 s stays inside the rate limits.', 'chase.html#pfeed'],
+// [id, question, answer, where it shows: [[label, href]]]
+const QA = [
+  ['Q1', 'Where do you switch a chase from dry run to live?', 'On the form, for each chase.', [['Mode switch', 'mode.html'], ['Form: first click on Live', 'new.html#switch']]],
+  ['Q2', 'In which mode does the form open?', 'Dry run, each time.', [['Form', 'new.html#dry']]],
+  ['Q3', 'How do you give the key to the tool?', 'Paste it one time in Setup. The page sends it one time and clears the fields.', [['Setup: paste the key', 'setup.html#empty']]],
+  ['Q4', 'What does the tool do with a key that has Withdraw Funds?', 'Refuse it and remove it from the Keychain.', [['Setup: refused', 'setup.html#withdraw']]],
+  ['Q5', 'After a restart, our order is still open on Kraken. What happens?', 'The tool cancels it at once and shows what filled.', [['Reconcile: still open', 'reconcile.html#open']]],
+  ['Q6', 'What marks the first live order?', 'One check box, one time, and the amount at the Kraken minimum (0.0001 BTC).', [['Confirm: first live order', 'new.html#first']]],
+  ['Q7', 'You have other open orders when you start a live chase. What happens?', 'A+: the confirm warns with the count and names stop-loss and take-profit orders apart. When such an order exists, you tick one box to start. Reason: the safety timer cancels ALL orders on the account.', [['Confirm: 2 other orders', 'new.html#confirm-others'], ['Confirm: stop-loss and take-profit', 'new.html#confirm-sltp']]],
+  ['Q8', 'The private feed of your fills stops during a chase. What happens?', 'Keep the order, read it by REST every 5 s, and pause amends until the feed is back.', [['Chase: private feed lost', 'chase.html#pfeed']]],
+  ['Q9', 'How does the tool get the key from the Keychain?', 'You click Allow one time at each start of the tool. The tool keeps the key only in memory. Setup says so, and the first live chase after a start shows the prompt.', [['Setup: key OK', 'setup.html#ok'], ['Form: first live chase after a start', 'new.html#unlock'], ['Form: Keychain denied', 'new.html#unlock-denied']]],
+  ['Q10', 'Does another bot or API tool use this Kraken account?', 'Setup asks one time. If yes, the chaser needs a Kraken sub-account. Reason: the timer and its renewals replace the timers of other tools.', [['Setup: the question', 'setup.html#account'], ['Setup: sub-account needed', 'setup.html#acct-yes']]],
 ];
-document.getElementById('qs').innerHTML = Q.map(([id, t, opts, rec, why, link]) => `<div class="card q" style="margin-top:14px"><h2>${id}. ${t}</h2>` +
-  opts.map(([k, o]) => `<div class="opt ${k === rec ? 'r' : ''}"><b class="n">${k}</b><span>${o}${k === rec ? ' <span class="rec">Recommended</span>' : ''}</span></div>`).join('') +
-  `<p class="small" style="margin:8px 0 0"><b>Why ${rec}:</b> ${why} <a href="${link}">See it on the screen</a>.</p></div>`).join('');
+const PE = [
+  ['C1', 'high', 'Query Funds is required. The Withdraw test (WithdrawMethods) is valid only with Query Funds. With Query Funds on, a failed WithdrawMethods means Withdraw is off.', [['Setup: key OK', 'setup.html#ok'], ['Setup: Query Funds off', 'setup.html#nofunds']]],
+  ['C2', '', 'The Cancel/Close test is CancelOrder on an unknown order id: "Unknown order" means on, "Permission denied" means off. Not CancelAllOrdersAfter 0 s.', [['Setup: key OK', 'setup.html#ok']]],
+  ['C3', '', 'Private feed lost: read the order by REST every 5 s, not 3 s. Amends pause.', [['Chase: private feed lost', 'chase.html#pfeed']]],
+  ['C4', '', 'Plan note: T4 builds after T5 merges. Nothing on the screens.', []],
+  ['C5', '', 'Code only: scripts in files and a full CSP in the build. Nothing on the screens. The prototype keeps its inline scripts; the build moves them to files.', []],
+  ['C6', '', 'The key fields are not a form. The page sends the key one time and clears the fields. The page says "Saved in your macOS Keychain. The tool never shows it again."', [['Setup: paste the key', 'setup.html#empty'], ['Setup: macOS prompt', 'setup.html#keychain']]],
+  ['C7', '', 'The Keychain prompt can name the Python program that runs the tool. The mock says "Your Mac shows a prompt like this" and names python3.', [['Setup: macOS prompt', 'setup.html#keychain'], ['Form: first live chase after a start', 'new.html#unlock']]],
+  ['C8', '', 'After the timer fires, list the other open orders that Kraken cancelled, stop-loss and take-profit orders first.', [['Chase: timer fired', 'chase.html#fired'], ['Chase: margin timer fired', 'chase.html#m-fired'], ['Reconcile: partly filled', 'reconcile.html#partial'], ['Reconcile: cancelled by the timer', 'reconcile.html#timer']]],
+  ['C9', '', 'Use the support-article labels for the permissions, with the note "Check these names against your Kraken key page".', [['Setup: paste the key', 'setup.html#empty'], ['Setup: key OK', 'setup.html#ok']]],
+];
+const links = l => l.length ? l.map(([t, h]) => `<a href="${h}">${t}</a>`).join('<br>') : '<span class="muted">No screen</span>';
+document.getElementById('qa').innerHTML = '<tr><th style="width:44px">No.</th><th>Question</th><th>Decision</th><th style="width:220px">See it (state link)</th></tr>' +
+  QA.map(([id, q, a, l]) => `<tr><td><b>${id}</b></td><td>${q}</td><td class="ans">${a}</td><td class="small">${links(l)}</td></tr>`).join('');
+document.getElementById('pe').innerHTML = '<tr><th style="width:44px">No.</th><th>Change</th><th style="width:220px">See it (state link)</th></tr>' +
+  PE.map(([id, sev, c, l]) => `<tr><td><b>${id}</b>${sev ? '<div class="badge bad" style="margin-top:4px">' + sev + '</div>' : ''}</td><td>${c}</td><td class="small">${links(l)}</td></tr>`).join('');
 </script>
 </body></html>

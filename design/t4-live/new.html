@@ -35,10 +35,15 @@
   <h2 id="ct" style="margin-top:10px">Send a real order to Kraken?</h2>
   <div id="cfirst"></div>
   <table class="kv" id="ctab"></table>
-  <div class="note warn small" style="margin:12px 0"><b>Safety timer:</b> while the order rests, the tool renews a 60 s cancel-all on Kraken every 20 s. If the tool stops, Kraken cancels <b>all</b> your orders on all pairs, also stop-losses.</div>
+  <div id="cother"></div>
+  <div class="note warn small" style="margin:12px 0"><b>Safety timer:</b> while the order rests, the tool renews a 60 s cancel-all on Kraken every 20 s. If the tool stops, Kraken cancels <b>all</b> your orders on all pairs, also stop-loss and take-profit orders.</div>
   <p class="tiny muted" style="margin:0 0 12px">Your Mac stays awake until the chase ends. Your fee tier and balance are from Kraken, read at 09:52 (sample).</p>
   <div id="ccheck"></div>
   <div class="row"><span class="spacer"></span><button class="btn" id="cno">Back</button><button class="btn livebtn" id="cyes">Start live chase</button></div>
+</div></div>
+<div class="scrim hidden" id="unlock"><div style="display:grid;gap:12px;max-width:380px">
+  <div class="card" id="unlockcard" style="padding:14px"></div>
+  <div id="unlockmac"></div>
 </div></div>
 <script src="assets/proto.js"></script>
 <script>
@@ -46,7 +51,8 @@ OC.chrome('new', 'dry');
 const $ = OC.$;
 const ORDER = [
   ['dry', 'Dry run (form opens like this)', 'Spot'], ['nokey', 'Live off: setup not complete'], ['switch', 'First click on Live: what changes'], ['live', 'Live ready'],
-  ['confirm', 'Live confirm'], ['first', 'Live confirm: first live order'], ['starting', 'Starting (loading)'], ['refused', 'Failure: Kraken refused the order'],
+  ['confirm', 'Live confirm: no other orders'], ['confirm-others', 'Live confirm: 2 other orders (Q7)'], ['confirm-sltp', 'Live confirm: stop-loss and take-profit (Q7)'], ['first', 'Live confirm: first live order'],
+  ['unlock', 'First live chase after a start: macOS asks (Q9)'], ['unlock-denied', 'Failure: Keychain denied at start'], ['starting', 'Starting (loading)'], ['refused', 'Failure: Kraken refused the order'],
   ['m-confirm', 'Live confirm: margin open', 'Margin'], ['m-first', 'First live margin order'], ['m-close', 'Live confirm: margin close'],
 ];
 const SPOT = [['Order', '<b>Buy 0.0500 BTC</b> on BTC/USD'], ['Cap (the ask now)', '<span class="num">62,418.50</span>. The tool never pays more.'], ['Timeout', '2 min, then one IOC at the cap for the rest'],
@@ -60,6 +66,8 @@ const MOPEN = [['Order', '<b>Open long 0.0500 BTC, 3x</b> on BTC/USD'], ['Cap (t
 const MCLOSE = [['Order', '<b>Close long 0.0300 BTC</b>, reduce-only, oldest position first'], ['Floor (the bid now)', '<span class="num">62,410.20</span>. The tool never sells lower.'], ['Closes', 'the 3x position opened 13:00:12 (0.0300 BTC)'],
   ['Worst case', 'receives at least <b class="num">1,857.27 USD</b><div class="tiny muted">0.0300 × 62,410.20 − 0.80% taker fee. A close has no opening fee.</div>'],
   ['Stays open', '0.0200 BTC at 3x, opened 13:00:12']];
+// Q7: other open orders read from Kraken before the confirm. SAMPLE data.
+const OTHERS = { 'confirm-others': [['Limit', 'ETH/USD', 'Buy 0.4000 ETH at 2,290.00'], ['Limit', 'SOL/USD', 'Buy 12.00 SOL at 138.50']], 'confirm-sltp': OC.OTHER };
 let cur = 'dry';
 function draw(id) {
   cur = id;
@@ -72,7 +80,7 @@ function draw(id) {
   document.querySelectorAll('#mode button').forEach(b => b.setAttribute('aria-pressed', String((b.dataset.m === 'live') === live)));
   $('livebtn').disabled = id === 'nokey';
   $('livebtn').style.textDecoration = id === 'nokey' ? 'line-through' : '';
-  $('modehelp').innerHTML = id === 'nokey' ? 'Live is off: no working key. <a href="setup.html#empty">Finish setup</a> to turn it on.'
+  $('modehelp').innerHTML = id === 'nokey' ? 'Live is off: no working key. <a href="setup.html#account">Finish setup</a> to turn it on.'
     : live ? '<b style="color:var(--live)">Live sends real orders to Kraken.</b> Key: in the macOS Keychain, tested 09:41.' : '<b style="color:var(--dry)">Dry run sends no orders.</b> The form opens in Dry run each time.';
   $('whatchanges').innerHTML = id === 'switch' ? `<div class="note info small" style="margin-bottom:14px"><b>You chose Live for the first time. What changes:</b>
     <ul style="margin:6px 0 4px;padding-left:18px"><li>The tool sends real orders to your Kraken account and pays real fees.</li><li>Fills come from Kraken, not from a simulation.</li><li>While an order rests, the safety timer is on. If the tool stops, Kraken cancels all your orders in 60 s.</li><li>Your Mac stays awake until the chase ends.</li></ul>
@@ -83,20 +91,37 @@ function draw(id) {
   sb.disabled = id === 'starting';
   $('starthelp').innerHTML = id === 'refused' ? '' : live ? 'Next: you confirm. Nothing goes to Kraken before that.' : '';
   if (id === 'refused') $('starthelp').innerHTML = '<span class="tone-bad"><b>Kraken refused the order: "EOrder:Insufficient funds".</b> Nothing was placed. The safety timer is off. Lower the amount, or add funds in Kraken Pro.</span>';
-  $('acct').innerHTML = live ? `<h3>Your Kraken account <span class="sample" style="margin-left:6px">sample</span></h3><table class="kv"><tr><td class="muted">Available</td><td class="num">${id === 'refused' ? '1,980.10' : '4,210.55'} USD</td></tr><tr><td class="muted">Fee tier</td><td class="num">0.25% / 0.40%</td></tr><tr><td class="muted">Other open orders</td><td>${id === 'confirm' ? '<span class="tone-warn">2: the safety timer can cancel them</span>' : 'none'}</td></tr></table>` : '<h3>Dry run account</h3><p class="small muted" style="margin:0">Simulated. Margin dry runs use 5,000 USD.</p>';
-  const conf = ['confirm', 'first', 'm-confirm', 'm-first', 'm-close'].includes(id);
+  $('acct').innerHTML = live ? `<h3>Your Kraken account <span class="sample" style="margin-left:6px">sample</span></h3><table class="kv"><tr><td class="muted">Available</td><td class="num">${id === 'refused' ? '1,980.10' : '4,210.55'} USD</td></tr><tr><td class="muted">Fee tier</td><td class="num">0.25% / 0.40%</td></tr><tr><td class="muted">Other open orders</td><td>${OTHERS[id] ? '<span class="tone-warn">' + OTHERS[id].length + ': the safety timer can cancel them</span>' : 'none'}</td></tr></table>` : '<h3>Dry run account</h3><p class="small muted" style="margin:0">Simulated. Margin dry runs use 5,000 USD.</p>';
+  $('unlock').classList.toggle('hidden', !id.startsWith('unlock'));
+  if (id.startsWith('unlock')) {
+    $('unlockcard').innerHTML = id === 'unlock'
+      ? '<div class="row"><span class="badge live">LIVE</span><span class="badge plain">Waiting for macOS</span></div><p class="small" style="margin:10px 0 0"><b>First live chase since the tool started.</b> The tool reads your key from the Keychain one time now, and keeps it in memory until it stops. Nothing goes to Kraken before you click Allow.</p>'
+      : '<div class="row"><span class="badge bad">Not started</span></div><p class="small" style="margin:10px 0 0"><b>macOS did not let the tool read the key.</b> You clicked Deny, or the Keychain is locked. The tool sent nothing to Kraken. The safety timer is off.</p><div class="row" style="margin-top:10px"><button class="btn primary" id="uretry">Try again</button><button class="btn" id="uback">Back to the form</button></div>';
+    $('unlockmac').innerHTML = id === 'unlock' ? OC.macPrompt('start', [['Sample: you click Allow', 'starting'], ['Sample: you click Deny', 'unlock-denied']]) : '';
+    document.querySelectorAll('#unlock [data-go]').forEach(b => b.onclick = () => b.dataset.go === 'starting' ? go() : pick(b.dataset.go));
+    const ur = $('uretry'); if (ur) ur.onclick = () => pick('unlock');
+    const ub = $('uback'); if (ub) ub.onclick = () => pick('live');
+  }
+  const conf = ['confirm', 'confirm-others', 'confirm-sltp', 'first', 'm-confirm', 'm-first', 'm-close'].includes(id);
   $('confirm').classList.toggle('hidden', !conf);
   if (conf) {
     const first = id === 'first' || id === 'm-first';
     let rows = mg && id !== 'm-close' ? MOPEN : id === 'm-close' ? MCLOSE : SPOT;
     if (first) rows = rows.map(([k, v]) => [k, v.replace(/0\.0500/g, '0.0001').replace('3,145.89', '6.29').replace('3,147.45', '6.29').replace('1,040.31', '2.08').replace('405%', '>10,000%')]);
     $('ctab').innerHTML = rows.map(([k, v]) => `<tr><td class="muted" style="width:38%">${k}</td><td style="text-align:left">${v}</td></tr>`).join('') +
-      (id === 'confirm' ? '<tr><td class="muted">Other open orders</td><td style="text-align:left" class="tone-warn">2 orders on ETH/USD. The safety timer cancels them too if the tool stops.</td></tr>' : '');
+      `<tr><td class="muted">Other open orders</td><td style="text-align:left">${OTHERS[id] ? '<b class="tone-warn">' + OTHERS[id].length + '</b>: see below' : 'none (read from Kraken at 09:52)'}</td></tr>`;
+    // Q7 (A+): the count, stop-loss and take-profit orders named apart, and one tick when such an order exists.
+    const oth = OTHERS[id] || [], prot = oth.filter(o => o[0] !== 'Limit');
+    $('cother').innerHTML = oth.length ? `<div class="note ${prot.length ? 'bad' : 'warn'} small" style="margin-top:12px"><b>You have ${oth.length} other open orders on Kraken. If the tool stops during this chase, the safety timer cancels all of them.</b>` +
+      (prot.length ? `<div style="margin-top:6px"><b>${prot.length} of them protect a position.</b> After a cancel, that position has no stop-loss or take-profit:</div>` : '') +
+      '<ul style="margin:4px 0 0;padding-left:18px">' + [...prot, ...oth.filter(o => o[0] === 'Limit')].map(o => `<li>${o[0] === 'Limit' ? o[0] : '<b>' + o[0] + '</b>'} on ${o[1]}: ${o[2]}</li>`).join('') + '</ul>' +
+      '<div class="tiny" style="margin-top:6px">To avoid this, use a Kraken sub-account for the chaser (Setup, step 2).</div></div>' : '';
+    const tick = first || prot.length;
     $('firstbadge').innerHTML = first ? `<span class="badge warn">FIRST LIVE ${mg ? 'MARGIN ' : ''}ORDER</span>` : mg ? '<span class="badge mg">margin</span>' : '';
     $('ct').textContent = first ? 'Your first real order: send it to Kraken?' : mg && id !== 'm-close' ? 'Open a real margin position on Kraken?' : id === 'm-close' ? 'Close a real margin position on Kraken?' : 'Send a real order to Kraken?';
     $('cfirst').innerHTML = first ? `<div class="note info small" style="margin-bottom:12px">This is the first real ${mg ? 'margin ' : ''}order the tool sends. Use a very small amount: the form set the Kraken minimum, 0.0001 BTC. After it ends, check the order in Kraken Pro, then compare it with the result page.</div>` : '';
-    $('ccheck').innerHTML = first ? '<label class="check" style="margin-bottom:12px"><input type="checkbox" id="ok1"><div><b>I checked the amount and the worst case.</b><div class="tiny muted">Asked one time only, for the first live order' + (mg ? ' on margin' : '') + '.</div></div></label>' : '';
-    $('cyes').disabled = first;
+    $('ccheck').innerHTML = prot.length ? '<label class="check" style="margin-bottom:12px"><input type="checkbox" id="ok1"><div><b>I accept that the safety timer can cancel my stop-loss and take-profit orders.</b><div class="tiny muted">Asked at each live chase while such an order is open.</div></div></label>' : first ? '<label class="check" style="margin-bottom:12px"><input type="checkbox" id="ok1"><div><b>I checked the amount and the worst case.</b><div class="tiny muted">Asked one time only, for the first live order' + (mg ? ' on margin' : '') + '.</div></div></label>' : '';
+    $('cyes').disabled = !!tick;
     const ok1 = $('ok1'); if (ok1) ok1.onchange = () => { $('cyes').disabled = !ok1.checked; };
     $('cyes').textContent = mg && id !== 'm-close' ? 'Open live position' : id === 'm-close' ? 'Close live' : 'Start live chase';
   }
@@ -104,7 +129,10 @@ function draw(id) {
 $('startbtn').onclick = () => { if (cur === 'live' || cur === 'switch') pick('confirm'); else if (cur === 'dry') location.href = '../chase.html'; };
 $('mode').onclick = e => { const b = e.target.closest('button'); if (!b || b.disabled) return; pick(b.dataset.m === 'live' ? 'switch' : 'dry'); };
 $('cno').onclick = () => pick('live');
-$('cyes').onclick = () => { const to = 'chase.html#' + (cur.startsWith('m-') ? 'm-resting' : 'placing'); pick('starting'); setTimeout(() => { location.href = to; }, 700); };
+let afterUnlock = 'placing';
+function go() { const to = 'chase.html#' + afterUnlock; pick('starting'); setTimeout(() => { location.href = to; }, 700); }
+// Q9: the first live chase after a start of the tool waits for the macOS prompt. The prototype shows it after the plain confirm.
+$('cyes').onclick = () => { afterUnlock = cur.startsWith('m-') ? 'm-resting' : 'placing'; if (cur === 'confirm') pick('unlock'); else go(); };
 const pick = OC.switcher($('sw'), 'new chase state', ORDER, draw, 'dry');
 </script>
 </body></html>
