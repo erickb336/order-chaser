@@ -275,10 +275,10 @@ def test_a_lost_private_feed_reads_the_order_by_rest_every_5_s_and_pauses_amends
     fake.run(fake.fill, cid, "0.02", None, False)                            # a fill while the feed is down
     clock.t += 6
     book(f, call, "update", [("62418.1", "0.5")], [])                        # the bid rises: no amend now
-    call(eng.tick)                                                           # 5 s: QueryOrders by cl_ord_id
+    call(eng.tick)                                                           # 5 s: QueryOrders by the txid
     wait_for(lambda: eng.chase.filled == D("0.02"))
     assert fake.calls_of("amend_order") == []
-    assert fake.calls_of("QueryOrders") == [{"cl_ord_id": cid}]
+    assert fake.calls_of("QueryOrders") == [{"txid": "OFAKE01-AAAAA-BBBBBB"}]
     clock.t += 2
     call(eng.tick)                                                           # not 5 s yet: no read
     assert len(fake.calls_of("QueryOrders")) == 1
@@ -523,3 +523,188 @@ def test_fill_now_and_stop_that_the_tool_ignores_answer_ok_false_with_the_reason
     wait_for(lambda: eng.chase.phase == "done")
     got = client.get(f"/api/chase/{eng.chase.id}").json()
     assert got["txids"] == {eng.chase.id: "OFAKE01-AAAAA-BBBBBB"}            # Kraken's order id for the result page
+
+
+# ---------- the repair of the T4 reviews: the chase slot, the timer, Kraken's errors, the txid, the nonce ----------
+
+def ready(client, f, call, fake):
+    post(client, "/api/setup", {"account": "no"})
+    assert post(client, "/api/key/test").json()["verdict"] == "ok"
+    book(f, call, "snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")])
+    fake.calls.clear()
+
+
+def test_two_live_starts_at_once_one_runs_and_the_refused_one_leaves_its_timer_and_feed_alone(live, fake, monkeypatch):
+    """LIVE-START-RACE-DISARMS-TIMER: the second start is refused before its first wait and touches no gateway."""
+    import threading
+    from test_server import ORIGIN, token_of
+    eng, f, clock, call, client = live
+    ready(client, f, call, fake)
+    slow = type(fake).r_OpenOrders
+    monkeypatch.setattr(type(fake), "r_OpenOrders", lambda self, p: time.sleep(0.3) or slow(self, p))   # the live check waits
+    h, got = {**ORIGIN, "X-Session-Token": token_of(client)}, []
+    starts = [threading.Thread(target=lambda: got.append(client.post("/api/chase", json={**LIVE, "first_ok": True}, headers=h)))
+              for _ in range(2)]
+    for t in starts:
+        t.start()
+    for t in starts:
+        t.join()
+    assert sorted((r.status_code, r.json().get("errors")) for r in got) == [
+        (200, None), (400, ["A chase runs now. You can start a new chase when it ends."])]
+    wait_for(lambda: eng.chase.phase == "resting")
+    assert fake.calls_of("CancelAllOrdersAfter") == [{"timeout": "60"}] and fake.timer is not None
+    assert eng.kgw.timer["on"] and eng.kgw.task is not None and not eng.kgw.task.done() and eng.kgw.awake is not None
+    assert len(fake.calls_of("subscribe")) == 1 and len(fake.calls_of("OpenOrders")) == 1
+
+
+def test_a_lost_answer_to_the_first_timer_still_sets_it_to_0_and_the_start_says_when_0_is_lost_too(live, fake):
+    """TIMER-ARMED-AFTER-FAILED-OPEN: the timer counts as on from the send of 60."""
+    eng, f, clock, call, client = live
+    ready(client, f, call, fake)
+    fake.lose = {"CancelAllOrdersAfter"}                                     # Kraken sets 60, the answer is lost
+    assert call(eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == [
+        "Nothing was placed. Kraken did not answer. Check the connection.",
+        "The safety timer can still be on: within 60 s Kraken cancels ALL open orders on this account, "
+        "also stop-loss and take-profit orders."]
+    assert fake.calls_of("CancelAllOrdersAfter") == [{"timeout": "60"}, {"timeout": "0"}]
+    assert fake.timer is None and fake.calls_of("AddOrder") == []          # the 0 reached Kraken; no order
+    fake.lose = set()
+    fake.errors["CancelAllOrdersAfter"] = ["EService:Unavailable"]          # 60 refused: 0 goes out and is answered
+    assert call(eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == [
+        'Nothing was placed. Kraken answered "EService:Unavailable".']
+    assert fake.calls_of("CancelAllOrdersAfter")[2:] == [{"timeout": "60"}, {"timeout": "0"}]
+
+
+def gateway(fake, http, clock=lambda: 1000.0):
+    from order_chaser.kraken import KrakenGateway
+    gw = KrakenGateway(rest.KrakenRest(KEY, http, url=fake.url), lambda: KEY, fake.ws_url, clock, AWAKE)
+    gw.chase = chase()
+    return gw
+
+
+def test_a_transient_kraken_error_on_a_read_is_tried_again_and_a_permanent_one_ends_the_chase(fake, monkeypatch):
+    """NOANSWER-ON-ANY-KRAKEN-ERROR: Busy, Unavailable, the rate limit, a nonce and an internal error are retried."""
+    from order_chaser import kraken
+    monkeypatch.setattr(kraken, "RETRY_EVERY", 0.01)
+
+    async def run():
+        async with httpx.AsyncClient() as http:
+            gw = gateway(fake, http)
+            await gw.open()
+            await gw.send(core.Place(ID, "buy", D("62417.9"), D("0.05")), 1000.0)
+            fake.errors["QueryOrders"] = ["EService:Busy", "EService:Unavailable", "EAPI:Rate limit exceeded",
+                                          "EAPI:Invalid nonce", "EGeneral:Internal error"]
+            again = await gw.send(core.Query(ID), 1001.0)
+            fake.errors["QueryOrders"] = ["EGeneral:Permission denied"]
+            permanent = await gw.send(core.Query(ID), 1002.0)
+            await gw.close(noanswer=True)
+            return again, permanent
+    again, permanent = asyncio.run(run())
+    assert again == [core.OrderState(1000.0, True, D(0), D("62417.9"), ID)]
+    assert len(fake.calls_of("QueryOrders")) == 7
+    assert permanent == [core.NoAnswer(1000.0, "EGeneral:Permission denied")]
+
+
+def test_a_chase_with_no_answer_cancels_its_leg_and_sets_the_timer_to_0_when_kraken_answers_again(fake):
+    async def run(down: bool):
+        async with httpx.AsyncClient() as http:
+            gw = gateway(fake, http)
+            await gw.open()
+            await gw.send(core.Place(gw.chase.leg, "buy", D("62417.9"), D("0.05")), 1000.0)
+            fake.rest_down = down
+            ok = await gw.close(noanswer=True)
+            fake.rest_down = False
+            return ok
+    assert asyncio.run(run(False)) is True
+    assert fake.calls_of("CancelOrder") == [{"cl_ord_id": ID}] and fake.by_cl(ID)[1]["status"] == "canceled"
+    assert fake.calls_of("CancelAllOrdersAfter") == [{"timeout": "60"}, {"timeout": "0"}] and fake.timer is None
+    fake.calls.clear()
+    fake.orders.clear()
+    assert asyncio.run(run(True)) is False                                   # no answer: the timer stays and cancels it
+    assert fake.calls_of("CancelAllOrdersAfter") == [{"timeout": "60"}] and fake.timer is not None
+
+
+def test_after_the_ioc_a_chase_with_no_answer_never_keeps_the_timer(fake, monkeypatch):
+    from order_chaser import kraken
+    monkeypatch.setattr(kraken, "RETRY_EVERY", 0.01)
+
+    async def run():
+        async with httpx.AsyncClient() as http:
+            gw = gateway(fake, http)
+            await gw.open()
+            fake.errors["QueryOrders"] = ["EGeneral:Permission denied"]
+            got = await gw.send(core.Ioc("ocioc000000001", "buy", D("62418.5"), D("0.01")), 1000.0)
+            await gw.close(noanswer=True)
+            return got
+    assert asyncio.run(run()) == [core.NoAnswer(1000.0, "EGeneral:Permission denied")]
+    assert fake.calls_of("CancelOrder") == []                                # the IOC rests nothing
+    assert fake.calls_of("CancelAllOrdersAfter") == [{"timeout": "60"}, {"timeout": "0"}] and fake.timer is None
+
+
+def test_reads_send_the_txid_a_refused_leg_is_closed_without_a_read_and_a_lost_add_is_found_by_cl_ord_id(fake):
+    """QUERYORDERS-TXID-REQUIRED: the fake refuses a QueryOrders with no txid, as Kraken's docs say."""
+    async def run():
+        async with httpx.AsyncClient() as http:
+            gw = gateway(fake, http)
+            await gw.open()
+            out = [await gw.send(core.Place("ocok0000000001", "buy", D("62417.9"), D("0.05")), 1000.0),
+                   await gw.send(core.Query("ocok0000000001"), 1000.0),
+                   await gw.send(core.Place("occross00000001", "buy", D("62418.5"), D("0.05")), 1000.0),   # crosses
+                   await gw.send(core.Query("occross00000001"), 1000.0)]
+            fake.lose = {"AddOrder"}
+            out.append(await gw.send(core.Place("oclost00000001", "buy", D("62417.9"), D("0.05")), 1000.0))
+            fake.lose = set()
+            out.append(await gw.send(core.Query("oclost00000001"), 1000.0))
+            await gw.close()
+            return out
+    placed, read, crossed, refused, lost, found = asyncio.run(run())
+    assert (placed, crossed, lost) == ([core.Placed(1000.0)], [core.Rejected(1000.0, "place", "would_cross")],
+                                       [core.Placed(1000.0)])
+    assert read == [core.OrderState(1000.0, True, D(0), D("62417.9"), "ocok0000000001")]
+    assert refused == [core.OrderState(1000.0, False, D(0), None, "occross00000001")]
+    assert found == [core.OrderState(1000.0, True, D(0), D("62417.9"), "oclost00000001")]
+    assert fake.calls_of("QueryOrders") == [{"txid": "OFAKE01-AAAAA-BBBBBB"}, {"txid": "OFAKE02-AAAAA-BBBBBB"}]
+    assert len(fake.calls_of("OpenOrders")) == 1                             # the lost add, by its cl_ord_id
+
+
+class SlowFirst(httpx.AsyncBaseTransport):
+    """The first request waits 0.2 s on its way to Kraken: a later call can overtake it."""
+    def __init__(self):
+        self.inner, self.n = httpx.AsyncHTTPTransport(), 0
+
+    async def handle_async_request(self, req):
+        self.n += 1
+        if self.n == 1:
+            await asyncio.sleep(0.2)
+        return await self.inner.handle_async_request(req)
+
+
+def test_signed_calls_at_once_reach_kraken_with_their_nonces_in_order(fake):
+    """NONCE-RACE-CONCURRENT-CALLS: Kraken refuses a nonce below the last one; the client sends one call at a time."""
+    async def run():
+        async with httpx.AsyncClient(transport=SlowFirst()) as http:
+            r = rest.KrakenRest(KEY, http, url=fake.url)
+            return await asyncio.gather(*(r.call("OpenOrders") for _ in range(3)), return_exceptions=True)
+    assert asyncio.run(run()) == [{"open": {}}] * 3
+
+
+def test_while_a_read_retries_no_second_read_of_the_leg_waits_in_the_queue(live, fake, monkeypatch):
+    """QUERY-BACKLOG-WHILE-READ-RETRIES: each 5 s read of a lost private feed joins the queue only when none waits."""
+    from order_chaser import kraken
+    monkeypatch.setattr(kraken, "RETRY_EVERY", 0.05)
+    eng, f, clock, call, client = live
+    ready(client, f, call, fake)
+    assert call(eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
+    wait_for(lambda: eng.chase.phase == "resting")
+    fake.ws_down = True
+    fake.run(fake.drop_ws)
+    wait_for(lambda: not eng.chase.pfeed_ok)
+    fake.errors["QueryOrders"] = ["EService:Busy"] * 10_000
+    for _ in range(4):                                                       # 4 reads due, 24 s: within 60 s
+        clock.t += 6
+        call(eng.tick)
+        wait_for(lambda: len(fake.calls_of("QueryOrders")) >= 2)
+    assert eng.sending == core.Query(eng.chase.leg) and list(eng.queue) == []
+    fake.errors["QueryOrders"] = []
+    wait_for(lambda: eng.sending is None)
+    assert eng.chase.phase == "resting"

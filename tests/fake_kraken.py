@@ -44,6 +44,9 @@ class FakeKraken:
         self.ask_qty = D("0.01")
         self.timer: float | None = None       # the cancel-all deadline
         self.rest_down = False
+        self.errors: dict[str, list[str]] = {}   # method -> the errors of its next calls, one for each call
+        self.lose: set[str] = set()              # methods that Kraken runs, but whose answer is lost (503)
+        self.nonce = 0                           # Kraken refuses a nonce that is not above the last one
         self.ws_down = False
         self.refuse_amend: str | None = None
         self.refuse_subscribe: str | None = None
@@ -131,12 +134,18 @@ class FakeKraken:
         assert request.headers["API-Sign"] == rest.sign(base64.b64decode(SECRET), request.url.path, int(params["nonce"]), data)
         if self.rest_down:
             return JSONResponse({"error": "down"}, status_code=503)
-        params.pop("nonce")
+        nonce = int(params.pop("nonce"))
+        if nonce <= self.nonce:
+            return JSONResponse({"error": ["EAPI:Invalid nonce"]})
+        self.nonce = nonce
         self.calls.append((method, params))
         try:
-            return JSONResponse({"error": [], "result": getattr(self, "r_" + method)(params)})
+            if self.errors.get(method):
+                raise KrakenRefusal(self.errors[method].pop(0))
+            got = JSONResponse({"error": [], "result": getattr(self, "r_" + method)(params)})
         except KrakenRefusal as e:
             return JSONResponse({"error": [str(e)]})
+        return JSONResponse({"error": "lost"}, status_code=503) if method in self.lose else got
 
     def r_GetWebSocketsToken(self, p):
         return {"token": "fake-ws-token", "expires": 900}
@@ -185,10 +194,12 @@ class FakeKraken:
         return {"count": 1}
 
     def r_QueryOrders(self, p):
-        txid, o = self.by_cl(p["cl_ord_id"])
-        if o is None:
+        if "txid" not in p:                                   # Kraken's docs: txid is required (U7 checks cl_ord_id)
+            raise KrakenRefusal("EGeneral:Invalid arguments:txid")
+        got = {t: self.orders[t] for t in p["txid"].split(",") if t in self.orders}
+        if not got:
             raise KrakenRefusal("EOrder:Unknown order")
-        return {txid: o}
+        return got
 
     def r_OpenOrders(self, p):
         return {"open": {k: o for k, o in self.orders.items() if o["status"] in OPEN}}

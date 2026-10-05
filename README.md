@@ -83,7 +83,7 @@ The tool is one Python server on 127.0.0.1 and five pages. A pure core decides e
 | Simulator | `src/order_chaser/sim.py` | The dry-run gateway and the simulated margin account. It answers the core's commands like an exchange. A later version puts the Kraken gateway in its place. |
 | Feed | `src/order_chaser/feed.py`, `book.py` | Public WebSocket v2 book (depth 10, CRC32 checksum) and trades; REST AssetPairs for minimums, tick size and pair status. |
 | Key store | `src/order_chaser/keys.py` | The Kraken API key in the macOS Keychain (`keyring`, item "Kraken API key (order-chaser)"). Read one time at each start of the tool (macOS asks: click Allow), kept only in memory. |
-| Kraken gateway | `src/order_chaser/kraken.py` | Live: AddOrder (post-only, IOC at the cap), amend_order on WebSocket v2, CancelOrder, QueryOrders by our order id (cl_ord_id); the private executions feed; the safety timer (CancelAllOrdersAfter 60 s, renewed every 20 s, 0 at the end); caffeinate; the restart reconcile. |
+| Kraken gateway | `src/order_chaser/kraken.py` | Live: AddOrder (post-only, IOC at the cap), amend_order on WebSocket v2, CancelOrder by our order id (cl_ord_id), QueryOrders by Kraken's txid; the private executions feed; the safety timer (CancelAllOrdersAfter 60 s, renewed every 20 s, 0 at the end); caffeinate; the restart reconcile. |
 | REST client | `src/order_chaser/rest.py` | The signed Kraken REST client (HMAC-SHA512 `API-Sign`, a nonce that always increases, the Starter REST rate counter: at most 15, falls 0.33 each second) and the permission test of a key. |
 | Database | `src/order_chaser/db.py` | SQLite: one row for each chase, an append-only event log, a table that maps each order id (leg) to its chase, and the simulated account. |
 | Server | `src/order_chaser/server.py` | Runs the chase, serves the pages, pushes updates by server-sent events. It sends the core's commands to the gateway one at a time with an async call (`await gateway.send(command)`), so that a slow call to Kraken does not stop the prices, the timer or Stop. |
@@ -162,7 +162,10 @@ These rules are in the core, the simulator and the server. The tests check them.
 
 - **Setup** (`GET/POST /api/setup`): the account question comes first (Q10). "Another bot or API tool uses this account" keeps live chases off until you confirm a Kraken sub-account for the tool (G19). The key must pass `POST /api/key/test`; a new key needs a new test.
 - **The live check** (`POST /api/live/check`) before each live start: Setup, live prices, the key (macOS asks one time at each start of the tool, Q9), the WebSocket token, and your other open orders. `POST /api/chase` with `"mode": "live"` runs the same check again. The first live order uses the Kraken minimum and needs one tick (Q6). Open stop-loss or take-profit orders need one tick at each live chase (Q7).
-- **Kraken does not answer**: a read of the order with no answer for 60 s ends the chase ("Kraken did not answer"). The tool keeps the safety timer as the backstop: it does not set it to 0, so Kraken cancels the order.
+- **Kraken does not answer**: a read of the order with no answer for 60 s ends the chase ("Kraken did not answer"). A transient Kraken error (`EService:Busy`, `EService:Unavailable`, `EAPI:Rate limit exceeded`, `EAPI:Invalid nonce`, `EGeneral:Internal error`) counts as no answer and is tried again every 2 s; any other error ends the chase at once. At the end the tool tries one time to cancel its order. When Kraken answers, the tool sets the safety timer to 0; when it does not, the timer stays as the backstop and cancels the order. After the IOC no order of the chase can rest, so the timer always goes to 0.
+- **The safety timer** counts as on from the moment the tool sends 60. When the start fails after that, the tool sends 0; when that 0 gets no answer, the start says that the timer can still cancel all orders within 60 s.
+- **One chase at a time**: a live start holds the one chase slot from its first check. A second start at the same time is refused and changes nothing.
+- **Reads of an order** use Kraken's txid from the answer of AddOrder. A leg that Kraken refused has no order, so the tool does not read it. When the answer of AddOrder was lost, the tool looks for the order by its cl_ord_id in OpenOrders, then in ClosedOrders. Signed REST calls go one at a time, so that Kraken gets the nonces in order.
 - **The private feed is lost**: the order stays; the tool reads it by REST every 5 s and pauses amends (Q8).
 - **The timer fired**: the chase ends with no IOC. The tool reads which of your other orders Kraken cancelled, stop-loss and take-profit first, and lists them. It never places them again (C8, G19).
 - **The tool stops during a live chase**: the timer stays on, and Kraken cancels ALL orders of the account within 60 s. The chase page, the shutdown log line and the next start say so.
@@ -174,7 +177,8 @@ The fake Kraken in `tests/fake_kraken.py` follows Kraken's documentation. These 
 
 1. The permission labels on the Kraken key page match the support article (C9).
 2. `AddOrder` with `validate=true` and `CancelOrder` on an unknown id give the errors that the permission test expects.
-3. The `cl_ord_id` of AddOrder is accepted (18 characters at most) and `QueryOrders` by `cl_ord_id` finds the order.
+3. The `cl_ord_id` of AddOrder is accepted (18 characters at most), and `OpenOrders` and `ClosedOrders` show it.
+   `QueryOrders`/`CancelOrder` with `cl_ord_id` only: accepted? The error text for an unknown id. (The tool cancels by `cl_ord_id`, and reads by txid because the docs mark it required.)
 4. `amend_order` on WebSocket v2 by `cl_ord_id` with `post_only` moves the order.
 5. The executions feed sends `snap_orders` and `snap_trades`, and `cum_qty`, `last_qty` and `liquidity_ind` as the mapping expects.
 6. `CancelAllOrdersAfter` 60 and 0 work, and the reason text of a timer cancel; the window that lists the other cancelled orders (`ClosedOrders` with `start`) finds them.

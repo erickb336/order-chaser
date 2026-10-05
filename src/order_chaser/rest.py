@@ -76,6 +76,7 @@ class KrakenRest:
         self.key, self.http, self.clock, self.sleep, self.url = key, http, clock, sleep, url
         self.rate = rate or RateCounter()
         self.nonce = 0
+        self.lock = asyncio.Lock()   # one signed call at a time: Kraken gets the nonces in order, the counter is exact
 
     def next_nonce(self) -> int:
         self.nonce = max(self.nonce + 1, int(self.clock() * 1000))
@@ -84,15 +85,16 @@ class KrakenRest:
     async def call(self, method: str, **params) -> dict:
         """One private call. Returns Kraken's "result"; raises KrakenError on Kraken's errors."""
         cost = COST.get(method, 1)
-        if wait := self.rate.wait(cost):
-            await self.sleep(wait)
-        self.rate.spend(cost)
-        path = f"/0/private/{method}"
-        nonce = self.next_nonce()
-        data = urllib.parse.urlencode({"nonce": nonce, **params})
-        r = await self.http.post(self.url + path, content=data, headers={
-            "API-Key": self.key.api_key, "API-Sign": sign(self.key.secret, path, nonce, data),
-            "Content-Type": "application/x-www-form-urlencoded; charset=utf-8"})
+        async with self.lock:
+            if wait := self.rate.wait(cost):
+                await self.sleep(wait)
+            self.rate.spend(cost)
+            path = f"/0/private/{method}"
+            nonce = self.next_nonce()
+            data = urllib.parse.urlencode({"nonce": nonce, **params})
+            r = await self.http.post(self.url + path, content=data, headers={
+                "API-Key": self.key.api_key, "API-Sign": sign(self.key.secret, path, nonce, data),
+                "Content-Type": "application/x-www-form-urlencoded; charset=utf-8"})
         r.raise_for_status()   # a 5xx (or a proxy page) is no answer from Kraken: httpx.HTTPStatusError
         body = r.json()
         if body.get("error"):

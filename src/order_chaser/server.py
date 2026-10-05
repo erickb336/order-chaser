@@ -51,6 +51,9 @@ KEYCHAIN_TEXT = keys.KEYCHAIN_TEXT
 ACCOUNT_ANSWERS = ("no", "yes", "sub")   # Q10: no other tool; another tool (live stays off); "I use a sub-account" (G19 P2)
 OTHERS_TICK_TEXT = ("Tick the box to start: the safety timer can cancel your stop-loss and take-profit orders.")
 FIRST_TICK_TEXT = "Tick the box for your first live order."
+BUSY_TEXT = "A chase runs now. You can start a new chase when it ends."
+TIMER_LEFT_TEXT = ("The safety timer can still be on: within 60 s Kraken cancels ALL open orders on this account, "
+                   "also stop-loss and take-profit orders.")
 STOP_TIMER_TEXT = ("The tool stopped during a live chase. The safety timer stays on: within 60 s Kraken cancels ALL "
                    "open orders on this account, also stop-loss and take-profit orders.")
 
@@ -106,6 +109,8 @@ class Engine:
         self.blocked: str | None = None         # why no live chase can start now (the restart reconcile is not done)
         self.restart: core.Chase | None = None  # the live chase of the last stop, until the restart reconcile ends it
         self.reading = {"attempt": 0, "next_in": 0, "error": None}   # the restart reconcile's tries
+        self.starting = False   # a live start holds the one chase slot from its first check to its first order
+        self.sending: object = None   # the command that the drain sends now
 
     def _saved_account(self) -> SimAccount | None:
         """The simulated account of the dry run; None (a new account) when the row is not a valid account."""
@@ -136,6 +141,7 @@ class Engine:
         self.reading["attempt"] += 1
         try:
             await self.kgw.open_key()
+            self.kgw.txids.update(self.db.txids(c.id))
             evs = await self.kgw.reconcile(c)
         except Exception as e:   # no key, Keychain denied, Kraken refused or did not answer
             self.reading["error"] = keys.why(e)
@@ -237,12 +243,14 @@ class Engine:
             return ["A live chase is spot only for now. Use a dry run for margin."]
         if errors := self.start(symbol, what, qty, limit, timeout, check_only=True):
             return errors
+        if self.tasks:   # the end of the last live chase (timer 0) goes first: it must not cut this chase's timer
+            await asyncio.wait(self.tasks)
         try:
             await self.kgw.open_key()
             await self.kgw.open()
         except Exception as e:
-            await self.kgw.close()
-            return [f"Nothing was placed. {keys.why(e)}"]
+            left = not await self.kgw.close()
+            return [f"Nothing was placed. {keys.why(e)}"] + ([TIMER_LEFT_TEXT] if left else [])
         if errors := self.start(symbol, what, qty, limit, timeout, venue=core.LIVE_VENUE):   # the prices moved
             await self.kgw.close()
         return errors
@@ -304,7 +312,7 @@ class Engine:
         """what: buy or sell (spot); long or short (a margin open with leverage); close-long or close-short.
         check_only: the checks only, no chase."""
         if self.active:
-            return ["A chase runs now. You can start a new chase when it ends."]
+            return [BUSY_TEXT]
         pair = self.pairs.get(symbol)
         if pair is None:
             return ["Unknown pair, or the pair list did not load."]
@@ -370,7 +378,7 @@ class Engine:
         c, cmds = core.step(self.chase, ev)
         self._apply(c, cmds)
         if not c.dry and c.phase == "done" and was != "done":
-            self._spawn(self.kgw.close(keep_timer=c.outcome == "noanswer"))   # timer 0, no private feed, caffeinate off
+            self._spawn(self.kgw.close(noanswer=c.outcome == "noanswer"))   # timer 0, no private feed, caffeinate off
         if c.margin is not None and isinstance(ev, core.Filled):
             self.account_due = True               # tick() reads it, at most every 3 s
         if c.margin is not None and c.phase == "done" and was != "done":
@@ -394,6 +402,8 @@ class Engine:
         for cmd in cmds:
             if isinstance(cmd, core.Log):
                 self.db.log(c.id, cmd, now)
+            elif isinstance(cmd, core.Query) and (cmd in self.queue or cmd == self.sending):
+                pass                                # at most one read of a leg waits: its answer serves both
             else:
                 self.queue.append(cmd)
         if c.phase == "done":
@@ -423,11 +433,14 @@ class Engine:
         self.draining = True
         try:
             while self.queue:
-                cmd = self.queue.popleft()
-                for ev in await (self.gw if self.chase.dry else self.kgw).send(cmd, self.clock()):
+                self.sending = cmd = self.queue.popleft()
+                evs = await (self.gw if self.chase.dry else self.kgw).send(cmd, self.clock())
+                self.sending = None
+                for ev in evs:
                     self.handle(ev)
         finally:
             self.draining = False
+            self.sending = None
             self._save_account()
 
     # ----- what the page sees -----
@@ -620,7 +633,7 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         if mode == "live":
             errors = await live_start(d, pair, what, qty, limit, timeout)
         elif mode == "dry":
-            errors = eng.start(pair, what, qty, limit, timeout, lev)
+            errors = [BUSY_TEXT] if eng.starting else eng.start(pair, what, qty, limit, timeout, lev)
         else:
             errors = ['Send the mode "dry" or "live".']
         if errors:
@@ -628,9 +641,18 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         return JSONResponse({"id": eng.chase.id})
 
     async def live_start(d: dict, pair: str, what: str, qty: Decimal, limit: Decimal | None, timeout: int) -> list[str]:
-        """A live chase starts only after the live check, with its ticks (Q6, Q7)."""
-        if eng.active:
-            return ["A chase runs now. You can start a new chase when it ends."]
+        """A live chase starts only after the live check, with its ticks (Q6, Q7). It claims the one chase slot
+        before its first wait: a second start is refused and touches nothing (the gateway is the first start's)."""
+        if eng.active or eng.starting:
+            return [BUSY_TEXT]
+        eng.starting = True
+        try:
+            return await live_check_and_start(d, pair, what, qty, limit, timeout)
+        finally:
+            eng.starting = False
+
+    async def live_check_and_start(d: dict, pair: str, what: str, qty: Decimal, limit: Decimal | None,
+                                   timeout: int) -> list[str]:
         chk = await eng.live_check(pair)
         if chk["errors"]:
             return chk["errors"]
