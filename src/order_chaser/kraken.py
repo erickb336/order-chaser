@@ -1,4 +1,4 @@
-"""The live side of Kraken (T4): the private WebSocket v2 executions feed (U4).
+"""The live side of Kraken (T4): the private WebSocket v2 executions feed (U4) and the Kraken gateway (U5).
 
 The executions channel (wss://ws-auth.kraken.com/v2) reports each change of our orders. The token comes from REST
 GetWebSocketsToken. Each (re)subscribe asks for snap_orders and snap_trades, so a link that comes back first gives
@@ -9,18 +9,26 @@ Nothing here reads the key: the REST client has it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import logging
+import os
+import subprocess
 import time
 from decimal import Decimal
 
+import httpx
 import websockets
 
 from . import core
+from .keys import NoKey
+from .rest import KrakenError, KrakenRest
 
 WS_AUTH = "wss://ws-auth.kraken.com/v2"
 STABLE = 10           # s: the backoff starts again only after a link stayed up this long with no refusal
 REQUEST_WAIT = 5      # s: the answer to a request on the link (amend_order)
 OPEN_STATES = ("pending", "pending_new", "open", "new", "partially_filled")   # REST and WS v2 order states
+log = logging.getLogger("order_chaser")
 
 
 def _dec(v) -> Decimal | None:
@@ -123,3 +131,245 @@ class PrivateFeed:
             raise ConnectionError("no answer on the private feed") from e
         finally:
             self.waiting.pop(req, None)
+
+
+# ---------- the Kraken gateway (U5) ----------
+
+TIMER = 60            # s: the safety timer, CancelAllOrdersAfter
+RENEW_EVERY = 20      # s
+RETRY_EVERY = 2       # s: a failed renewal, or a REST read with no answer, tries again
+FEED_WAIT = 10        # s: the private feed must be up before the first order
+
+
+def _reason(errors: list[str]) -> str:
+    """Kraken's error text -> the core's reason of a refusal."""
+    text = ", ".join(errors)
+    if "Post only" in text:
+        return "would_cross"
+    if "Rate limit" in text:
+        return "rate_limit"
+    if "Unknown order" in text:
+        return "not_open"
+    return text
+
+
+class KrakenGateway:
+    """The live gateway: the core's commands to Kraken, Kraken's answers and reports back as the core's events.
+
+    - Place, Ioc (and their margin forms): REST AddOrder with our cl_ord_id; post-only for the chase, IOC at the cap;
+      leverage and reduce_only for margin. The IOC is read back at once (QueryOrders): Filled(cum), then IocDone.
+    - Amend: WebSocket v2 amend_order by cl_ord_id. A refusal goes to the core, which decides (margin: cancel and
+      replace). Cancel: REST CancelOrder. Query: REST QueryOrders; "unknown order" is OrderState(open False, cum 0).
+    - The executions feed: exec_events(); a cancel of the current leg that the tool did not ask for also gives
+      VenueCanceled ("timer" when the safety timer was due).
+    - The safety timer: CancelAllOrdersAfter 60 s before the first order (no order rests without it), renewed every
+      20 s, and 0 at the end. caffeinate -i keeps the Mac awake while the chase runs.
+    on_event(ev) and on_link(up) go to the engine; the engine keeps .chase up to date."""
+
+    def __init__(self, rest: KrakenRest, read_key, ws_url: str = WS_AUTH, clock=time.time,
+                 awake_cmd: list[str] | None = None) -> None:
+        self.rest, self.read_key, self.ws_url, self.clock = rest, read_key, ws_url, clock
+        self.awake_cmd = ["caffeinate", "-i"] if awake_cmd is None else awake_cmd
+        self.on_event = lambda ev: None
+        self.on_link = lambda up: None
+        self.chase: core.Chase | None = None
+        self.feed: PrivateFeed | None = None
+        self.task: asyncio.Task | None = None
+        self.awake: subprocess.Popen | None = None
+        self.cancels: set[str] = set()    # the legs that the tool asked to cancel
+        self.timer = {"on": False, "renewed_at": None, "deadline": None, "tried_at": None}
+        self.renewing = False
+
+    async def open_key(self) -> None:
+        """The key, from memory or from the Keychain (Q9: macOS asks one time at each start of the tool)."""
+        if self.rest.key is None:
+            self.rest.key = await asyncio.to_thread(self.read_key)
+        if self.rest.key is None:
+            raise NoKey()
+
+    # ----- the life of a live chase -----
+    async def open(self) -> None:
+        """Before the first order: the private feed (up within FEED_WAIT s), the safety timer and caffeinate.
+        Raises (ConnectionError, KrakenError, httpx.HTTPError) when one of them fails: the caller sends no order."""
+        self.cancels = set()
+        self.timer = {"on": False, "renewed_at": None, "deadline": None, "tried_at": None}
+        self.feed = PrivateFeed(self._token, self._on_exec, self._link, self.ws_url)
+        self.task = asyncio.create_task(self.feed.run())
+        end = time.monotonic() + FEED_WAIT
+        while self.feed.ws is None:
+            if time.monotonic() > end:
+                raise ConnectionError("the private feed of the fills did not connect")
+            await asyncio.sleep(0.05)
+        await self._set_timer(TIMER)
+        try:
+            self.awake = subprocess.Popen([*self.awake_cmd, "-w", str(os.getpid())], stdout=subprocess.DEVNULL,
+                                          stderr=subprocess.DEVNULL)
+        except OSError:   # no caffeinate (not macOS): the chase runs, the Mac can sleep
+            log.warning("caffeinate did not start: the Mac can sleep during the chase.")
+
+    async def close(self) -> None:
+        """The chase ended (or did not start): the Mac can sleep, no feed, timer 0 (no cancel-all later)."""
+        if self.awake is not None:
+            self.awake.terminate()
+            self.awake.wait()
+            self.awake = None
+        if self.task is not None:
+            self.task.cancel()
+            with contextlib.suppress(BaseException):
+                await self.task
+            self.task = self.feed = None
+        if self.timer["on"]:
+            self.timer["on"] = False
+            try:
+                await self.rest.call("CancelAllOrdersAfter", timeout=0)
+            except (KrakenError, httpx.HTTPError) as e:   # Kraken cancels all orders when the 60 s end
+                log.warning(f"The safety timer was not set to 0: {e}")
+
+    async def _token(self) -> str:
+        return (await self.rest.call("GetWebSocketsToken"))["token"]
+
+    def _link(self, up: bool, attempt: int, next_in: float) -> None:
+        self.on_link(up)
+
+    # ----- the safety timer -----
+    async def _set_timer(self, seconds: int) -> None:
+        now = self.clock()
+        self.timer["tried_at"] = now
+        await self.rest.call("CancelAllOrdersAfter", timeout=seconds)
+        self.timer.update(on=True, renewed_at=now, deadline=now + seconds)
+
+    def tick(self, now: float) -> None:
+        """Renew the timer every 20 s; after a failure, every 2 s until it works."""
+        t = self.timer
+        if not t["on"] or self.renewing or now - t["renewed_at"] < RENEW_EVERY or now - t["tried_at"] < RETRY_EVERY:
+            return
+        self.renewing = True
+
+        async def renew():
+            try:
+                await self._set_timer(TIMER)
+            except (KrakenError, httpx.HTTPError) as e:
+                log.warning(f"The safety timer was not renewed: {e}")
+            finally:
+                self.renewing = False
+        asyncio.get_running_loop().create_task(renew())
+
+    def _venue_canceled(self, reason: str) -> core.VenueCanceled:
+        """Kraken cancelled the order without the tool: after the timer's deadline, that is the safety timer."""
+        now = self.clock()
+        if self.timer["deadline"] is not None and now >= self.timer["deadline"]:
+            self.timer["on"] = False
+            return core.VenueCanceled(now, "timer")
+        return core.VenueCanceled(now, reason)
+
+    # ----- commands -----
+    async def send(self, cmd, now: float) -> list:
+        try:
+            if isinstance(cmd, core.Ioc):
+                return await self._ioc(cmd)
+            if isinstance(cmd, core.Place):
+                return await self._place(cmd)
+            if isinstance(cmd, core.Amend):
+                return await self._amend(cmd)
+            if isinstance(cmd, core.Cancel):
+                return await self._cancel(cmd)
+            if isinstance(cmd, core.Query):
+                return await self._query(cmd.id)
+        except httpx.HTTPError:   # no answer: did the order reach Kraken? Read it (the read tries again).
+            if isinstance(cmd, core.Ioc):
+                return await self._ioc_read(cmd.id)
+            if isinstance(cmd, core.Place):
+                st, _ = await self._read(cmd.id)
+                return [core.Placed(self.clock())] if st.open else [core.Rejected(self.clock(), "place", "Kraken did not answer")]
+            if isinstance(cmd, core.Cancel):
+                return [core.Rejected(self.clock(), "cancel", "Kraken did not answer")]   # the core reads the order
+            if isinstance(cmd, core.Query):
+                return await self._query(cmd.id)
+        raise TypeError(cmd)
+
+    def _order(self, cmd, ioc: bool) -> dict:
+        pair = self.chase.pair
+        p = {"ordertype": "limit", "type": cmd.side, "volume": str(cmd.qty), "price": str(cmd.price),
+             "pair": pair.rest or pair.symbol.replace("/", ""), "cl_ord_id": cmd.id}
+        p.update({"timeinforce": "IOC"} if ioc else {"oflags": "post"})
+        if isinstance(cmd, (core.MarginPlace, core.MarginIoc)):
+            p["leverage"] = str(cmd.leverage)
+            if cmd.reduce_only:
+                p["reduce_only"] = "true"
+        return p
+
+    async def _place(self, cmd: core.Place) -> list:
+        try:
+            await self.rest.call("AddOrder", **self._order(cmd, False))
+        except KrakenError as e:
+            return [core.Rejected(self.clock(), "place", _reason(e.errors))]
+        return [core.Placed(self.clock())]
+
+    async def _ioc(self, cmd: core.Ioc) -> list:
+        try:
+            await self.rest.call("AddOrder", **self._order(cmd, True))
+        except KrakenError as e:
+            return [core.Rejected(self.clock(), "ioc", _reason(e.errors))]
+        return await self._ioc_read(cmd.id)
+
+    async def _ioc_read(self, leg: str) -> list:
+        """An IOC is done when AddOrder answers: read what it filled (cum), then IocDone."""
+        st, info = await self._read(leg)
+        fill = [core.Filled(self.clock(), st.cum_qty, _dec(info.get("price") or None) or st.price, False, "ioc",
+                            st.cum_qty, leg)] if st.cum_qty > 0 else []
+        return fill + [core.IocDone(self.clock())]
+
+    async def _amend(self, cmd: core.Amend) -> list:
+        try:
+            m = await self.feed.request("amend_order", {"cl_ord_id": cmd.id, "limit_price": cmd.price, "post_only": True})
+        except ConnectionError:
+            return [core.Rejected(self.clock(), "amend", "no_feed")]
+        if m.get("success"):
+            return [core.Amended(self.clock())]
+        return [core.Rejected(self.clock(), "amend", _reason([str(m.get("error"))]))]
+
+    async def _cancel(self, cmd: core.Cancel) -> list:
+        self.cancels.add(cmd.id)
+        try:
+            await self.rest.call("CancelOrder", cl_ord_id=cmd.id)
+        except KrakenError as e:
+            return [core.Rejected(self.clock(), "cancel", _reason(e.errors))]
+        return [core.Canceled(self.clock())]
+
+    async def _read(self, leg: str, tries: int = 30) -> tuple[core.OrderState, dict]:
+        """REST QueryOrders by cl_ord_id. Kraken's "unknown order": open False, cum 0.
+        No answer: it tries again every 2 s, `tries` times, then raises httpx.HTTPError."""
+        for i in range(tries):
+            try:
+                r = await self.rest.call("QueryOrders", cl_ord_id=leg)
+                break
+            except KrakenError as e:
+                if _reason(e.errors) != "not_open":
+                    raise
+                r = {}
+                break
+            except httpx.HTTPError:
+                if i == tries - 1:
+                    raise
+                await asyncio.sleep(RETRY_EVERY)
+        for info in r.values():
+            return core.OrderState(self.clock(), info.get("status") in OPEN_STATES, Decimal(str(info.get("vol_exec", 0))),
+                                   _dec(info.get("descr", {}).get("price")), leg), info
+        return core.OrderState(self.clock(), False, Decimal(0), None, leg), {}
+
+    async def _query(self, leg: str) -> list:
+        st, info = await self._read(leg)
+        if not st.open and info.get("status") in ("canceled", "expired") and leg not in self.cancels and leg == self.chase.leg:
+            return [st, self._venue_canceled(info.get("reason") or "Kraken cancelled the order")]
+        return [st]
+
+    # ----- the executions feed -----
+    def _on_exec(self, kind: str, items: list) -> None:
+        c = self.chase
+        if c is None:
+            return
+        for ev in exec_events(c, kind, items, self.clock(), self.cancels):
+            self.on_event(ev)
+            if isinstance(ev, core.OrderState) and not ev.open and ev.id == c.leg:
+                why = next((x.get("reason") for x in items if x.get("cl_ord_id") == ev.id and x.get("reason")), None)
+                self.on_event(self._venue_canceled(why or "Kraken cancelled the order"))

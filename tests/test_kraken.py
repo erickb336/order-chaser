@@ -136,3 +136,171 @@ def test_a_lost_link_subscribes_again_with_a_new_token_and_the_backoff_restarts_
     assert len(fake.calls_of("GetWebSocketsToken")) == len(fake.calls_of("subscribe"))   # a new token for each link
     assert snaps[0] == snaps[-1] == [core.OrderState(0.0, True, D("0"), D("62400.0"), ID)]   # each subscribe: the snapshot
     assert len(snaps) == ups
+
+
+# ---------- U5: the Kraken gateway, end to end against the fake Kraken ----------
+
+AWAKE = ["/bin/sh", "-c", "sleep 30", "sh"]   # stands in for caffeinate -i (it gets "-w <pid>" as $1 $2)
+
+
+@pytest.fixture
+def live(tmp_path, fake):
+    from starlette.testclient import TestClient
+    from test_server import BASE, Clock, FakeWs
+    from order_chaser.server import create_app
+    clock = Clock()
+    fake.clock = clock
+    keys.KeyStore().save(KEY)        # the in-memory keyring of conftest.py: a dummy key
+    guard = create_app(tmp_path, connect=False, clock=clock, latency=0, kraken_url=fake.url, kraken_ws=fake.ws_url,
+                       awake_cmd=AWAKE)
+    with TestClient(guard, base_url=BASE) as client:
+        eng = guard.app.state.engine
+        f = feed.PublicFeed(eng.on_book, eng.on_trade, eng.on_link)
+        f.ws = FakeWs()
+        eng.feed = f
+
+        def call(fn, *args):
+            async def sync():
+                return fn(*args)
+            return client.portal.call(fn, *args) if asyncio.iscoroutinefunction(fn) else client.portal.call(sync)
+
+        async def pairs():
+            eng.pairs = {"BTC/USD": PAIR}
+            await f.watch(PAIR)
+        call(pairs)
+        yield eng, f, clock, call, client
+
+
+def wait_for(cond, timeout: float = 8.0):
+    end = time.monotonic() + timeout
+    while not cond():
+        assert time.monotonic() < end, "timed out"
+        time.sleep(0.02)
+
+
+def book(f, call, kind, bids, asks, kb=[]):
+    from test_server import FakeBook
+    if kind == "snapshot":
+        kb[:] = [FakeBook()]
+    call(f._handle, kb[0].msg(kind, bids, asks))
+
+
+def texts(eng):
+    return [e["text"] for e in eng.db.events(eng.chase.id)]
+
+
+def test_a_live_chase_end_to_end_timer_post_only_amend_fill_timeout_ioc_and_the_end(live, fake):
+    eng, f, clock, call, _ = live
+    book(f, call, "snapshot", [("62417.9", "1.0")], [("62418.5", "0.01"), ("62419.0", "3.0")])
+    assert call(eng.start_live, "BTC/USD", "buy", D("0.05"), None, 60) == []
+    cid = eng.chase.id
+    awake = eng.kgw.awake
+    assert awake.poll() is None                                              # caffeinate runs
+    wait_for(lambda: eng.chase.phase == "resting")
+    assert [m for m, _ in fake.calls][:4] == ["GetWebSocketsToken", "subscribe", "CancelAllOrdersAfter", "AddOrder"]
+    assert fake.calls_of("AddOrder") == [{"ordertype": "limit", "type": "buy", "volume": "0.05", "price": "62417.9",
+                                          "pair": "XBTUSD", "cl_ord_id": cid, "oflags": "post"}]
+
+    clock.t += 6
+    book(f, call, "update", [("62418.1", "0.5")], [])                        # the bid rises: amend_order on WS v2
+    wait_for(lambda: eng.chase.price == D("62418.1"))
+    assert fake.calls_of("amend_order") == [{"cl_ord_id": cid, "limit_price": 62418.1, "post_only": True}]
+
+    fake.run(fake.fill, cid, "0.018")                                        # a fill on the executions feed
+    wait_for(lambda: eng.chase.filled == D("0.018"))
+
+    clock.t += 60
+    book(f, call, "update", [], [])                                          # a valid book at the timeout
+    call(eng.tick)                                                           # timeout: cancel, reread, IOC at the cap
+    wait_for(lambda: eng.chase.phase == "done")
+    wait_for(lambda: awake.poll() is not None and eng.kgw.task is None)      # caffeinate and the feed stopped
+    c = eng.chase
+    assert (c.outcome, c.filled) == ("notfilled", D("0.028"))                # the IOC got the 0.01 at the ask
+    assert fake.calls_of("CancelOrder") == [{"cl_ord_id": cid}]
+    assert fake.calls_of("AddOrder")[1] == {"ordertype": "limit", "type": "buy", "volume": "0.032", "price": "62418.5",
+                                            "pair": "XBTUSD", "cl_ord_id": cid + "-i", "timeinforce": "IOC"}
+    timer = fake.calls_of("CancelAllOrdersAfter")
+    assert (timer[0], timer[-1]) == ({"timeout": "60"}, {"timeout": "0"})   # set first, 0 at the end
+    assert {"timeout": "60"} in timer[1:-1]                                  # renewed (20 s passed)
+    assert eng.db.get(cid)[1] == "live"
+
+
+def test_the_safety_timer_fires_when_it_is_not_renewed_and_the_chase_ends_with_no_ioc(live, fake):
+    eng, f, clock, call, _ = live
+    book(f, call, "snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")])
+    assert call(eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
+    wait_for(lambda: eng.chase.phase == "resting")
+    fake.rest_down = True                                                    # no renewal reaches Kraken
+    for _ in range(4):
+        clock.t += 20
+        call(eng.tick)
+    fake.run(fake.fire_timer)                                                # Kraken's cancel-all at the deadline
+    wait_for(lambda: eng.chase.phase == "done")
+    assert eng.chase.outcome == "timer"
+    assert texts(eng)[-1] == "Kraken cancelled the order: the safety timer fired. Filled 0.0000 BTC. Chase ended. No IOC sent."
+    fake.rest_down = False
+    wait_for(lambda: eng.kgw.task is None)
+    assert fake.calls_of("CancelAllOrdersAfter") == [{"timeout": "60"}]     # no "0" after the timer fired
+    assert len(fake.calls_of("AddOrder")) == 1                               # no IOC
+
+
+def test_a_lost_private_feed_reads_the_order_by_rest_every_5_s_and_pauses_amends(live, fake):
+    eng, f, clock, call, _ = live
+    book(f, call, "snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")])
+    assert call(eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
+    cid = eng.chase.id
+    wait_for(lambda: eng.chase.phase == "resting")
+    fake.ws_down = True
+    fake.run(fake.drop_ws)
+    wait_for(lambda: not eng.chase.pfeed_ok)
+    fake.run(fake.fill, cid, "0.02", None, False)                            # a fill while the feed is down
+    clock.t += 6
+    book(f, call, "update", [("62418.1", "0.5")], [])                        # the bid rises: no amend now
+    call(eng.tick)                                                           # 5 s: QueryOrders by cl_ord_id
+    wait_for(lambda: eng.chase.filled == D("0.02"))
+    assert fake.calls_of("amend_order") == []
+    assert fake.calls_of("QueryOrders") == [{"cl_ord_id": cid}]
+    clock.t += 2
+    call(eng.tick)                                                           # not 5 s yet: no read
+    assert len(fake.calls_of("QueryOrders")) == 1
+
+    fake.ws_down = False                                                     # the feed comes back (2 s backoff)
+    wait_for(lambda: eng.chase.pfeed_ok)
+    clock.t += 5
+    book(f, call, "update", [("62418.2", "0.5")], [])                        # amends go on
+    wait_for(lambda: len(fake.calls_of("amend_order")) >= 1)                 # at PrivateBack or at this book
+    assert eng.chase.filled == D("0.02")                                     # the reread after the gap counts nothing twice
+    assert "Private feed lost. Reading the order by REST every 5 s. Amends paused." in texts(eng)
+    assert "The private feed is back. Amends go on." in texts(eng)
+
+
+def test_the_gateway_maps_margin_orders_a_refused_margin_amend_and_an_unknown_order(fake, tmp_path):
+    c, cmds = core.begin(ID, PAIR, "buy", D("0.05"), D("62417.9"), D("62418.5"), 120, 1000.0, core.LIVE_VENUE,
+                         margin=core.Margin(3))
+    fake.refuse_amend = "EOrder:Invalid arguments"
+    from order_chaser.kraken import KrakenGateway
+
+    async def run():
+        async with httpx.AsyncClient() as http:
+            gw = KrakenGateway(rest.KrakenRest(KEY, http, url=fake.url), lambda: KEY, fake.ws_url, lambda: 1000.0, AWAKE)
+            gw.chase = c
+            await gw.open()
+            place = [x for x in cmds if isinstance(x, core.MarginPlace)][0]
+            placed = await gw.send(place, 1000.0)
+            amended = await gw.send(core.Amend(ID, D("62418.0")), 1001.0)
+            unknown = await gw.send(core.Query("ocnever0000001"), 1002.0)
+            await gw.send(core.Cancel(ID), 1003.0)
+            await gw.close()
+            return placed, amended, unknown
+    placed, amended, unknown = asyncio.run(run())
+    assert placed == [core.Placed(1000.0)]
+    assert fake.calls_of("AddOrder")[0] | {} == {"ordertype": "limit", "type": "buy", "volume": "0.05", "price": "62417.9",
+                                                 "pair": "XBTUSD", "cl_ord_id": ID, "oflags": "post", "leverage": "3"}
+    assert amended == [core.Rejected(1000.0, "amend", "EOrder:Invalid arguments")]
+    assert unknown == [core.OrderState(1000.0, False, D(0), None, "ocnever0000001")]
+    # The core takes the refusal of a margin amend: cancel and replace for the rest of the chase.
+    c, _ = core.step(c, core.Placed(1000.0))
+    c = __import__("dataclasses").replace(c, phase="amending", pending=D("62418.0"))
+    c, out = core.step(c, amended[0])
+    assert c.replace is True
+    assert fake.calls_of("CancelAllOrdersAfter") == [{"timeout": "60"}, {"timeout": "0"}]

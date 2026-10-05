@@ -14,6 +14,7 @@ import binascii
 import re
 from dataclasses import dataclass
 
+import httpx
 import keyring
 import keyring.errors
 
@@ -80,3 +81,27 @@ class KeyStore:
             # only its NotFound cause means "no item".
             if e.__cause__ is not None and type(e.__cause__).__name__ != "NotFound":
                 raise
+
+
+class NoKey(Exception):
+    """No key is saved in the Keychain."""
+
+
+KEYCHAIN_TEXT = ("macOS did not let the tool use the Keychain. Unlock the Keychain, click Allow in the macOS prompt, "
+                 "and try again.")
+
+
+def why(e: Exception) -> str:
+    """The words for a failed live call: never the text of a Keychain error, never the key."""
+    from .rest import KrakenError
+    if isinstance(e, NoKey):
+        return "No Kraken API key is saved. Finish Setup, step 3."
+    if isinstance(e, keyring.errors.KeyringError):
+        return KEYCHAIN_TEXT
+    if isinstance(e, KrakenError):
+        return f"Kraken answered \"{e}\"."
+    if isinstance(e, httpx.HTTPError):
+        return "Kraken did not answer. Check the connection."
+    if isinstance(e, ConnectionError):
+        return "The private feed of your fills did not connect."
+    return "The tool could not reach Kraken."

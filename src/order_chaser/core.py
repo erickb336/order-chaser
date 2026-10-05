@@ -12,7 +12,11 @@ Phases (the chase states):
   resting -> feed_lost -> reconcile -> resting
   feed_lost -> cancelling -> reread -> done  (timeout while the feed is lost: no IOC)
   amend rejected -> reconcile -> resting     (no blind retry)
-  any phase -> done (outcome "ended") on a tool restart
+  any phase -> done (outcome "ended") on a tool restart (live: the restart reconcile against Kraken is U6)
+
+Live (T4):
+  private feed lost (PrivateLost): the order stays; no amend; a Query of the leg every 5 s (Q8, C3) until PrivateBack
+  the venue cancels the order without the tool (VenueCanceled; "timer": the safety timer fired) -> done, no IOC
 
 Margin (dry run first; the T4 gateway maps the same commands):
   amend refused -> cancel and replace for the rest of the chase:
@@ -44,7 +48,8 @@ ROLL_EVERY = 4 * 3600
 LEVERAGE = (2, 3, 4, 5)          # the owner's range; the pair's AssetPairs lists limit it further
 ID_MAX = 18                      # Kraken: a free-text cl_ord_id has at most 18 characters
 CANCEL_TRIES = 3
-STALE_AFTER = 10      # seconds: a book older than this is no valid price (the feed sends a heartbeat each second)
+STALE_AFTER = 10      # seconds: a book older than this is no valid price (only a book message renews it)
+QUERY_EVERY = 5       # seconds: the REST read of the order while the private feed is lost (Q8, C3)
 SIM_VENUE = "the simulated exchange"
 LIVE_VENUE = "Kraken"
 ZERO = Decimal(0)
@@ -69,6 +74,7 @@ class Pair:
     margin_stop: int = 0                  # AssetPairs margin_stop: margin level (%) of a liquidation
     long_limit: Decimal | None = None     # AssetPairs long_position_limit (base units)
     short_limit: Decimal | None = None    # AssetPairs short_position_limit (base units)
+    rest: str = ""                        # AssetPairs altname: the pair name of a REST order ("XBTUSD")
 
     def leverage(self, side: str) -> tuple[int, ...]:
         """The levels that a margin open on this side can use: the pair's list, within the owner's 2x to 5x."""
@@ -160,6 +166,8 @@ class Chase:
     margin: Margin | None = None
     replace: bool = False             # margin: the venue refused an amend, so moves are cancel and replace
     gone_qty: Decimal = ZERO          # margin: the qty filled when the position was gone; later fills open a new one
+    pfeed_ok: bool = True             # live: the private feed of the fills is up
+    queried_at: float | None = None   # live: the last REST read of the order while the private feed is lost
 
     @property
     def buy(self) -> bool:
@@ -279,6 +287,21 @@ class OrderState:
 class PositionGone:
     """Margin: the position of the chase is gone. reason "liquidated": the venue liquidated it (the margin
     level fell to margin_stop); "nopos": it closed another way, so a reduce-only order has nothing left."""
+    now: float
+    reason: str
+
+@dataclass(frozen=True)
+class PrivateLost:
+    now: float
+
+@dataclass(frozen=True)
+class PrivateBack:
+    now: float
+
+@dataclass(frozen=True)
+class VenueCanceled:
+    """Live: Kraken cancelled the order of the chase and the tool did not ask for it. reason "timer": the safety
+    timer (CancelAllOrdersAfter) fired; else Kraken's text."""
     now: float
     reason: str
 
@@ -543,6 +566,9 @@ def step(c: Chase, ev) -> tuple[Chase, list]:
         if c.phase in ("resting", "feed_lost"):
             c, more = _settle(c, ev.now)
             out += more
+            if not c.pfeed_ok and c.phase in ("resting", "feed_lost") and ev.now - (c.queried_at or 0) >= QUERY_EVERY:
+                c = replace(c, queried_at=ev.now)
+                out.append(Query(c.leg))
         elif c.phase == "cancelling" and c.cancel_wait:
             c, more = _cancel(c, ev.now)
             out += more
@@ -563,6 +589,29 @@ def step(c: Chase, ev) -> tuple[Chase, list]:
         elif c.phase == "feed_lost":
             c = replace(c, phase="reconcile", reconcile_for="feed")
             out += [Log(t, "The price feed is back. Reading the order again."), Query(c.leg)]
+
+    elif isinstance(ev, PrivateLost):
+        if c.pfeed_ok:
+            out.append(Log(t, "Private feed lost. Reading the order by REST every 5 s. Amends paused.", "warn"))
+        c = replace(c, pfeed_ok=False)
+
+    elif isinstance(ev, PrivateBack):
+        if not c.pfeed_ok:
+            out.append(Log(t, "The private feed is back. Amends go on."))
+            c = replace(c, pfeed_ok=True, queried_at=None)
+            if c.phase in ("resting", "feed_lost"):
+                out.append(Query(c.leg))     # a fill in the gap: the venue's cum is the truth
+                c, more = _settle(c, ev.now)
+                out += more
+
+    elif isinstance(ev, VenueCanceled) and c.phase != "ioc":
+        at = time.strftime("%H:%M:%S", time.localtime(ev.now))
+        out.append(Log(t, f"Kraken cancelled the order: the safety timer fired. Filled {fmt_qty(c.filled)} {base}. "
+                          "Chase ended. No IOC sent." if ev.reason == "timer" else
+                          f"Kraken cancelled the order at {at}: \"{ev.reason}\". Filled {fmt_qty(c.filled)} {base}. "
+                          "Chase ended. No IOC sent.", "bad"))
+        c, more = _end(c, ev.now, "filled" if c.filled >= c.qty else "timer" if ev.reason == "timer" else "venuecancel")
+        out += more
 
     elif isinstance(ev, Placed) and c.phase == "placing":
         c = replace(c, price=c.pending, pending=None, placed_at=ev.now)
@@ -588,7 +637,7 @@ def step(c: Chase, ev) -> tuple[Chase, list]:
                               "The tool did not count it. It counts the filled total that the venue reports.", "warn"))
             return c, out
         # A chase leg counts the venue's cum of that leg: a fill that a reread already counted adds nothing.
-        qty = ev.cum - c.leg_cum(leg) if ev.order == "chase" else ev.qty
+        qty = ev.cum - c.leg_cum(leg) if ev.cum is not None else ev.qty   # an IOC with cum (live) counts the same way
         if qty <= 0:
             return c, out
         c = replace(c, fills=c.fills + (Fill(qty, ev.price, ev.maker, t, ev.order, leg),))
@@ -706,7 +755,7 @@ def _maybe_amend(c: Chase, now: float) -> tuple[Chase, list]:
         c = replace(c, slow=slow)
         if slow:
             out.append(Log(now - c.started, f"Estimated rate counter at {int(c.rate)} of {RATE_MAX}. Next amend in {AMEND_EVERY_SLOW} s, not {AMEND_EVERY} s.", "warn"))
-    if not c.fresh(now) or c.exit:
+    if not c.fresh(now) or c.exit or not c.pfeed_ok:   # no move on an old price, or blind to the fills (Q8)
         return c, out
     target = _target(c)
     every = AMEND_EVERY_SLOW if c.slow else AMEND_EVERY
@@ -761,7 +810,8 @@ def _rejected(c: Chase, ev: Rejected, t: float) -> tuple[Chase, list]:
     p = lambda x: fmt_price(c.pair, x)
     why = {"would_cross": f"would cross the {'ask' if c.buy else 'bid'} (post-only)",
            "rate_limit": "EOrder:Rate limit exceeded",
-           "not_open": "the order is not open"}.get(ev.reason, ev.reason)
+           "not_open": "the order is not open",
+           "no_feed": "the private feed is lost"}.get(ev.reason, ev.reason)
     if ev.op == "place" and c.phase == "placing":
         c = replace(c, pending=None)
         if len(c.legs) > 1 and ev.reason in ("would_cross", "rate_limit"):
@@ -776,7 +826,7 @@ def _rejected(c: Chase, ev: Rejected, t: float) -> tuple[Chase, list]:
         c, more = _end(c, ev.now, "refused" if len(c.legs) == 1 else "notfilled")
         return c, out + more
     if ev.op == "amend" and c.phase == "amending":
-        if c.margin is not None and ev.reason not in ("would_cross", "rate_limit", "not_open"):
+        if c.margin is not None and ev.reason not in ("would_cross", "rate_limit", "not_open", "no_feed"):
             # The venue refuses amends of this margin order: cancel and replace for the rest of the chase.
             out = [Log(t, f"Amend to {p(c.pending)} refused: \"{ev.reason}\". Switched to cancel and replace for this chase.", "warn")]
             c = replace(c, phase="resting", replace=True, pending=None, reject=ev.reason, reject_at=ev.now,
@@ -829,6 +879,9 @@ def _order_state(c: Chase, ev: OrderState, t: float) -> tuple[Chase, list]:
             c, more = _end(c, ev.now, "cancelfail")
         else:
             c, more = _cancel(c, ev.now)
+        return c, out + more
+    if c.phase in ("resting", "feed_lost") and c.filled >= c.qty:
+        c, more = _end(c, ev.now, "filled")
         return c, out + more
     if c.phase == "reconcile":
         state = "open" if ev.open else "closed"
@@ -895,7 +948,7 @@ def _restarted(c: Chase, ev: Restarted, t: float) -> tuple[Chase, list]:
         lines = [Log(t, f"Tool started again after {off} s off. Ended the simulated order. No order was on Kraken.", "bad"),
                  Log(t, f"Recorded the simulated fills: {fmt_qty(c.filled)} of {fmt_qty(c.qty)} {base}."),
                  Log(t, "Did not continue the dry run.")]
-    else:  # T4 replaces this with a reconcile against Kraken before it ends the chase.
+    else:  # U6 replaces this with the restart reconcile against Kraken (Q5) before it ends the chase.
         lines = [Log(t, f"Tool started again after {off} s off. Chase ended, not continued.", "bad")]
     c, more = _end(replace(c, off_from=ev.last_seen), ev.now, "ended")
     return c, lines + more

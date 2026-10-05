@@ -37,7 +37,7 @@ def parse_pairs(result: dict) -> dict[str, Pair]:
                            status=r["status"], leverage_buy=tuple(r.get("leverage_buy", ())),
                            leverage_sell=tuple(r.get("leverage_sell", ())), margin_call=int(r.get("margin_call", 0)),
                            margin_stop=int(r.get("margin_stop", 0)), long_limit=_limit(r.get("long_position_limit")),
-                           short_limit=_limit(r.get("short_position_limit")))
+                           short_limit=_limit(r.get("short_position_limit")), rest=r.get("altname", ""))
     return out
 
 
