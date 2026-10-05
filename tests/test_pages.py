@@ -111,7 +111,7 @@ class Tool:
 
     def beat(self, seconds=0):
         self.clock.t += seconds
-        self.call(self.feed._handle, {"channel": "heartbeat"})
+        self.call(self.feed._handle, self.books[self.eng.watched].msg("update", [], []))   # a book message: the book is fresh
 
     def trade(self, side, price, qty, symbol="BTC/USD"):
         self.call(self.feed._handle, {"channel": "trade", "type": "update",

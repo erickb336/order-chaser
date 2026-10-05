@@ -62,39 +62,49 @@ class PublicFeed:
         self.ws = None
         self.attempt = 0
         self.resync = False
+        self.subscribed: str | None = None   # the pair that this link is subscribed to
+        self.lock = asyncio.Lock()           # watch() and a new link of run() change the subscription one at a time
 
     async def watch(self, pair: Pair) -> None:
         if self.pair and self.pair.symbol == pair.symbol:
             self.pair = pair
             return
-        old, self.pair = self.pair, pair
+        self.pair = pair
         self.book = OrderBook(pair.price_decimals, pair.qty_decimals)
         self.on_book(self.book, False)
-        if self.ws is not None:
-            try:
-                if old:
-                    await self._send("unsubscribe", "book", old.symbol, depth=10)
-                    await self._send("unsubscribe", "trade", old.symbol)
-                await self._subscribe()
-            except Exception:
-                pass  # the run loop reconnects and subscribes again
+        try:
+            await self._follow()
+        except Exception:
+            pass  # the run loop reconnects and subscribes again
+
+    async def _follow(self) -> None:
+        """Make the subscription of the link follow self.pair: one subscribe of each pair, never two."""
+        async with self.lock:
+            if self.ws is None or self.pair is None or self.subscribed == self.pair.symbol:
+                return
+            if self.subscribed:
+                await self._send("unsubscribe", "book", self.subscribed, depth=10)
+                await self._send("unsubscribe", "trade", self.subscribed)
+            self.subscribed = self.pair.symbol
+            await self._subscribe(self.subscribed)   # self.pair can change while a send waits
 
     async def _send(self, method: str, channel: str, symbol: str, **extra) -> None:
         await self.ws.send(json.dumps({"method": method, "params": {"channel": channel, "symbol": [symbol], **extra}}))
 
-    async def _subscribe(self) -> None:
-        await self._send("subscribe", "book", self.pair.symbol, depth=10)
-        await self._send("subscribe", "trade", self.pair.symbol)
+    async def _subscribe(self, symbol: str) -> None:
+        await self._send("subscribe", "book", symbol, depth=10)
+        await self._send("subscribe", "trade", symbol)
 
     async def run(self) -> None:
         while True:
             wait = None
             try:
                 async with websockets.connect(self.url, open_timeout=10, ping_interval=20, close_timeout=1) as ws:
-                    self.ws = ws
-                    if self.pair:
-                        self.book = OrderBook(self.pair.price_decimals, self.pair.qty_decimals)
-                        await self._subscribe()
+                    async with self.lock:
+                        self.ws, self.subscribed = ws, None
+                        if self.pair:
+                            self.book = OrderBook(self.pair.price_decimals, self.pair.qty_decimals)
+                    await self._follow()
                     self.on_link(True, self.attempt, 0)
                     try:
                         while True:   # no message (heartbeats count) for STALE_AFTER s: the feed is lost
@@ -109,7 +119,7 @@ class PublicFeed:
             await asyncio.sleep(self._lost() if wait is None else wait)
 
     def _lost(self) -> float:
-        self.ws = None
+        self.ws, self.subscribed = None, None
         self.attempt += 1
         wait = min(2 ** min(self.attempt, 4), 15)
         self.on_link(False, self.attempt, wait)
@@ -136,8 +146,8 @@ class PublicFeed:
                 await self._send("unsubscribe", "book", self.pair.symbol, depth=10)
                 self.book = OrderBook(self.pair.price_decimals, self.pair.qty_decimals)
                 await self._send("subscribe", "book", self.pair.symbol, depth=10)
-        elif ch == "heartbeat" and self.book is not None and self.book.bids and not self.resync:
-            self.on_book(self.book, True)   # no change since the last book message: the book is still valid now
+        # A heartbeat keeps the link up (run() waits for any message), but it does not renew the age of the
+        # book: only a book message does. A book that does not change for 10 s is no valid price.
         elif ch == "trade" and m.get("type") == "update" and self.pair:
             for t in m["data"]:
                 if t.get("symbol") == self.pair.symbol:

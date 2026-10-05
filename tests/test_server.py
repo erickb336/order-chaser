@@ -235,7 +235,7 @@ def test_one_dry_run_end_to_end_on_a_fake_feed(setup):
     assert (mid["phase"], mid["price"], mid["filled"]) == ("resting", "62418.1", "0.018")
 
     clock.t += 60
-    call(f._handle, {"channel": "heartbeat"})                                # no book change: the book is still valid
+    call(f._handle, kb.msg("update", [], []))                                # a book message with no change: still valid
     call(eng.tick)                                                           # timeout: fallback
     c = client.get(f"/api/chase/{cid}").json()
     texts = [e["text"] for e in c["events"]]
@@ -498,7 +498,7 @@ def test_a_token_header_that_is_not_ascii_gets_403_with_the_frame_headers(setup)
     assert r.headers["x-frame-options"] == "DENY"
 
 
-def test_start_needs_a_book_at_most_10_s_old_and_a_heartbeat_renews_it(setup):
+def test_start_needs_a_book_at_most_10_s_old_and_only_a_book_message_renews_it(setup):
     # STALE-FEED-FREEZE-AFTER-20S: Start and the running chase use one age limit, core.STALE_AFTER.
     client, app, eng, f, clock, call = setup
     H = started_book(setup)
@@ -506,7 +506,9 @@ def test_start_needs_a_book_at_most_10_s_old_and_a_heartbeat_renews_it(setup):
     clock.t += 10.5
     assert client.get("/api/state").json()["feed"]["fresh"] is False
     assert client.post("/api/chase", headers=H, json=body).json() == {"errors": ["Start needs live prices."]}
-    call(f._handle, {"channel": "heartbeat"})
+    call(f._handle, {"channel": "heartbeat"})                                 # the link is up, the book is still old
+    assert client.get("/api/state").json()["feed"]["fresh"] is False
+    call(f._handle, book_msg("snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")]))
     assert client.get("/api/state").json()["feed"]["fresh"] is True
     assert client.post("/api/chase", headers=H, json=body).status_code == 200
 
@@ -595,7 +597,7 @@ def test_a_book_message_alone_does_not_write_the_chase(setup):
     for i in range(20):
         clock.t += 0.05
         call(f._handle, kb.msg("update", [], [("62419.0", str(3 + i))]))     # a deeper ask changes: no amend
-    call(f._handle, {"channel": "heartbeat"})
+    call(f._handle, kb.msg("update", [], []))
     assert (eng.chase.book_at, saves) == (clock.t, [])                        # valid books, and no write
     call(f._handle, trade_msg("sell", "62417.0", "0.01"))                      # a fill changes the chase: it writes
     assert saves == ["resting"]
@@ -811,3 +813,40 @@ def test_a_slow_gateway_call_does_not_block_and_the_commands_go_out_in_order(set
     call(open_gate)
     assert sent[:2] == ["Place", "Cancel"]
     assert (eng.chase.phase, eng.chase.outcome) == ("done", "stopped")
+
+
+def test_a_new_link_and_a_pair_change_at_the_same_time_leave_one_subscription_of_the_new_pair():
+    # U4: run() subscribed the pair of a new link while watch() changed the pair: two pairs stayed subscribed.
+    eth = feed.parse_pairs({"ETH/USD": {"tick_size": "0.01", "ordermin": "0.002", "costmin": "0.5", "pair_decimals": 2,
+                                        "lot_decimals": 8, "status": "online"}})["ETH/USD"]
+
+    class SlowWs:   # each send waits, as the network does: the other task runs in between
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, msg):
+            await asyncio.sleep(0.01)
+            self.sent.append(json.loads(msg))
+
+    async def scenario():
+        f = feed.PublicFeed(lambda b, ok: None, lambda *a: None, lambda *a: None)
+        f.pair, f.ws = PAIRS["BTC/USD"], SlowWs()            # run() has a new link for BTC/USD
+        await asyncio.gather(f._follow(), f.watch(eth), f.watch(eth))
+        return f.ws.sent
+
+    live = set()
+    for m in asyncio.run(scenario()):
+        key = (m["params"]["channel"], m["params"]["symbol"][0])
+        assert (key in live) == (m["method"] == "unsubscribe"), m   # never a second subscribe of the same channel
+        (live.discard if m["method"] == "unsubscribe" else live.add)(key)
+    assert live == {("book", "ETH/USD"), ("trade", "ETH/USD")}
+
+
+def test_a_heartbeat_does_not_renew_the_age_of_the_book(setup):
+    # U4: only a book message renews the book; the heartbeat says only that the link is up.
+    client, app, eng, f, clock, call = setup
+    call(f._handle, book_msg("snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")]))
+    at = eng.book_at
+    clock.t += 5
+    call(f._handle, {"channel": "heartbeat"})
+    assert (eng.book_at, client.get("/api/state").json()["feed"]["age"]) == (at, 5.0)

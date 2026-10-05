@@ -33,7 +33,7 @@ def resting(**kw):
 
 
 def beat(c, t):
-    """The book again at time t, as the feed re-sends it on each heartbeat: the prices are fresh."""
+    """The book again at time t (a book message with no change): the prices are fresh."""
     return Book(t, c.bid, c.ask, True)
 
 

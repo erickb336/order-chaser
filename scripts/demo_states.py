@@ -61,10 +61,10 @@ async def drive(eng, speed: float = 1.0):
     say = lambda m: print(m, flush=True)
     link_up = [True]
 
-    async def heartbeat():   # Kraken sends one each second while the link is up; it keeps the book valid
+    async def heartbeat():   # a book message each second while the link is up (on BTC/USD the book changes all the time)
         while True:
             if link_up[0]:
-                await f._handle({"channel": "heartbeat"})
+                await f._handle(kb.msg("update", [], []))
             await wait(1)
     beats = asyncio.create_task(heartbeat())  # noqa: F841  (runs until the demo ends)
 
@@ -99,7 +99,7 @@ async def drive(eng, speed: float = 1.0):
     await wait(8)
     say("fill 2"); await f._handle(trade("sell", "62417.0", "0.04996"))        # the rest, 0.00004, is below ordermin
     await wait(4)
-    say("fill now 2"); eng.user("fillnow")                                     # rest below the minimum (the heartbeats keep the book valid)
+    say("fill now 2"); eng.user("fillnow")                                     # rest below the minimum (the book messages keep the book valid)
     await wait(600)
 
 
