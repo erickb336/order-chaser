@@ -80,12 +80,12 @@ class FakeWs:
 
 
 class Tool:
-    def __init__(self, data_dir, shots):
+    def __init__(self, data_dir, shots, **app):
         self.clock, self.shots, self.books = Clock(), shots, {}
         with socket.socket() as s:       # a free port: the app on 5180, or another agent, does not block the tests
             s.bind(("127.0.0.1", 0))
             self.port = s.getsockname()[1]
-        guard = create_app(data_dir, connect=False, clock=self.clock, latency=0, port=self.port)
+        guard = create_app(data_dir, connect=False, clock=self.clock, latency=0, port=self.port, **app)
         self.eng = guard.app.state.engine
         self.server = uvicorn.Server(uvicorn.Config(guard, host="127.0.0.1", port=self.port, log_level="warning"))
         self.loop = asyncio.new_event_loop()
@@ -1140,3 +1140,154 @@ def test_page_a_liquidation_before_the_ioc_fills_ends_liquidated_with_the_positi
                            "The 0.0050 BTC that filled after it stays open as a position.",
                    "pstat": "Open: 0.0050 BTC long, 5x",
                    "last": "0:31Filled 0.0050 BTC at 49,000.60 (taker, IOC). Order complete. Position now: 0.0050 BTC long, 5x."}
+
+
+# ---------- T4 U6: the live pages, against the LOCAL fake Kraken (tests/fake_kraken.py; sample data, no real key) ----------
+
+AWAKE = ["/bin/sh", "-c", "sleep 30", "sh"]   # stands in for caffeinate -i
+
+
+@pytest.fixture
+def fake():
+    from fake_kraken import FakeKraken
+    k = FakeKraken(time.time)
+    yield k
+    k.stop()
+
+
+def live_tool(tmp_path, fake, ready=True):
+    """The tool with the fake Kraken. ready: Setup is complete (account answered, the key saved and tested)."""
+    from fake_kraken import API, SECRET
+    from order_chaser import keys
+    shots = Path(os.environ.get("OC_SHOTS", tmp_path / "shots"))
+    shots.mkdir(parents=True, exist_ok=True)
+    if ready:
+        keys.KeyStore().save(keys.Key(API, SECRET))    # the in-memory keyring of conftest.py
+    t = Tool(tmp_path, shots, kraken_url=fake.url, kraken_ws=fake.ws_url, awake_cmd=AWAKE)
+    fake.clock = t.clock
+    if ready:
+        t.eng.db.set_setting("account", json.dumps({"answer": "no", "at": t.clock()}))
+        t.eng.db.set_setting("key", json.dumps({"saved": t.clock(), "tested": t.clock(), "verdict": "ok", "permissions": {}}))
+    return t
+
+
+def test_page_setup_asks_the_account_question_then_saves_and_tests_the_key(tmp_path, fake):
+    from fake_kraken import API, SECRET
+    t = live_tool(tmp_path, fake, ready=False)
+    try:
+        got = t.look([{"goto": "/setup"}, {"waitFor": "document.getElementById('ano')"}, {"shot": "live-setup-account-question.png"},
+                      {"text": "#acctbody", "as": "question"}, ALL_TEXT,
+                      {"click": "#ano"}, {"waitFor": "!document.getElementById('keyform').classList.contains('hidden')"},
+                      {"fill": ["#k1", API]}, {"fill": ["#k2", SECRET]}, {"click": "#save"},
+                      {"eval": "[OC.$('k1').value, OC.$('k2').value]", "as": "fields"},
+                      {"waitFor": "OC.$('bK').textContent === 'Ready'"}, {"shot": "live-setup-key-tested.png"},
+                      {"text": "#keybody", "as": "key"}, {"text": "#perms", "as": "perms"}, {"text": "#finish", "as": "finish"},
+                      {"text": "#host", "as": "host"},
+                      {"eval": "document.body.innerText.includes(" + json.dumps(SECRET[:12]) + ")", "as": "shown"},
+                      {**ALL_TEXT, "as": "all2"}])
+    finally:
+        t.stop()
+    assert "Does another bot or API tool use this Kraken account?" in got["question"]
+    assert got["fields"] == ["", ""]                                           # C6: cleared after the send
+    assert "Saved in your macOS Keychain. The tool never shows it again." in got["key"]
+    assert "At each start of the tool, macOS asks one time." in got["key"]     # Q9
+    assert "Check these names against your Kraken key page." in got["perms"]  # C9
+    assert "Withdraw Funds" in got["perms"] and "Setup complete. Live chases are possible." in got["finish"]
+    assert got["host"] == f"127.0.0.1:{t.port}" and got["shown"] is False
+    assert got["all"]["c"] >= 4.5 and got["all2"]["c"] >= 4.5, (got["all"], got["all2"])
+
+
+def test_page_live_confirm_names_stop_loss_orders_then_the_chase_renews_the_timer_and_loses_the_private_feed(tmp_path, fake):
+    fake.add_other("stop-loss", "XETHZUSD", "sell 0.4 ETHUSD @ stop loss 2310.00")
+    fake.add_other("take-profit", "XETHZUSD", "sell 0.4 ETHUSD @ take profit 2780.00")
+    fake.add_other("limit", "SOLUSD", "buy 12 SOLUSD @ limit 138.50")
+    t = live_tool(tmp_path, fake)
+    renewed = clock_text(t.clock.t + 21)
+
+    def renew():
+        t.beat(21)
+        t.call(t.eng.tick)
+
+    def lose_feed():
+        fake.ws_down = True
+        fake.run(fake.drop_ws)
+    try:
+        got = t.look([{"goto": "/new"}, {"waitFor": "!OC.$('livebtn').disabled && !OC.$('start').disabled"},
+                      {"click": "#livebtn"}, {"text": "#whatchanges", "as": "changes"}, {"text": "#modebadge", "as": "badge"},
+                      {"click": "#start"}, {"waitFor": "!OC.$('confirm').classList.contains('hidden')"},
+                      {"shot": "live-confirm-stop-loss.png"}, {"text": "#otherlist", "as": "others"}, {"eval": "OC.$('amt').value", "as": "amt"},
+                      {"eval": "OC.$('cyes').disabled", "as": "blocked"}, {**ALL_TEXT, "as": "cc"},
+                      {"click": "#okothers"}, {"click": "#okfirst"}, {"click": "#cyes"},
+                      {"waitFor": "location.pathname === '/chase' && document.getElementById('timerline') && /Renewed/.test(OC.$('timerline').textContent)"},
+                      {"signal": "renew"}, {"waitFor": f"OC.$('timerline').textContent.includes('Renewed at {renewed}')"},
+                      {"shot": "live-chase-timer-renewing.png"}, {"text": "#livepanel", "as": "panel"}, {**ALL_TEXT, "as": "ct"},
+                      {"signal": "lose"}, {"waitFor": "document.getElementById('pfeedline')"},
+                      {"shot": "live-chase-private-feed-lost.png"}, {"text": "#pfeedline", "as": "pfeed"}, {**ALL_TEXT, "as": "pt"}],
+                     on={"renew": renew, "lose": lose_feed})
+    finally:
+        t.stop()
+    assert "You chose Live for the first time." in got["changes"] and got["badge"] == "LIVE: real orders"
+    assert got["others"].index("stop-loss") < got["others"].index("limit") and "2 of them protect a position." in got["others"]
+    assert got["amt"] == "0.00005" and got["blocked"] is True                   # Q6 minimum; the ticks come first
+    assert "If the tool stops, Kraken cancels ALL orders on this account" in got["panel"]
+    assert "Reading the order by REST every 5 s" in got["pfeed"] or "reads the order by REST every 5 s" in got["pfeed"]
+    for k in ("cc", "ct", "pt"):
+        assert got[k]["c"] >= 4.5, (k, got[k])
+
+
+def test_page_the_timer_fired_lists_the_orders_that_kraken_cancelled(tmp_path, fake):
+    fake.add_other("take-profit", "XETHZUSD", "sell 0.4 ETHUSD @ take profit 2780.00")
+    fake.add_other("stop-loss", "XETHZUSD", "sell 0.4 ETHUSD @ stop loss 2310.00")
+    t = live_tool(tmp_path, fake)
+
+    def fire():
+        t.beat(61)                                                            # no renewal reached Kraken in 60 s
+        t.eng.kgw.timer["deadline"] = t.clock.t - 1
+        fake.run(fake.fire_timer)
+    try:
+        assert t.call(t.eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
+        got = t.look([{"goto": "/chase"}, {"waitFor": "document.getElementById('timerline')"}, {"signal": "fire"},
+                      card_shown("timer"), {"waitFor": "document.getElementById('othersgone')"},
+                      {"shot": "live-chase-timer-fired.png"}, {"text": "#othersgone", "as": "gone"}, {"text": "#statuscard", "as": "card"},
+                      ALL_TEXT], on={"fire": fire})
+    finally:
+        t.stop()
+    assert "Kraken also cancelled 2 of your other open orders, 2 of them stop-loss or take-profit orders." in got["gone"]
+    assert "The tool does not place them for you." in got["gone"] and len(fake.calls_of("AddOrder")) == 1
+    assert got["all"]["c"] >= 4.5, got["all"]
+
+
+def test_page_kraken_not_answering_ends_the_chase_in_a_clear_state(tmp_path, fake):
+    t = live_tool(tmp_path, fake)
+    try:
+        assert t.call(t.eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
+        got = t.look([{"goto": "/chase"}, {"waitFor": "document.getElementById('timerline')"}, {"signal": "silent"},
+                      card_shown("noanswer"), {"shot": "live-chase-kraken-not-answering.png"}, {"text": "#statuscard", "as": "card"}, ALL_TEXT],
+                     on={"silent": lambda: t.call(t.eng.handle, core.NoAnswer(t.clock(), ""))})
+    finally:
+        t.stop()
+    assert "Kraken did not answer the reads of the order for 60 s." in got["card"]
+    assert "The safety timer cancels the order on Kraken within 60 s." in got["card"]
+    assert got["all"]["c"] >= 4.5, got["all"]
+
+
+def test_page_reconcile_says_why_new_live_chases_wait_then_what_it_found(tmp_path, fake):
+    t = live_tool(tmp_path, fake)
+    assert t.call(t.eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
+    cid = t.eng.chase.id
+    t.look([{"goto": "/chase"}, card_shown("resting"), {"signal": "fill"}],
+           on={"fill": lambda: fake.run(fake.fill, cid, "0.018", None, False)})   # a fill that the tool does not see
+    t.stop()                                                                  # the tool stops during the chase
+    fake.rest_down = True
+    t = live_tool(tmp_path, fake, ready=False)
+    try:
+        got = t.look([{"goto": "/"}, {"waitFor": "document.querySelector('#statuscard[data-state=\"cantread\"]')"},
+                      {"shot": "live-reconcile-cannot-read.png"}, {"text": "#root", "as": "cant"}, {**ALL_TEXT, "as": "a1"},
+                      {"signal": "back"}, {"waitFor": "document.querySelector('#statuscard[data-state=\"open\"]')", "timeout": 20000},
+                      {"shot": "live-reconcile-found-open.png"}, {"text": "#root", "as": "found"}, {**ALL_TEXT, "as": "a2"}],
+                     on={"back": lambda: setattr(fake, "rest_down", False)})
+    finally:
+        t.stop()
+    assert "The tool blocks new live chases until it reads Kraken." in got["cant"]
+    assert "Your order was still open on Kraken. The tool cancelled it." in got["found"] and "0.0180 of 0.0500 BTC (36%)" in got["found"]
+    assert got["a1"]["c"] >= 4.5 and got["a2"]["c"] >= 4.5, (got["a1"], got["a2"])

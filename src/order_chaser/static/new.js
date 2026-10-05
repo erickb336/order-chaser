@@ -3,6 +3,8 @@ const $ = OC.$;
 const params = new URLSearchParams(location.search);
 // what: buy or sell (spot); long, short or close (margin). lev: the leverage of an open (the form starts at 2x).
 let what = 'buy', lev = 2, posKey = null, sizeFor = null, snap = null, account = null, override = false, restOf = null, busy = false;
+// Q1, Q2: the mode of this chase. The form opens in Dry run each time (a link from Setup can ask for Live).
+let mode = params.get('mode') === 'live' ? 'live' : 'dry', check = null;
 const MARGIN = ['long', 'short', 'close'];
 const FEE_LO = 0.0001, FEE_HI = 0.0005;   // Kraken US margin fees: 0.01% to 0.05% of the cost (opening fee, and rollover per full 4 h)
 
@@ -153,8 +155,17 @@ function draw() {
     : what === 'long' ? 'Open long: a post-only buy with leverage. It rests at the best bid and moves up. Each fill opens part of the position at once.'
     : what === 'short' ? 'Open short: a post-only sell with leverage. It rests at the best ask and moves down. Each fill opens part of the position at once.'
     : close && pos ? `Close ${pos.dir}: a reduce-only ${buy ? 'buy' : 'sell'} on ${pos.pair}.` : close ? 'Reduce-only. Closes all or part of an open position.' : '';
-  $('modehelp').innerHTML = margin ? '<b style="color:var(--dry)">Dry run sends no orders.</b> It simulates the fills and the position on live public prices, on a simulated account. Margin live comes only after your go-ahead.'
-    : '<b style="color:var(--dry)">Dry run sends no orders.</b> It runs the chase on live public prices and simulates the fills. Live trading comes in a later version.';
+  const ready = !!(s && s.live && s.live.ready);
+  if (s && mode === 'live' && (!ready || margin)) mode = 'dry';
+  const live = mode === 'live';
+  document.querySelectorAll('#mode button').forEach(b => b.setAttribute('aria-pressed', String((b.dataset.m === 'live') === live)));
+  $('livebtn').disabled = !ready || margin;
+  $('livebtn').style.textDecoration = !ready || margin ? 'line-through' : '';
+  OC.setMode(live);
+  put($('modehelp'), !ready ? 'Live is off: ' + (s && s.live ? s.live.why.map(OC.esc).join(' ') : 'setup is not complete.') + ' <a href="/setup">Finish setup</a> to turn it on.'
+    : margin ? '<b style="color:var(--dry)">Dry run sends no orders.</b> It simulates the fills and the position on live public prices, on a simulated account. Margin live comes only after your go-ahead.'
+    : live ? `<b style="color:var(--live)">Live sends real orders to Kraken.</b> Key: in the macOS Keychain, tested ${new Date(s.live.key.tested * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}.`
+    : '<b style="color:var(--dry)">Dry run sends no orders.</b> It runs the chase on live public prices and simulates the fills. The form opens in Dry run each time.');
   $('capword').textContent = buy ? 'Cap' : 'Floor';
   $('ovbtn').textContent = buy ? 'Set a higher limit' : 'Set a lower limit';
   $('ovoff').textContent = buy ? 'Use the start ask' : 'Use the start bid';
@@ -393,22 +404,89 @@ function draw() {
   }
   $('pairsel').disabled = busy;
   $('start').disabled = !startOk;
-  $('start').textContent = !margin ? 'Start dry run' : close ? 'Start dry run: close' : `Start dry run: open ${what}`;
+  $('start').textContent = live ? 'Start live chase…' : !margin ? 'Start dry run' : close ? 'Start dry run: close' : `Start dry run: open ${what}`;
+  $('start').className = 'btn ' + (live ? 'livebtn' : 'drybtn');
   if (!$('startnote').dataset.err && $('startnote').textContent !== note) $('startnote').textContent = note;
 }
 
+function body() {
+  const b = { pair: $('pairsel').value, qty: $('amt').value.trim(), timeout: Number($('to').value), mode };
+  b.what = what === 'close' ? 'close-' + position().dir : what;
+  if (what === 'long' || what === 'short') b.leverage = lev;
+  if (override) { b.limit = $('ovp').value.trim(); b.accept_extra = $('ovok').checked; }
+  return b;
+}
+function refused(errors) {
+  $('startnote').dataset.err = '1';
+  $('startnote').innerHTML = `<span class="tone-bad">${(errors || ['Refused.']).map(OC.esc).join(' ')}</span>`;
+  setTimeout(() => { delete $('startnote').dataset.err; draw(); }, 6000);
+}
 $('start').onclick = async () => {
   if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
-  const body = { pair: $('pairsel').value, qty: $('amt').value.trim(), timeout: Number($('to').value) };
-  body.what = what === 'close' ? 'close-' + position().dir : what;
-  if (what === 'long' || what === 'short') body.leverage = lev;
-  if (override) { body.limit = $('ovp').value.trim(); body.accept_extra = $('ovok').checked; }
   $('start').disabled = true;
-  const r = await OC.post('/api/chase', body);
+  if (mode === 'live') return liveCheck();
+  const r = await OC.post('/api/chase', body());
   if (r.ok) { location.href = '/chase'; return; }
-  $('startnote').dataset.err = '1';
-  $('startnote').innerHTML = `<span class="tone-bad">${(r.data.errors || ['Refused.']).map(OC.esc).join(' ')}</span>`;
-  setTimeout(() => { delete $('startnote').dataset.err; draw(); }, 6000);
+  refused(r.data.errors);
+};
+
+// ---------- Live: the check, then the confirm (Q6, Q7, Q9) ----------
+$('mode').onclick = e => {
+  const b = e.target.closest('button');
+  if (!b || b.disabled) return;
+  mode = b.dataset.m;
+  let seen = false;
+  try { seen = localStorage.getItem('oc-live-seen') === '1'; localStorage.setItem('oc-live-seen', '1'); } catch (err) { /* private window: show it again */ }
+  $('whatchanges').innerHTML = mode === 'live' && !seen ? `<div class="note info small" style="margin-top:10px"><b>You chose Live for the first time. What changes:</b>
+    <ul style="margin:6px 0 4px;padding-left:18px"><li>The tool sends real orders to your Kraken account and pays real fees.</li><li>Fills come from Kraken, not from a simulation.</li><li>While an order rests, the safety timer is on. If the tool stops, Kraken cancels all your orders in 60 s.</li><li>Your Mac stays awake until the chase ends.</li></ul>This note shows one time only.</div>` : '';
+  draw();
+};
+async function liveCheck() {
+  $('startnote').textContent = snap.live.unlocked ? 'Reading your other orders on Kraken…'
+    : 'macOS asks now for the key: click Allow (not Always Allow). The prompt can name python3. Nothing goes to Kraken before you confirm.';
+  const r = await OC.post('/api/live/check', { pair: $('pairsel').value });
+  check = r.data;
+  if (!r.ok || check.errors.length) { refused(check.errors); return; }
+  $('startnote').textContent = '';
+  if (check.first && $('amt').value.trim() !== check.min_qty) { $('amt').value = check.min_qty; draw(); }   // Q6: the Kraken minimum
+  openConfirm();
+}
+function openConfirm() {
+  const c = check, oth = c.others, prot = oth.filter(o => o.protect), B = $('pairsel').value.split('/')[0];
+  $('firstbadge').innerHTML = c.first ? '<span class="badge warn">FIRST LIVE ORDER</span>' : '';
+  $('ct').textContent = c.first ? 'Your first real order: send it to Kraken?' : 'Send a real order to Kraken?';
+  $('cfirst').innerHTML = c.first ? `<div class="note info small" style="margin-bottom:12px">This is the first real order the tool sends. The form set the Kraken minimum, ${OC.qty(c.min_qty)} ${OC.esc(B)}. After it ends, check the order in Kraken Pro, then compare it with the result page.</div>` : '';
+  const rows = [['Order', `<b>${what === 'buy' ? 'Buy' : 'Sell'} ${OC.qty($('amt').value)} ${OC.esc(B)}</b> on ${OC.esc($('pairsel').value)}`],
+    [$('capword').textContent, OC.esc($('capline').textContent) + `<div class="tiny muted">${OC.esc($('capsub').textContent)}</div>`],
+    ['Timeout', `${OC.esc($('to').selectedOptions[0].textContent)}, then one IOC at the ${what === 'buy' ? 'cap' : 'floor'} for the rest`],
+    ['Worst case', $('worst').innerHTML],
+    ['Other open orders', oth.length ? `<b class="tone-warn">${oth.length}</b>: see below` : 'none']];
+  $('ctab').innerHTML = rows.map(([k, v]) => `<tr><td class="muted" style="width:34%;text-align:left">${k}</td><td style="text-align:left">${v}</td></tr>`).join('');
+  $('cread').textContent = new Date().toLocaleTimeString('en-GB');
+  $('cother').innerHTML = oth.length ? `<div class="note ${prot.length ? 'bad' : 'warn'} small" style="margin-top:12px" id="otherlist"><b>You have ${oth.length} other open order${oth.length > 1 ? 's' : ''} on Kraken. If the tool stops during this chase, the safety timer cancels all of them.</b>` +
+    (prot.length ? `<div style="margin-top:6px"><b>${prot.length} of them protect a position.</b> After a cancel, that position has no stop-loss or take-profit:</div>` : '') +
+    '<ul style="margin:4px 0 0;padding-left:18px">' + oth.map(o => `<li>${o.protect ? '<b>' + OC.esc(o.type) + '</b>' : OC.esc(o.type)} on ${OC.esc(o.pair)}: ${OC.esc(o.text)}</li>`).join('') + '</ul>' +
+    '<div class="tiny" style="margin-top:6px">To avoid this, use a Kraken sub-account for the chaser (Setup, step 2).</div></div>' : '';
+  $('ccheck').innerHTML = (prot.length ? '<label class="check" style="margin-bottom:12px"><input type="checkbox" id="okothers"><div><b>I accept that the safety timer can cancel my stop-loss and take-profit orders.</b><div class="tiny muted">Asked at each live chase while such an order is open.</div></div></label>' : '') +
+    (c.first ? '<label class="check" style="margin-bottom:12px"><input type="checkbox" id="okfirst"><div><b>I checked the amount and the worst case.</b><div class="tiny muted">Asked one time only, for the first live order.</div></div></label>' : '');
+  const ticks = () => { $('cyes').disabled = ($('okothers') && !$('okothers').checked) || ($('okfirst') && !$('okfirst').checked); };
+  document.querySelectorAll('#ccheck input').forEach(i => { i.onchange = ticks; });
+  ticks();
+  $('cmsg').textContent = '';
+  $('confirm').classList.remove('hidden');
+  document.querySelector('.app').inert = true;
+  $('cno').focus();
+}
+function closeConfirm() { $('confirm').classList.add('hidden'); document.querySelector('.app').inert = false; draw(); $('start').focus(); }
+$('cno').onclick = closeConfirm;
+$('confirm').addEventListener('keydown', e => { if (e.key === 'Escape') closeConfirm(); });
+$('cyes').onclick = async () => {
+  $('cyes').disabled = true; $('cyes').textContent = 'Sending the order…';
+  const r = await OC.post('/api/chase', { ...body(), first_ok: !!($('okfirst') && $('okfirst').checked), others_ok: !!($('okothers') && $('okothers').checked) });
+  $('cyes').textContent = 'Start live chase';
+  if (r.ok) { location.href = '/chase'; return; }
+  $('cmsg').innerHTML = `<span class="tone-bad">${(r.data.errors || ['Refused.']).map(OC.esc).join(' ')}</span>`;
+  $('cyes').disabled = false;
 };
 
 async function init() {

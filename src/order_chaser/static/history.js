@@ -48,13 +48,14 @@ async function load() {
       : r.outcome === 'belowmin' ? ['bad', fw + ': rest below minimum']
       : r.outcome === 'cancelfail' && r.mode === 'live' ? ['bad', 'Cancel failed: check Kraken']
       : ['stopped', 'ended'].includes(r.outcome) ? [OUT[r.outcome][0], OUT[r.outcome][1] + ' · ' + fw]
+      : ['timer', 'venuecancel', 'noanswer'].includes(r.outcome) ? ['bad', OC.LABEL[r.outcome] + ' · ' + fw]
       : OUT[r.outcome] || ['plain', r.outcome];
     const taker = 100 - OC.pct(r.maker_qty, r.qty);
-    const outcome = r.outcome === 'filled' && taker > 0 ? ['ok', `Filled, ${taker}% ${r.exit === 'fillnow' ? 'by "Fill the rest now"' : 'after timeout'} (simulated)`] : o;
+    const outcome = r.outcome === 'filled' && taker > 0 ? ['ok', `Filled, ${taker}% ${r.exit === 'fillnow' ? 'by "Fill the rest now"' : 'after timeout'}${r.mode === 'live' ? '' : ' (simulated)'}`] : o;
     const sv = Number(r.saving), m = r.dir != null;
     const out = m ? moutcome(r) : outcome;
     const type = m ? mtype(r) : `<span class="badge plain">Spot</span> <span class="${r.side === 'buy' ? 'tone-fill' : 'tone-bad'}">${r.side === 'buy' ? 'Buy' : 'Sell'}</span>`;
-    return `<tr class="click${filter !== 'all' && filter !== (m ? 'margin' : 'spot') ? ' hidden' : ''}" data-type="${m ? 'margin' : 'spot'}" data-id="${OC.esc(r.id)}" tabindex="0"><td>${when(r.started)}</td><td>${OC.esc(r.pair)}</td><td>${type}</td><td class="r num">${OC.qty(r.filled)} / ${OC.qty(r.qty)}</td><td class="r num">${Number(r.filled) ? OC.px(r.avg, d) : '—'}</td><td class="r num ${sv >= 0 ? 'tone-fill' : 'tone-bad'}">${sv < 0 ? '−' : ''}${OC.usd(Math.abs(sv))}</td><td><span class="badge dry">Dry run</span></td><td><span class="badge ${out[0]}">${out[1]}</span></td></tr>`;
+    return `<tr class="click${filter !== 'all' && filter !== (m ? 'margin' : 'spot') ? ' hidden' : ''}" data-type="${m ? 'margin' : 'spot'}" data-id="${OC.esc(r.id)}" tabindex="0"><td>${when(r.started)}</td><td>${OC.esc(r.pair)}</td><td>${type}</td><td class="r num">${OC.qty(r.filled)} / ${OC.qty(r.qty)}</td><td class="r num">${Number(r.filled) ? OC.px(r.avg, d) : '—'}</td><td class="r num ${sv >= 0 ? 'tone-fill' : 'tone-bad'}">${sv < 0 ? '−' : ''}${OC.usd(Math.abs(sv))}</td><td>${r.mode === 'live' ? '<span class="badge live">Live</span>' : '<span class="badge dry">Dry run</span>'}</td><td><span class="badge ${out[0]}">${out[1]}</span></td></tr>`;
   }).join('') + '</table>';
   document.querySelectorAll('tr.click').forEach(tr => {
     const go = () => location.href = '/result?id=' + encodeURIComponent(tr.dataset.id);

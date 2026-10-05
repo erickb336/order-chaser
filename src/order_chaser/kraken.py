@@ -185,6 +185,7 @@ class KrakenGateway:
         self.awake_cmd = ["caffeinate", "-i"] if awake_cmd is None else awake_cmd
         self.on_event = lambda ev: None
         self.on_link = lambda up: None
+        self.on_txid = lambda leg, txid: None   # Kraken's order id of a leg (the result page shows it)
         self.chase: core.Chase | None = None
         self.feed: PrivateFeed | None = None
         self.task: asyncio.Task | None = None
@@ -282,14 +283,14 @@ class KrakenGateway:
             return core.VenueCanceled(now, "timer")
         return core.VenueCanceled(now, reason)
 
-    async def cancelled_by_timer(self, c: core.Chase, since: float, until: float) -> tuple[str, ...]:
+    async def cancelled_by_timer(self, c: core.Chase, since: float, until: float) -> tuple[tuple[str, str, str], ...]:
         """C8: the other orders of the account that Kraken cancelled from since to until (ClosedOrders), stop-loss
         and take-profit orders first. The tool never places them again (G19 P3)."""
         ours = {*c.legs, c.ioc_id}
         got = (await self.rest.call("ClosedOrders", start=int(since)))
         rows = {k: o for k, o in got.get("closed", {}).items() if o.get("status") == "canceled"
                 and o.get("cl_ord_id") not in ours and since <= float(o.get("closetm") or 0) <= until}
-        return tuple(r["text"] for r in others(rows))
+        return tuple((r["type"], r["pair"], r["text"]) for r in others(rows))
 
     async def _after_timer(self, c: core.Chase, since: float, until: float) -> None:
         start = self.clock()
@@ -364,16 +365,21 @@ class KrakenGateway:
                 p["reduce_only"] = "true"
         return p
 
+    async def _add(self, cmd, ioc: bool) -> None:
+        r = await self.rest.call("AddOrder", **self._order(cmd, ioc))
+        for txid in r.get("txid", [])[:1]:
+            self.on_txid(cmd.id, txid)
+
     async def _place(self, cmd: core.Place) -> list:
         try:
-            await self.rest.call("AddOrder", **self._order(cmd, False))
+            await self._add(cmd, False)
         except KrakenError as e:
             return [core.Rejected(self.clock(), "place", _reason(e.errors))]
         return [core.Placed(self.clock())]
 
     async def _ioc(self, cmd: core.Ioc) -> list:
         try:
-            await self.rest.call("AddOrder", **self._order(cmd, True))
+            await self._add(cmd, True)
         except KrakenError as e:
             return [core.Rejected(self.clock(), "ioc", _reason(e.errors))]
         return await self._ioc_read(cmd.id)

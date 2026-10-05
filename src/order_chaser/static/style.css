@@ -261,3 +261,19 @@ table.t tr.click:hover td { background: var(--surface-2); }
   .facts { grid-template-columns: 1fr 1fr; }
 }
 .mins { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 12.5px; align-items: baseline; }
+
+/* T4 live pages (from the approved prototype) */
+.perm { display: grid; grid-template-columns: 20px 1fr auto; gap: 10px; align-items: center; padding: 7px 0; border-bottom: 1px dashed var(--line); }
+.perm:last-child { border-bottom: 0; }
+.permgrp { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 2px; }
+.kv { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.kv td { padding: 6px 0; border-bottom: 1px dashed var(--line); vertical-align: top; }
+.kv td:last-child { text-align: right; }
+.kv tr:last-child td { border-bottom: 0; }
+.kv th { padding: 4px 10px 4px 0; font-weight: 650; font-size: 12.5px; }
+.ignored { border-left: 3px solid var(--warn); }
+.step.cur .no { border-color: var(--you); color: var(--you); }
+.step.bad .no { border-color: var(--bad); color: var(--bad); }
+.scrim .modal { max-height: calc(100vh - 24px); overflow-y: auto; }
+.how { margin: 10px 0; padding-left: 20px; }
+.how li { padding: 2px 0; }

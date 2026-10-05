@@ -54,7 +54,7 @@ function mrender(c, acct) {
     <h1 style="margin-top:10px">${head} (simulated)</h1>
     <p class="muted">${line}</p>
     <div class="facts" style="margin-top:14px">
-      <div><div class="k">${m.close ? 'Closed' : 'Opened'}</div><div class="v">${OC.qty(filled)} ${B}</div><div class="s">${Math.round(pct)}% of ${OC.qty(total)}</div></div>
+      <div><div class="k">${m.close ? 'Closed' : 'Opened'}</div><div class="v">${OC.qty(filled)} ${B}</div><div class="s">${OC.pct(filled, total)}% of ${OC.qty(total)}</div></div>
       <div><div class="k">Average price</div><div class="v">${filled ? P(s.avg) : '—'}</div><div class="s">${w.limitWord} was ${P(c.limit)}</div></div>
       <div><div class="k">Trading fees</div><div class="v">${OC.usd(s.fee)} ${Q}</div><div class="s">${!filled ? 'no fills' : pctM === 100 ? 'all at 0.40% maker' : pctM === 0 ? 'all at 0.80% taker' : 'mixed 0.40% / 0.80%'}</div></div>
       <div style="background:var(--fill-bg)"><div class="k">Saving vs a market order at the start</div>${!filled ? '<div class="v muted" id="saving">—</div><div class="s">nothing filled</div>' : `<div class="v ${Number(s.saving) >= 0 ? 'tone-fill' : 'tone-bad'}" id="saving">${OC.usd(Math.abs(Number(s.saving)))} ${Q}</div><div class="s">for the ${OC.qty(filled)} ${B} that filled</div>`}</div>
@@ -90,7 +90,14 @@ function mrender(c, acct) {
       <p class="tiny muted" style="margin:10px 0 0">${OC.MARGIN_FEES}</p>
     </div>
   </div>
+  ${OC.livePanel(c)}
   <div class="card" style="margin-top:16px"><h2>What the tool did</h2>${OC.eventLog(c)}</div>`;
+  if (c.mode === 'live') {   // the same page for a live chase: Kraken, real orders, no simulation words
+    OC.setMode(true, 'LIVE: this chase sent real orders to your Kraken account.');
+    $('out').innerHTML = $('out').innerHTML.split(' (simulated)').join('').split(' A dry run sends no orders to Kraken.').join('')
+      .replace(' · dry run · ', ' · live · ').replace(/[Tt]he simulated exchange/g, 'Kraken').replace('Fills (simulated)', 'Fills (from Kraken)')
+      .replace('Fees: a dry run has no key, so the tool uses the highest rates, 0.40% maker and 0.80% taker.', 'Fees: the tool counts the highest rates, 0.40% maker and 0.80% taker. Kraken charged your real fee: see Kraken Pro.');
+  }
   document.title = head + ' · Order chaser';
 }
 
@@ -145,6 +152,20 @@ function render(c) {
       badge = ['bad', 'Not filled'];
       line = 'The simulated exchange rejected the order. Nothing filled.';
       break;
+    case 'timer': case 'venuecancel': case 'noanswer':
+      badge = ['bad', OC.LABEL[c.outcome].replace('Ended: ', 'Ended: ')];
+      line = OC.copy(c.outcome, c, null, 0).sub;
+      restText = `Not filled: ${OC.qty(rest)} ${B}.`;
+      todo = OC.copy(c.outcome, c, null, 0).todo;
+      break;
+  }
+  if (c.mode === 'live' && c.outcome === 'ended') {   // the restart reconcile read Kraken (Q5)
+    line = { open: 'The tool stopped during the chase. At the restart the order was still open on Kraken, so the tool cancelled it.',
+      timer: 'The tool stopped during the chase. The safety timer cancelled the order on Kraken.',
+      closed: 'The tool stopped during the chase. At the restart the order was closed on Kraken.' }[c.found] || 'The tool stopped during the chase.';
+    line += ' The tool recorded the fills from Kraken and sent no order after the restart.';
+    restText = `Not filled: ${OC.qty(rest)} ${B}, because the tool stopped.`;
+    todo = [`<a href="/reconcile?id=${encodeURIComponent(c.id)}">See what the tool found at the restart</a>`];
   }
   const sv = Number(s.saving), sm = Number(s.saving_maker), st = Number(s.saving_taker);
   const savingLabel = sv >= 0 ? 'Saving vs a market order at the start' : 'Extra cost vs a market order at the start';
@@ -156,7 +177,7 @@ function render(c) {
     <h1 style="margin-top:10px">${head} (simulated)</h1>
     <p class="muted">${line}</p>
     <div class="facts" style="margin-top:14px">
-      <div><div class="k">Filled</div><div class="v">${OC.qty(filled)} ${B}</div><div class="s">${Math.round(filledPct)}% of ${OC.qty(c.qty)}</div></div>
+      <div><div class="k">Filled</div><div class="v">${OC.qty(filled)} ${B}</div><div class="s">${OC.pct(filled, total)}% of ${OC.qty(c.qty)}</div></div>
       <div><div class="k">Average price</div><div class="v">${filled ? P(s.avg) : '—'}</div><div class="s">${w.limitWord} was ${P(c.limit)}</div></div>
       <div><div class="k">Fees</div><div class="v">${OC.usd(s.fee)} ${Q}</div><div class="s">${!filled ? 'no fills' : pctM === 100 ? 'all at 0.40% maker' : pctM === 0 ? 'all at 0.80% taker' : 'mixed 0.40% / 0.80%'}</div></div>
       <div style="background:var(--fill-bg)"><div class="k">${savingLabel}</div><div class="v ${sv >= 0 ? 'tone-fill' : 'tone-bad'}">${OC.usd(Math.abs(sv))} ${Q}</div><div class="s">${Number(s.market) ? (Math.abs(sv) / Number(s.market) * 100).toFixed(2) + '% of ' + OC.usd(s.market) + ' ' + Q : 'nothing filled'}</div></div>
@@ -186,7 +207,14 @@ function render(c) {
       <p class="tiny muted" style="margin:10px 0 0">Saving = ${w.buy ? 'market order at the start − this chase' : 'this chase − market sell at the start'}. With the ${w.buy ? 'start ask as the cap' : 'start bid as the floor'}, the saving is never below 0: the chase never ${w.buy ? 'pays more than the start ask plus' : 'gets less than the start bid minus'} the taker fee. A real market order can ${w.buy ? 'cost more' : 'bring less'} than this estimate on a thin book, so the true saving can be larger. Fees: a dry run has no key, so the tool uses the highest rates, 0.40% maker and 0.80% taker.</p>
     </div>
   </div>
+  ${OC.livePanel(c)}
   <div class="card" style="margin-top:16px"><h2>What the tool did</h2>${OC.eventLog(c)}</div>`;
+  if (c.mode === 'live') {   // the same page for a live chase: Kraken, real orders, no simulation words
+    OC.setMode(true, 'LIVE: this chase sent real orders to your Kraken account.');
+    $('out').innerHTML = $('out').innerHTML.split(' (simulated)').join('').split(' A dry run sends no orders to Kraken.').join('')
+      .replace(' · dry run · ', ' · live · ').replace(/[Tt]he simulated exchange/g, 'Kraken').replace('Fills (simulated)', 'Fills (from Kraken)')
+      .replace('Fees: a dry run has no key, so the tool uses the highest rates, 0.40% maker and 0.80% taker.', 'Fees: the tool counts the highest rates, 0.40% maker and 0.80% taker. Kraken charged your real fee: see Kraken Pro.');
+  }
   document.title = head + ' · Order chaser';
 }
 

@@ -20,6 +20,8 @@ create table if not exists event (
 create index if not exists event_chase on event(chase_id, seq);
 create table if not exists leg (
   id text primary key, chase_id text not null references chase(id));
+create table if not exists txid (
+  leg text primary key, txid text not null);
 create table if not exists setting (
   key text primary key, value text not null);
 create table if not exists sim_account (
@@ -96,6 +98,14 @@ class Db:
         else:
             self.cx.execute("insert into setting(key, value) values (?, ?) on conflict(key) do update set value=excluded.value",
                             (key, value))
+
+    def set_txid(self, leg: str, txid: str) -> None:
+        """Kraken's order id (txid) of a live leg (our cl_ord_id)."""
+        self.cx.execute("insert or replace into txid(leg, txid) values (?, ?)", (leg, txid))
+
+    def txids(self, chase_id: str) -> dict[str, str]:
+        rows = self.cx.execute("select t.leg, t.txid from txid t join leg l on l.id = t.leg where l.chase_id = ?", (chase_id,))
+        return {r[0]: r[1] for r in rows}
 
     def any_live(self) -> bool:
         """A live chase was started before (Q6: the first live order is marked one time)."""

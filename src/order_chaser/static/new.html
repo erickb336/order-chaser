@@ -23,8 +23,9 @@
       </div>
 
       <div class="field"><span class="f" id="modelabel">Mode</span>
-        <div class="seg lg" id="mode" role="group" aria-labelledby="modelabel"><button class="dry" type="button" aria-pressed="true">Dry run</button><button class="live" type="button" aria-pressed="false" disabled title="Live trading comes in a later version.">Live</button></div>
-        <div class="help" id="modehelp"><b style="color:var(--dry)">Dry run sends no orders.</b> It runs the chase on live public prices and simulates the fills. Live trading comes in a later version.</div>
+        <div class="seg lg" id="mode" role="group" aria-labelledby="modelabel"><button class="dry" data-m="dry" type="button" aria-pressed="true">Dry run</button><button class="live" data-m="live" id="livebtn" type="button" aria-pressed="false">Live</button></div>
+        <div class="help" id="modehelp"></div>
+        <div id="whatchanges"></div>
       </div>
 
       <div class="grid2">
@@ -95,6 +96,19 @@
     </aside>
   </div>
 </main>
+
+<div class="scrim hidden" id="confirm"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="ct" style="width:600px;max-width:100%">
+  <div class="row"><span class="badge live">LIVE</span><span id="firstbadge"></span></div>
+  <h2 id="ct" style="margin-top:10px">Send a real order to Kraken?</h2>
+  <div id="cfirst"></div>
+  <table class="kv" id="ctab"></table>
+  <div id="cother"></div>
+  <div class="note warn small" style="margin:12px 0"><b>Safety timer:</b> while the order rests, the tool renews a 60 s cancel-all on Kraken every 20 s. If the tool stops, Kraken cancels <b>all</b> your orders on all pairs, also stop-loss and take-profit orders.</div>
+  <p class="tiny muted" style="margin:0 0 12px">Your Mac stays awake until the chase ends. The other open orders are from Kraken, read at <span id="cread"></span>.</p>
+  <div id="ccheck"></div>
+  <div class="small" id="cmsg" role="status" aria-live="polite" style="margin-bottom:10px"></div>
+  <div class="row"><span class="spacer"></span><button class="btn" id="cno" type="button">Back</button><button class="btn livebtn" id="cyes" type="button">Start live chase</button></div>
+</div></div>
 
 <script src="/static/app.js"></script>
 <script src="/static/new.js"></script>

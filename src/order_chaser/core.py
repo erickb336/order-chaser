@@ -170,7 +170,8 @@ class Chase:
     pfeed_ok: bool = True             # live: the private feed of the fills is up
     queried_at: float | None = None   # live: the last REST read of the order while the private feed is lost
     found: str | None = None          # live, restart reconcile: "open" (the tool cancelled it), "timer" or "closed"
-    others_cancelled: tuple[str, ...] | None = None   # live: the other orders that the safety timer cancelled (C8)
+    others_cancelled: tuple[tuple[str, str, str], ...] | None = None   # live: (ordertype, pair, Kraken's text) of
+                                      # each other order that the safety timer cancelled (C8)
 
     @property
     def buy(self) -> bool:
@@ -322,7 +323,7 @@ class Reconciled:
     others: the other orders that the timer cancelled (C8); None when the timer did not fire or they were not read."""
     now: float
     found: str
-    others: tuple[str, ...] | None = None
+    others: tuple[tuple[str, str, str], ...] | None = None
 
 @dataclass(frozen=True)
 class OthersCancelled:
@@ -330,7 +331,7 @@ class OthersCancelled:
     take-profit orders first. None: the tool could not read them. Also after the chase ended."""
     now: float
     id: str
-    others: tuple[str, ...] | None
+    others: tuple[tuple[str, str, str], ...] | None
 
 @dataclass(frozen=True)
 class IocDone:
@@ -566,13 +567,13 @@ def _position_text(c: Chase) -> str:
     return f" Stays open: {stays}." if stays else " Position closed."
 
 
-def _others_text(others: tuple[str, ...] | None) -> str:
+def _others_text(others: tuple[tuple[str, str, str], ...] | None) -> str:
     if others is None:
         return "The tool could not read which other orders Kraken cancelled. Check them in Kraken Pro."
     if not others:
         return "Kraken cancelled no other order of the account."
     return (f"Kraken cancelled {len(others)} other order{'s' if len(others) > 1 else ''} of the account: "
-            f"{'; '.join(others)}. The tool does not place them again.")
+            f"{'; '.join(o[2] for o in others)}. The tool does not place them again.")
 
 
 def step(c: Chase, ev) -> tuple[Chase, list]:
@@ -1213,7 +1214,7 @@ def from_json(s: str) -> Chase:
     d.pop("order_cum", None)   # a field of the first build; the fills hold the venue's qty now
     d["gone_qty"] = Decimal(d.get("gone_qty", 0))   # absent in a state saved before this field
     if d.get("others_cancelled") is not None:
-        d["others_cancelled"] = tuple(d["others_cancelled"])
+        d["others_cancelled"] = tuple(tuple(o) for o in d["others_cancelled"])
     for k in ("qty", "limit", "start_bid", "start_ask"):
         d[k] = Decimal(d[k])
     for k in ("price", "pending", "bid", "ask", "end_ask", "reject_price"):

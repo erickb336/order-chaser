@@ -803,7 +803,7 @@ def test_a_slow_gateway_call_does_not_block_and_the_commands_go_out_in_order(set
 
     assert call(eng.start, "BTC/USD", "buy", D("0.05"), None, 120) == []
     assert (eng.chase.phase, sent) == ("placing", ["Place"])          # start returned while the Place waits
-    assert call(eng.user, "stop") is True                              # the user still reaches the core
+    assert call(eng.user, "stop") is None                              # the user still reaches the core
     assert sent == ["Place"]                                           # one call at a time: the next command waits
 
     async def open_gate():
@@ -850,3 +850,34 @@ def test_a_heartbeat_does_not_renew_the_age_of_the_book(setup):
     clock.t += 5
     call(f._handle, {"channel": "heartbeat"})
     assert (eng.book_at, client.get("/api/state").json()["feed"]["age"]) == (at, 5.0)
+
+
+@pytest.mark.parametrize("port", ["0", "65536", "-1", "80a", "99999"])
+def test_the_port_must_be_1_to_65535(port, monkeypatch, capsys):
+    import sys
+    from order_chaser import server
+    monkeypatch.setattr(sys, "argv", ["order-chaser", "--port", port])
+    with pytest.raises(SystemExit):
+        server.main()
+    assert "use a number from 1 to 65535" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("change", [
+    lambda d: d["positions"][0].update(dir="sideways"),
+    lambda d: d["positions"][0].update(pair="BTC/USD<script>"),
+    lambda d: d["positions"][0].update(qty="NaN"),
+    lambda d: d["positions"][0].update(entry="-5"),
+    lambda d: d.update(liquidation="yes"),
+])
+def test_a_saved_account_that_is_not_valid_gives_a_new_account_and_a_warning(tmp_path, change, caplog):
+    from order_chaser.sim import SimAccount
+    good = {"cash": "4000", "allowance": "5000", "liquidation": None, "positions": [
+        {"pair": "BTC/USD", "dir": "long", "ref": "oc1", "qty": "0.05", "entry": "62000", "margin": "1000",
+         "leverage": 3, "opened": 1.0, "stop": 40}]}
+    assert SimAccount.from_json(json.dumps(good)).positions[0]["qty"] == D("0.05")
+    change(good)
+    db = Db(tmp_path)
+    db.save_account(json.dumps(good))
+    guard = create_app(tmp_path, connect=False, latency=0)
+    assert guard.app.state.engine.gw.account.positions == []
+    assert "The saved simulated account is not valid. Margin dry runs start with a new account of 5,000 USD." in caplog.messages

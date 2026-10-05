@@ -92,12 +92,23 @@ function actions(st, c, snap) {
   else if (st !== 'fallback' && st !== 'stopping') a.push('<span class="spacer"></span><span class="small muted">You can close this page. The browser asks "Leave this page?" first. The tool keeps the chase.</span>');
   $('actions').innerHTML = a.join(' ');
   if ($('stop')) $('stop').onclick = () => openStop(c);
-  if ($('fillnow')) $('fillnow').onclick = async () => { $('fillnow').disabled = true; await OC.post('/api/chase/fillnow'); };
+  if ($('fillnow')) $('fillnow').onclick = async () => { $('fillnow').disabled = true; ignored(await OC.post('/api/chase/fillnow'), 'Fill the rest now'); };
+}
+
+// The tool ignored Stop or Fill the rest now: say so, with its reason.
+function ignored(r, what) {
+  $('ignored').classList.toggle('hidden', r.ok);
+  if (!r.ok) $('ignored').innerHTML = `<b>The tool ignored "${what}".</b> ${OC.esc(r.data.reason || (r.data.errors || []).join(' '))}`;
+  if ($('fillnow')) $('fillnow').disabled = false;
 }
 
 function draw(c, snap, st, ageOff) {
   $('none').classList.add('hidden'); $('main').classList.remove('hidden');
-  $('card').innerHTML = OC.card(st, c, snap, ageOff);
+  OC.setMode(c.mode === 'live');
+  $('lognote').textContent = c.mode === 'live' ? 'Live: each event above is from Kraken: its answers, the private feed of your fills, and its order states.'
+    : 'Dry run: each event above is simulated. A simulated order fills only when a public trade prints through your price, or when the other side of the public book comes to your price.';
+  $('ratedry').classList.toggle('hidden', c.mode === 'live');
+  $('card').innerHTML = OC.card(st, c, snap, ageOff) + OC.livePanel(c);
   $('log').innerHTML = OC.eventLog(c);
   side(c, snap);
   // Screen readers hear the state when its title changes, not each rebuild of the card.
@@ -117,7 +128,7 @@ OC.stream(snap => {
   const st = OC.stateOf(c, snap.now);
   draw(c, snap, st, 0);
   if (wasActive === true && !active && 'Notification' in window && Notification.permission === 'granted') {
-    new Notification('Order chaser: ' + OC.copy(st, c, snap, 0).title, { body: `${OC.qty(c.filled)} of ${OC.qty(c.qty)} ${c.pair.base} filled (dry run).` });
+    new Notification('Order chaser: ' + OC.copy(st, c, snap, 0).title, { body: `${OC.qty(c.filled)} of ${OC.qty(c.qty)} ${c.pair.base} filled (${c.mode === 'live' ? 'live' : 'dry run'}).` });
   }
   wasActive = active;
 }, (snap, age) => {
@@ -127,6 +138,7 @@ OC.stream(snap => {
 window.addEventListener('beforeunload', e => { if (current && current.phase !== 'done') { e.preventDefault(); e.returnValue = ''; } });
 // The Stop dialog: modal, focus inside, Escape closes, the page behind is inert.
 function openStop(c) {
+  $('stopvenue').textContent = c.mode === 'live' ? 'Kraken' : 'the simulated exchange';
   $('stopq').textContent = OC.qty(c.filled) + ' ' + c.pair.base;
   $('stopm').classList.toggle('hidden', !c.margin);
   if (c.margin) $('stopm').innerHTML = c.margin.close ? '<b>Margin:</b> the part that did not close stays open as a position.'
@@ -148,4 +160,4 @@ $('stopdlg').addEventListener('keydown', e => {
   }
 });
 $('stopno').onclick = () => closeStop($('stop') || $('card'));
-$('stopyes').onclick = async () => { closeStop($('card')); await OC.post('/api/chase/stop'); };
+$('stopyes').onclick = async () => { closeStop($('card')); ignored(await OC.post('/api/chase/stop'), 'Stop'); };

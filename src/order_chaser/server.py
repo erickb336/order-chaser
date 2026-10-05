@@ -81,8 +81,7 @@ class Engine:
     def __init__(self, db: Db, clock=time.time, latency: float = 0.15, rate_start: float = 0.0,
                  refuse_margin_amends: bool = False) -> None:
         self.db, self.clock, self.latency = db, clock, latency
-        saved = db.load_account()
-        self.gw = SimGateway(SimAccount.from_json(saved) if saved else None)
+        self.gw = SimGateway(self._saved_account())
         self.gw.refuse_margin_amends = refuse_margin_amends
         self.account: dict | None = None      # the last read of the (simulated) account and positions
         self.account_due = False              # a fill came after the last read
@@ -107,6 +106,16 @@ class Engine:
         self.blocked: str | None = None         # why no live chase can start now (the restart reconcile is not done)
         self.restart: core.Chase | None = None  # the live chase of the last stop, until the restart reconcile ends it
         self.reading = {"attempt": 0, "next_in": 0, "error": None}   # the restart reconcile's tries
+
+    def _saved_account(self) -> SimAccount | None:
+        """The simulated account of the dry run; None (a new account) when the row is not a valid account."""
+        saved = self.db.load_account()
+        try:
+            return SimAccount.from_json(saved) if saved else None
+        except (ValueError, KeyError, TypeError, AttributeError):
+            logging.getLogger("order_chaser").warning(
+                "The saved simulated account is not valid. Margin dry runs start with a new account of 5,000 USD.")
+            return None
 
     # ----- start of the tool -----
     def end_unfinished(self) -> None:
@@ -248,13 +257,14 @@ class Engine:
             why.append("Answer Setup, step 2: does another bot or API tool use this Kraken account?")
         elif a["answer"] == "yes":
             why.append("Setup, step 2: use a Kraken sub-account for this tool. Live chases stay off until you confirm it.")
-        if k is None:
+        if k is None or k.get("verdict") == "withdraw":
             why.append("Save a Kraken API key in Setup, step 3.")
         elif k.get("verdict") != "ok":
             why.append("Test the Kraken API key in Setup, step 3. It must pass.")
         if self.blocked:
             why.append(self.blocked)
-        return {"account": a, "key": k, "ready": not why, "why": why, "first": not self.db.any_live()}
+        return {"account": a, "key": k, "ready": not why, "why": why, "first": not self.db.any_live(),
+                "unlocked": self.kgw is not None and self.kgw.rest.key is not None}   # Q9: macOS asked this start
 
     async def live_check(self, symbol: str) -> dict:
         """The checks before a live start: Setup, live prices, the key (macOS asks one time at each start, Q9),
@@ -333,11 +343,27 @@ class Engine:
         return {**core.plan_words(parts, qty, pair, now), "level_now": acc.level(now),
                 "level_after": core.close_preview(parts, qty, acc.equity(now), acc.used(), mark and mark[0])}
 
-    def user(self, action: str) -> bool:
+    def user(self, action: str) -> str | None:
+        """Stop or Fill the rest now. None: done; else the reason why the tool ignored it (the page shows it)."""
         if not self.active:
-            return False
-        self.handle(core.UserStop(self.clock()) if action == "stop" else core.UserFillNow(self.clock()))
-        return True
+            return "No chase runs now."
+        before = self.chase
+        stop = action == "stop"
+        self.handle(core.UserStop(self.clock()) if stop else core.UserFillNow(self.clock()))
+        if self.chase.exit == ("stop" if stop else "fillnow") and before.exit != self.chase.exit or self.chase.phase == "done" and before.phase != "done":
+            return None
+        c = before
+        if c.phase == "ioc":
+            return "The IOC for the rest is at Kraken now. It ends the chase in a moment."
+        if c.exit == "stop":
+            return "Stop is already under way: the tool is cancelling the order."
+        if c.exit in core.GONE:
+            return "The position is gone. The chase ends now."
+        if c.exit is not None:
+            return "The chase already ends: the tool cancels the order and fills the rest with one IOC."
+        if not stop and c.phase == "feed_lost":
+            return "The price feed is lost, so there is no valid price for the IOC. Stop the chase, or wait for the feed."
+        return "The tool cannot do that in this state of the chase."
 
     def handle(self, ev) -> None:
         was = self.chase.phase
@@ -424,6 +450,11 @@ class Engine:
             d["open_now"] = any(p["ref"] in ids for p in self.gw.account.positions)
         if c.phase != "done":
             d["rate"] = max(0.0, c.rate - (self.clock() - c.rate_at))
+        if not c.dry:
+            d["txids"] = self.db.txids(c.id)
+        if not c.dry and c.phase != "done" and self.kgw.chase is c:
+            d["timer"] = dict(self.kgw.timer)
+            d["awake"] = self.kgw.awake is not None
         return d
 
     def snapshot(self) -> dict:
@@ -504,7 +535,7 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
     store = keys.KeyStore()
     kraken = rest.KrakenRest(None, httpx.AsyncClient(transport=kraken_transport, timeout=10), url=kraken_url)
     eng.kgw = KrakenGateway(kraken, store.read, kraken_ws, clock, awake_cmd)
-    eng.kgw.on_event, eng.kgw.on_link = eng.on_private, eng.on_private_link
+    eng.kgw.on_event, eng.kgw.on_link, eng.kgw.on_txid = eng.on_private, eng.on_private_link, db.set_txid
     page_cache: dict[str, str] = {}
     watched_at = [float("-inf")]
 
@@ -612,8 +643,8 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         return await eng.start_live(pair, what, qty, limit, timeout)
 
     async def action(request: Request):
-        ok = eng.user(request.url.path.rsplit("/", 1)[1])
-        return JSONResponse({"ok": ok}, status_code=200 if ok else 409)
+        why = eng.user(request.url.path.rsplit("/", 1)[1])
+        return JSONResponse({"ok": why is None, "reason": why}, status_code=200 if why is None else 409)
 
     async def one(request: Request):
         got = db.get(request.path_params["id"])
@@ -748,7 +779,7 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
             except Exception:
                 key_state(saved=eng.clock(), tested=eng.clock(), verdict="withdraw", permissions=p.on)
                 return JSONResponse({"errors": [WITHDRAW_NOT_REMOVED]}, status_code=503)
-            key_state()
+            key_state(saved=None, tested=eng.clock(), verdict="withdraw", permissions=p.on)   # the page says why
         else:
             saved = (eng.setup_state()["key"] or {}).get("saved", eng.clock())
             key_state(saved=saved, tested=eng.clock(), verdict=p.verdict, permissions=p.on)
@@ -803,9 +834,16 @@ async def _pairs_loop(eng: Engine) -> None:
             await asyncio.sleep(30)
 
 
+def _port(v: str) -> int:
+    """--port: a whole number from 1 to 65535."""
+    if not re.fullmatch(r"[0-9]{1,5}", v) or not 1 <= int(v) <= 65535:
+        raise argparse.ArgumentTypeError(f"{v!r} is not a port: use a number from 1 to 65535")
+    return int(v)
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser(prog="order-chaser", description="Kraken order chaser (dry run only) on http://127.0.0.1:5180")
-    ap.add_argument("--port", type=int, default=PORT, help="port on 127.0.0.1 (default: 5180)")
+    ap = argparse.ArgumentParser(prog="order-chaser", description="Kraken order chaser (dry run and live) on http://127.0.0.1:5180")
+    ap.add_argument("--port", type=_port, default=PORT, help="port on 127.0.0.1, 1 to 65535 (default: 5180)")
     ap.add_argument("--data-dir", type=Path, default=Path(os.environ.get("ORDER_CHASER_DATA", DEFAULT_DIR)),
                     help="folder for the SQLite file (default: ~/Library/Application Support/order-chaser)")
     ap.add_argument("--rate-start", type=float, default=0.0,
@@ -819,7 +857,7 @@ def main() -> None:
         lock = lock_folder(a.data_dir)  # noqa: F841  (held until the process ends)
     except BlockingIOError:
         raise SystemExit(f"Another order chaser runs on {a.data_dir}. Stop it first.")
-    print(f"Order chaser (DRY RUN: no real orders) on http://{HOST}:{a.port}  data: {a.data_dir}")
+    print(f"Order chaser on http://{HOST}:{a.port}  data: {a.data_dir}  (a chase is a dry run unless you choose Live)")
     # A short graceful shutdown: an open page (SSE) must not keep a stopped tool alive.
     uvicorn.run(create_app(a.data_dir, rate_start=a.rate_start, port=a.port, refuse_margin_amends=a.refuse_margin_amends), host=HOST, port=a.port, log_level="warning",
                 timeout_graceful_shutdown=2)

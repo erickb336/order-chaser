@@ -12,10 +12,11 @@
     <div>
       <div id="card" tabindex="-1"></div>
       <div class="row" id="actions" style="margin:14px 0 18px"></div>
+      <div class="note warn small ignored hidden" id="ignored" role="alert" style="margin:0 0 14px"></div>
       <div class="card">
         <div class="row"><h2 style="margin:0">What the tool did</h2><span class="spacer"></span><span class="small muted">Newest first</span></div>
         <div id="log" style="margin-top:8px"></div>
-        <p class="tiny muted" style="margin:8px 0 0">Dry run: each event above is simulated. A simulated order fills only when a public trade prints through your price, or when the other side of the public book comes to your price.</p>
+        <p class="tiny muted" id="lognote" style="margin:8px 0 0">Dry run: each event above is simulated. A simulated order fills only when a public trade prints through your price, or when the other side of the public book comes to your price.</p>
       </div>
     </div>
     <aside class="side">
@@ -52,7 +53,7 @@
         <h3 id="ratehead">Rate counter, estimated</h3>
         <div class="meter"><span id="ratetext"></span><span class="num" id="ratenum"></span><div class="bar"><i id="ratebar"></i></div></div>
         <div class="small" style="margin-top:8px">Maximum: <b>60 (lowest tier assumed)</b></div>
-        <p class="tiny muted" style="margin:6px 0 0">Kraken does not show this counter. The tool estimates it from its own orders. It falls by 1 each second. Above 40, or after an "EOrder:Rate limit exceeded" reject, the tool amends only every 15 s, so that a cancel stays possible. In a dry run the tool counts the simulated orders.</p>
+        <p class="tiny muted" style="margin:6px 0 0">Kraken does not show this counter. The tool estimates it from its own orders. It falls by 1 each second. Above 40, or after an "EOrder:Rate limit exceeded" reject, the tool amends only every 15 s, so that a cancel stays possible. <span id="ratedry">In a dry run the tool counts the simulated orders.</span></p>
       </div>
     </aside>
   </div>
@@ -60,7 +61,7 @@
 
 <div class="scrim hidden" id="stopdlg"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="stoptitle" aria-describedby="stopdesc">
   <h2 id="stoptitle">Stop this chase?</h2>
-  <p id="stopdesc">The tool cancels your order and waits for the simulated exchange to confirm. You keep what filled: <b class="num" id="stopq"></b>. The rest does not fill.</p>
+  <p id="stopdesc">The tool cancels your order and waits for <span id="stopvenue">the simulated exchange</span> to confirm. You keep what filled: <b class="num" id="stopq"></b>. The rest does not fill.</p>
   <p class="small hidden" id="stopm"></p>
   <div class="row"><span class="spacer"></span><button class="btn" id="stopno">Keep chasing</button><button class="btn danger" id="stopyes">Stop and cancel</button></div>
 </div></div>
