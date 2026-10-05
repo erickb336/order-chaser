@@ -147,36 +147,35 @@ def test_a_lost_link_subscribes_again_with_a_new_token_and_the_backoff_restarts_
 AWAKE = ["/bin/sh", "-c", "sleep 30", "sh"]   # stands in for caffeinate -i (it gets "-w <pid>" as $1 $2)
 
 
-def test_the_gateway_maps_margin_orders_a_refused_margin_amend_and_an_unknown_order(fake, tmp_path):
-    c, cmds = core.begin(ID, PAIR, "buy", D("0.05"), D("62417.9"), D("62418.5"), 120, 1000.0, core.LIVE_VENUE,
-                         margin=core.Margin(3))
-    fake.refuse_amend = "EOrder:Invalid arguments"
+def test_the_gateway_sends_a_spot_order_and_refuses_a_margin_order_with_no_call_to_kraken(fake, tmp_path):
+    # R7: live is spot only. A margin command never reaches Kraken, also not as a spot order.
     from order_chaser.kraken import KrakenGateway
+    fake.refuse_amend = "EOrder:Invalid arguments"
 
     async def run():
         async with httpx.AsyncClient() as http:
             gw = KrakenGateway(rest.KrakenRest(KEY, http, url=fake.url), fake.ws_url, lambda: 1000.0, AWAKE)
-            gw.chase = c
+            gw.chase = chase()
             await gw.open()
-            place = [x for x in cmds if isinstance(x, core.MarginPlace)][0]
-            placed = await gw.send(place, 1000.0)
-            amended = await gw.send(core.Amend(ID, D("62418.0")), 1001.0)
-            unknown = await gw.send(core.Query("ocnever0000001"), 1002.0)
+            out = {}
+            for name, cmd in (("margin place", core.MarginPlace(ID, "buy", D("62417.9"), D("0.05"), 3, False)),
+                              ("margin ioc", core.MarginIoc(ID + "-i", "buy", D("62418.5"), D("0.05"), 3, True))):
+                try:
+                    out[name] = await gw.send(cmd, 1000.0)
+                except TypeError:
+                    out[name] = "TypeError"
+            out["spot place"] = await gw.send(core.Place(ID, "buy", D("62417.9"), D("0.05")), 1000.0)
+            out["amend"] = await gw.send(core.Amend(ID, D("62418.0")), 1001.0)
+            out["unknown"] = await gw.send(core.Query("ocnever0000001"), 1002.0)
             await gw.send(core.Cancel(ID), 1003.0)
             await gw.close()
-            return placed, amended, unknown
-    placed, amended, unknown = asyncio.run(run())
-    assert placed == [core.Placed(1000.0)]
-    assert fake.calls_of("AddOrder")[0] | {} == {"ordertype": "limit", "type": "buy", "volume": "0.05", "price": "62417.9",
-                                                 "pair": "XBTUSD", "cl_ord_id": ID, "oflags": "post", "leverage": "3"}
-    assert amended == [core.Rejected(1000.0, "amend", "EOrder:Invalid arguments")]
-    assert unknown == [core.OrderState(1000.0, False, D(0), None, "ocnever0000001")]
-    # The core takes the refusal of a margin amend: cancel and replace for the rest of the chase.
-    c, _ = core.step(c, core.Placed(1000.0))
-    c = __import__("dataclasses").replace(c, phase="amending", pending=D("62418.0"))
-    c, out = core.step(c, amended[0])
-    assert c.replace is True
-    assert fake.calls_of("CancelAllOrdersAfter") == [{"timeout": "60"}, {"timeout": "0"}]
+            return out
+    out = asyncio.run(run())
+    assert out == {"margin place": "TypeError", "margin ioc": "TypeError", "spot place": [core.Placed(1000.0)],
+                   "amend": [core.Rejected(1000.0, "amend", "EOrder:Invalid arguments")],
+                   "unknown": [core.OrderState(1000.0, False, D(0), None, "ocnever0000001")]}
+    assert fake.calls_of("AddOrder") == [{"ordertype": "limit", "type": "buy", "volume": "0.05", "price": "62417.9",
+                                          "pair": "XBTUSD", "cl_ord_id": ID, "oflags": "post"}]
 
 
 def gateway(fake, http, clock=lambda: 1000.0):

@@ -187,8 +187,9 @@ def _reason(errors: list[str]) -> str:
 class KrakenGateway:
     """The live gateway: the core's commands to Kraken, Kraken's answers and reports back as the core's events.
 
-    - Place, Ioc (and their margin forms): REST AddOrder with our cl_ord_id; post-only for the chase, IOC at the cap;
-      leverage and reduce_only for margin. The IOC is read back at once (QueryOrders): Filled(cum), then IocDone.
+    - Place, Ioc: REST AddOrder with our cl_ord_id; post-only for the chase, IOC at the cap;
+      spot only (R7): a margin command is a TypeError and sends nothing. The IOC is read back at once
+      (QueryOrders): Filled(cum), then IocDone.
     - Amend: WebSocket v2 amend_order by cl_ord_id. A refusal goes to the core, which decides (margin: cancel and
       replace). Cancel: REST CancelOrder. Query: REST QueryOrders by the txid of AddOrder's answer (Kraken needs it);
       "unknown order", or a leg that Kraken refused (no txid), is OrderState(open False, cum 0). An open order always
@@ -366,9 +367,9 @@ class KrakenGateway:
         error) gives core.NoAnswer, so that the chase ends in a clear state and the queue goes on."""
         try:
             try:
-                if isinstance(cmd, core.Ioc):
+                if type(cmd) is core.Ioc:              # R7: live is spot only; MarginIoc and MarginPlace raise
                     return await self._ioc(cmd)
-                if isinstance(cmd, core.Place):
+                if type(cmd) is core.Place:
                     return await self._place(cmd)
                 if isinstance(cmd, core.Amend):
                     return await self._amend(cmd)
@@ -399,10 +400,6 @@ class KrakenGateway:
         p = {"ordertype": "limit", "type": cmd.side, "volume": str(cmd.qty), "price": str(cmd.price),
              "pair": pair.rest or pair.symbol.replace("/", ""), "cl_ord_id": cmd.id}
         p.update({"timeinforce": "IOC"} if ioc else {"oflags": "post"})
-        if isinstance(cmd, (core.MarginPlace, core.MarginIoc)):
-            p["leverage"] = str(cmd.leverage)
-            if cmd.reduce_only:
-                p["reduce_only"] = "true"
         return p
 
     async def _add(self, cmd, ioc: bool) -> list:

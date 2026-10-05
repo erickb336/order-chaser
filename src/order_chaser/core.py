@@ -385,13 +385,13 @@ class Ioc:
 @dataclass(frozen=True)
 class MarginPlace(Place):
     """A post-only margin order: the first leg, or a new leg of a cancel and replace.
-    Live (T4): REST AddOrder with leverage and reduce_only; its amend and cancel go by cl_ord_id on WS v2."""
+    Dry run only: live is spot only (R7)."""
     leverage: int
     reduce_only: bool
 
 @dataclass(frozen=True)
 class MarginIoc(Ioc):
-    """The IOC of a margin chase. Live (T4): REST AddOrder with leverage and reduce_only."""
+    """The IOC of a margin chase. Dry run only: live is spot only (R7)."""
     leverage: int
     reduce_only: bool
 
