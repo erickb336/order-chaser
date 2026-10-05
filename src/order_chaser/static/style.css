@@ -286,6 +286,9 @@ table.t tr.click:hover td { background: var(--surface-2); }
   .top .spacer { flex-basis: 100%; height: 0; }
   .nav a { display: inline-flex; align-items: center; min-height: 44px; }
   .row { flex-wrap: wrap; }
+  /* A dialog (the live confirm sets width 600px) fits the window less the 16 px gutters: the grid track no longer takes its width. */
+  .scrim { grid-template-columns: minmax(0, 1fr); padding: 0 16px; }
+  .scrim .modal { padding: 16px; }
   .card { padding: 16px; }
   .btn, .seg button, select.input { min-height: 44px; }
   .btn { white-space: normal; }    /* a long label ("Chase the rest (0.49846501 BTC), new cap") wraps in its button */

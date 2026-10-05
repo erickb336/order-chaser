@@ -164,6 +164,7 @@ class Tool:
 
 @pytest.fixture
 def tool(tmp_path):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     shots = Path(os.environ.get("OC_SHOTS", tmp_path / "shots"))
     shots.mkdir(parents=True, exist_ok=True)
     t = Tool(tmp_path, shots)
@@ -1261,6 +1262,7 @@ def live_tool(tmp_path, fake, ready=True):
     """The tool with the fake Kraken. ready: Setup is complete (account answered, the key saved and tested)."""
     from fake_kraken import API, SECRET
     from order_chaser import keys
+    tmp_path.mkdir(parents=True, exist_ok=True)
     shots = Path(os.environ.get("OC_SHOTS", tmp_path / "shots"))
     shots.mkdir(parents=True, exist_ok=True)
     if ready:
@@ -1527,4 +1529,71 @@ def test_page_the_t44_states_fit_a_375_px_phone(tool):
     assert got["note"].startswith("First order placed again: 1 time.")
     pages = ["/chase placeagain", "/result again"]
     assert {p: got[p] for p in pages} == {p: {"scroll": 375, "wide": [], "cut": [], "split": []} for p in pages}
+    assert {p: got[p + " contrast"]["c"] >= 4.5 for p in pages} == {p: True for p in pages}
+
+
+def test_page_the_t4_live_pages_fit_a_375_px_phone(tmp_path, fake):
+    # T4 at phone width, with the fake Kraken and the memory keyring (sample data, no real key).
+    from fake_kraken import API, SECRET
+    fit = lambda name: [{"eval": f"({WIDTH_JS})(null)", "as": name}, {**ALL_TEXT, "as": name + " contrast"},
+                        {"shot": f"phone-live-{name.strip('/').replace(' ', '-')}.png"}]
+    fake.add_other("stop-loss", "XETHZUSD", "sell 0.4 ETHUSD @ stop loss 2310.00")
+    fake.add_other("take-profit", "XETHZUSD", "sell 0.4 ETHUSD @ take profit 2780.00")
+    fake.add_other("limit", "SOLUSD", "buy 12 SOLUSD @ limit 138.50")
+    got = {}
+    t = live_tool(tmp_path, fake, ready=False)
+
+    def renew():
+        t.beat(21)
+        t.call(t.eng.tick)
+    try:                                                          # Setup, the live confirm and a live chase that renews the timer
+        got |= t.look([{"viewport": [375, 812]},
+                       {"goto": "/setup"}, {"waitFor": "document.getElementById('ano')"}, *fit("/setup account question"),
+                       {"click": "#ano"}, {"waitFor": "!document.getElementById('keyform').classList.contains('hidden')"},
+                       *fit("/setup key fields"),
+                       {"fill": ["#k1", API]}, {"fill": ["#k2", SECRET]}, {"click": "#save"},
+                       {"waitFor": "OC.$('bK').textContent === 'Ready'"}, *fit("/setup key tested"),
+                       {"goto": "/new"}, {"waitFor": "!OC.$('livebtn').disabled && !OC.$('start').disabled"},
+                       {"click": "#livebtn"}, *fit("/new live"),
+                       {"click": "#start"}, {"waitFor": "!OC.$('confirm').classList.contains('hidden')"}, *fit("/new live confirm"),
+                       {"eval": "(r => r.right <= innerWidth)(OC.$('cyes').getBoundingClientRect())", "as": "confirm button in width"},
+                       {"click": "#okothers"}, {"click": "#okfirst"}, {"click": "#cyes"},
+                       {"waitFor": "location.pathname === '/chase' && document.getElementById('timerline')"},
+                       {"signal": "renew"}, {"waitFor": "/Renewed at/.test(OC.$('timerline').textContent)"}, *fit("/chase live renewing")],
+                      on={"renew": renew})
+    finally:
+        t.stop()
+    t2 = live_tool(tmp_path / "fired", fake)
+
+    def fire():
+        t2.beat(61)
+        t2.eng.kgw.timer["deadline"] = t2.clock.t - 1
+        fake.run(fake.fire_timer)
+    try:                                                          # the timer fired: the list of the orders that Kraken cancelled
+        assert t2.call(t2.eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
+        got |= t2.look([{"viewport": [375, 812]}, {"goto": "/chase"}, {"waitFor": "document.getElementById('timerline')"},
+                        {"signal": "fire"}, card_shown("timer"), {"waitFor": "document.getElementById('othersgone')"},
+                        *fit("/chase timer fired")], on={"fire": fire})
+        cid = t2.eng.chase.id
+    finally:
+        t2.stop()
+    t3 = live_tool(tmp_path / "rec", fake)                        # reconcile: a live chase, a fill the tool does not see, a stop
+    assert t3.call(t3.eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
+    cid = t3.eng.chase.id
+    t3.look([{"goto": "/chase"}, card_shown("resting"), {"signal": "fill"}],
+            on={"fill": lambda: fake.run(fake.fill, cid, "0.018", None, False)})
+    t3.stop()
+    fake.rest_down = True
+    t3 = live_tool(tmp_path / "rec", fake, ready=False)
+    try:
+        got |= t3.look([{"viewport": [375, 812]},
+                        {"goto": "/"}, {"waitFor": "document.querySelector('#statuscard[data-state=\"cantread\"]')"}, *fit("/reconcile cannot read"),
+                        {"signal": "back"}, {"waitFor": "document.querySelector('#statuscard[data-state=\"open\"]')", "timeout": 20000},
+                        *fit("/reconcile found open")], on={"back": lambda: setattr(fake, "rest_down", False)})
+    finally:
+        t3.stop()
+    pages = ["/setup account question", "/setup key fields", "/setup key tested", "/new live", "/new live confirm",
+             "/chase live renewing", "/chase timer fired", "/reconcile cannot read", "/reconcile found open"]
+    assert {p: got[p] for p in pages} == {p: {"scroll": 375, "wide": [], "cut": [], "split": []} for p in pages}
+    assert got["confirm button in width"] is True
     assert {p: got[p + " contrast"]["c"] >= 4.5 for p in pages} == {p: True for p in pages}
