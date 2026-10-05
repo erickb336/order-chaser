@@ -129,7 +129,8 @@ class Permissions:
 
 
 async def _probe(rest: KrakenRest, method: str, params: dict, unknown_means_on: bool = False) -> bool:
-    """True: the key has the permission. False: Kraken said "Permission denied". Raises on any other error."""
+    """True: the key has the permission. False: Kraken said "Permission denied". Raises on any other error
+    (a service error, the rate limit): the test could not check."""
     try:
         await rest.call(method, **params)
         return True
@@ -138,8 +139,8 @@ async def _probe(rest: KrakenRest, method: str, params: dict, unknown_means_on: 
             return False
         if unknown_means_on and "EOrder:Unknown order" in e.errors:   # C2: CancelOrder passed the permission check
             return True
-        if method == "AddOrder" and not any(x.startswith("EAPI:") for x in e.errors):
-            return True       # validate: an order error comes after the permission check
+        if method == "AddOrder" and all(x.startswith("EOrder:") for x in e.errors):
+            return True       # validate: an order error comes after the permission check; any other error: not known
         raise
 
 

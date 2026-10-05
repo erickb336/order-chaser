@@ -81,6 +81,16 @@ def test_c2_another_cancel_error_is_not_read_as_on():
     assert (p.verdict, p.error, p.on["Cancel/Close Orders"]) == ("error", "EGeneral:Internal error", None)
 
 
+@pytest.mark.parametrize("error", ["EService:Unavailable", "EService:Busy", "EGeneral:Internal error",
+                                   "EGeneral:Invalid arguments"])
+def test_a_service_error_in_the_order_permission_test_means_could_not_check_not_on(error):
+    """PERM-TEST-SERVICE-ERROR-MEANS-ON: only an order error (EOrder:...) comes after Kraken's permission check."""
+    p, _ = check({**OK, "AddOrder": [error]})
+    assert (p.verdict, p.error, p.on["Modify Orders"]) == ("error", error, None)
+    p, _ = check({**OK, "AddOrder": ["EOrder:Insufficient funds"]})
+    assert (p.verdict, p.on["Modify Orders"]) == ("ok", True)
+
+
 def test_c1_without_query_funds_the_withdraw_test_is_not_run_and_the_key_is_not_usable():
     p, fake = check({**OK, "Balance": [rest.DENIED], "WithdrawMethods": {"x": 1}})
     assert (p.verdict, p.on["Query Funds"], p.on["Withdraw Funds"]) == ("nofunds", False, None)

@@ -1291,3 +1291,36 @@ def test_page_reconcile_says_why_new_live_chases_wait_then_what_it_found(tmp_pat
     assert "The tool blocks new live chases until it reads Kraken." in got["cant"]
     assert "Your order was still open on Kraken. The tool cancelled it." in got["found"] and "0.0180 of 0.0500 BTC (36%)" in got["found"]
     assert got["a1"]["c"] >= 4.5 and got["a2"]["c"] >= 4.5, (got["a1"], got["a2"])
+
+
+def test_page_setup_says_why_the_key_cannot_be_removed_while_a_live_chase_runs(tmp_path, fake, memory_keyring):
+    from order_chaser import keys
+    t = live_tool(tmp_path, fake)
+    try:
+        assert t.call(t.eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
+        got = t.look([{"goto": "/setup"}, {"waitFor": "document.getElementById('remove')"}, {"click": "#remove"},
+                      {"waitFor": "OC.$('keymsg').textContent.length > 0"}, {"shot": "live-setup-key-busy.png"},
+                      {"text": "#keymsg", "as": "msg"}, ALL_TEXT])
+    finally:
+        t.stop()
+    assert got["msg"] == "A live chase runs now. It uses the saved key. Change, test or remove the key when the chase ends."
+    assert list(memory_keyring.items) == [(keys.SERVICE, keys.ACCOUNT)]
+    assert got["all"]["c"] >= 4.5, got["all"]
+
+
+def test_page_a_kraken_text_with_html_shows_as_text(tmp_path, fake):
+    """KRAKEN-TEXT-UNESCAPED: Kraken's error text goes into the page as text, never as HTML."""
+    evil = 'EOrder:<img src=x id=pwn><a id=pwnlink href="https://evil.example">Re-enter your key</a>'
+    fake.errors["AddOrder"] = [evil]
+    t = live_tool(tmp_path, fake)
+    try:
+        assert t.call(t.eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
+        cid = t.eng.chase.id
+        got = t.look([{"goto": "/chase"}, card_shown("refused"), {"text": "#statuscard", "as": "card"},
+                      {"eval": "!!document.getElementById('pwn') || !!document.getElementById('pwnlink')", "as": "html"},
+                      {"goto": f"/result?id={cid}"}, {"waitFor": "document.body.innerText.includes('Re-enter your key')"},
+                      {"eval": "!!document.getElementById('pwn') || !!document.getElementById('pwnlink')", "as": "html2"}])
+    finally:
+        t.stop()
+    assert f"Kraken rejected the order: {evil}." in got["card"]
+    assert got["html"] is False and got["html2"] is False

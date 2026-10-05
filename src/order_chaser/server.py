@@ -54,6 +54,10 @@ FIRST_TICK_TEXT = "Tick the box for your first live order."
 BUSY_TEXT = "A chase runs now. You can start a new chase when it ends."
 TIMER_LEFT_TEXT = ("The safety timer can still be on: within 60 s Kraken cancels ALL open orders on this account, "
                    "also stop-loss and take-profit orders.")
+KEY_BUSY_TEXT = "A live chase runs now. It uses the saved key. Change, test or remove the key when the chase ends."
+NOFUNDS_NOT_REMOVED = ("This key does not have Query Funds, so the tool cannot check that it cannot withdraw. The tool "
+                       "refused it, but macOS did not let it remove the key. Delete the item \"Kraken API key "
+                       "(order-chaser)\" in Keychain Access.")
 STOP_TIMER_TEXT = ("The tool stopped during a live chase. The safety timer stays on: within 60 s Kraken cancels ALL "
                    "open orders on this account, also stop-loss and take-profit orders.")
 
@@ -265,7 +269,7 @@ class Engine:
             why.append("Answer Setup, step 2: does another bot or API tool use this Kraken account?")
         elif a["answer"] == "yes":
             why.append("Setup, step 2: use a Kraken sub-account for this tool. Live chases stay off until you confirm it.")
-        if k is None or k.get("verdict") == "withdraw":
+        if k is None or k.get("verdict") in ("withdraw", "nofunds"):
             why.append("Save a Kraken API key in Setup, step 3.")
         elif k.get("verdict") != "ok":
             why.append("Test the Kraken API key in Setup, step 3. It must pass.")
@@ -760,7 +764,15 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
 
     # ----- the Kraken API key (T4 U2): token + Origin guard (Guard), JSON only, never logged or sent back -----
 
+    def key_busy() -> JSONResponse | None:
+        """A live chase (or its start) uses the key in memory: no save, test or remove changes it under the chase."""
+        if eng.starting or eng.active and not eng.chase.dry:
+            return JSONResponse({"errors": [KEY_BUSY_TEXT]}, status_code=409)
+        return None
+
     async def key_save(request: Request):
+        if busy := key_busy():
+            return busy
         d = await body(request)
         key = keys.parse(d.get("api_key"), d.get("private_key"))
         if key is None:
@@ -774,6 +786,8 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         return JSONResponse({"saved": True})
 
     async def key_remove(request: Request):
+        if busy := key_busy():
+            return busy
         try:
             await asyncio.to_thread(store.remove)
         except Exception:
@@ -784,7 +798,9 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
 
     async def key_test(request: Request):
         """Test each permission of the saved key with calls that change nothing. A key that can withdraw is
-        removed from the Keychain at once (Q4)."""
+        removed from the Keychain at once (Q4). So is a key with Query Funds off: the tool cannot check it."""
+        if busy := key_busy():
+            return busy
         try:
             kraken.key = await asyncio.to_thread(store.read)
         except Exception:
@@ -794,15 +810,16 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
             return JSONResponse({"errors": ["No key is saved. Paste the key first."]}, status_code=409)
         p = await rest.check(kraken)
         removed = False
-        if p.verdict == "withdraw":
+        if p.verdict in ("withdraw", "nofunds"):
             kraken.key = None
             try:
                 await asyncio.to_thread(store.remove)
                 removed = True
             except Exception:
-                key_state(saved=eng.clock(), tested=eng.clock(), verdict="withdraw", permissions=p.on)
-                return JSONResponse({"errors": [WITHDRAW_NOT_REMOVED]}, status_code=503)
-            key_state(saved=None, tested=eng.clock(), verdict="withdraw", permissions=p.on)   # the page says why
+                key_state(saved=eng.clock(), tested=eng.clock(), verdict=p.verdict, permissions=p.on)
+                text = WITHDRAW_NOT_REMOVED if p.verdict == "withdraw" else NOFUNDS_NOT_REMOVED
+                return JSONResponse({"errors": [text]}, status_code=503)
+            key_state(saved=None, tested=eng.clock(), verdict=p.verdict, permissions=p.on)   # the page says why
         else:
             saved = (eng.setup_state()["key"] or {}).get("saved", eng.clock())
             key_state(saved=saved, tested=eng.clock(), verdict=p.verdict, permissions=p.on)

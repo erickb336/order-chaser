@@ -4,10 +4,10 @@ OC.chrome('reconcile');
 OC.setMode(true, 'LIVE: the tool checks a live chase that ran when the tool stopped.');
 const $ = OC.$;
 const id = new URLSearchParams(location.search).get('id');
-const name = c => `${OC.orderName(c)} · ${new Date(c.started * 1000).toLocaleTimeString('en-GB')}`;
+const name = c => `${OC.esc(OC.orderName(c))} · ${new Date(c.started * 1000).toLocaleTimeString('en-GB')}`;
 
 function render(c, reading) {
-  const B = c.pair.base, f = Number(c.filled), q = Number(c.qty), pct = OC.pct(f, q);
+  const B = OC.esc(c.pair.base), f = Number(c.filled), q = Number(c.qty), pct = OC.pct(f, q);
   const filled = `${OC.qty(f)} of ${OC.qty(q)} ${B} (${pct}%)`;
   let st, head, sub, row, tone, act;
   if (reading && reading.error) {

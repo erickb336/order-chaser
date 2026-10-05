@@ -55,7 +55,7 @@ function draw() {
   }
   // Step 3: the key.
   const v = k && k.verdict;
-  const showForm = !k || v === 'withdraw';
+  const showForm = !k || v === 'withdraw' || v === 'nofunds';
   $('keyform').classList.toggle('hidden', !showForm);
   const saved = '<b>Saved in your macOS Keychain. The tool never shows it again.</b>';
   let body = '', badge = '<span class="badge plain">Not set</span>', cls = 'cur', no = '3', acts = '';
@@ -63,7 +63,7 @@ function draw() {
   else if (!v) { body = `<p class="small" style="margin:8px 0 0">${saved} Saved ${when(k.saved)}. Not tested yet.</p>` + ALLOW; badge = '<span class="badge plain">Not tested</span>'; acts = 'test'; }
   else if (v === 'ok') { body = `<p class="small" style="margin:8px 0 0">${saved} The Keychain item is <span class="mono">Kraken API key (order-chaser)</span>. Saved ${when(k.saved)}. Tested ${when(k.tested)}.</p><p class="tiny muted" style="margin:4px 0 0">No page shows the key again, also not a part of it. To see or delete it, use Keychain Access.</p>` + ALLOW; badge = '<span class="badge ok">Ready</span>'; cls = 'done'; no = '✓'; acts = 'ok'; }
   else if (v === 'missing') { const off = PERMS.filter(p => p[0] === 'need' && k.permissions[p[1]] === false).map(p => p[1]).join(', '); body = `<div class="note bad small" style="margin-top:10px"><b>The key does not have ${OC.esc(off)}.</b> In Kraken Pro, edit the key and turn it on. Then click Test again. You do not paste the key again.</div>`; badge = '<span class="badge bad">Not usable</span>'; cls = 'bad'; no = '!'; acts = 'bad'; }
-  else if (v === 'nofunds') { body = '<div class="note bad small" style="margin-top:10px"><b>The key does not have Query Funds, so the tool cannot check that Withdraw Funds is off.</b> Without Query Funds, the Withdraw test fails for every key and proves nothing. The tool does not use the key. In Kraken Pro, edit the key and turn on Query Funds. Then click Test again.</div>'; badge = '<span class="badge bad">Not usable</span>'; cls = 'bad'; no = '!'; acts = 'bad'; }
+  else if (v === 'nofunds') { body = '<div class="note bad small" style="margin-top:10px"><b>The key does not have Query Funds, so the tool cannot check that Withdraw Funds is off. The tool refused it and removed it from the Keychain.</b> Without Query Funds, the Withdraw test fails for every key and proves nothing, and a key that can withdraw is too risky to keep on this Mac. In Kraken Pro, edit the key and turn on Query Funds. Then paste it here again.</div>'; badge = '<span class="badge bad">Refused</span>'; cls = 'bad'; no = '!'; }
   else if (v === 'withdraw') { body = '<div class="note bad small" style="margin-top:10px"><b>This key can withdraw funds. The tool refused it and removed it from the Keychain.</b> A key that can withdraw is too risky to keep on this Mac. In Kraken Pro, delete this key. Then create a new key without Withdraw Funds and paste it here.</div>'; badge = '<span class="badge bad">Refused</span>'; cls = 'bad'; no = '!'; }
   else { body = '<div class="note bad small" style="margin-top:10px"><b>The test did not finish.</b> Kraken answered with an error or did not answer. Click Test again.</div>'; badge = '<span class="badge bad">Not tested</span>'; cls = 'bad'; no = '!'; acts = 'bad'; }
   step('K', cls, no, badge);

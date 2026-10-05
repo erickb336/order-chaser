@@ -364,7 +364,7 @@ function copy(st, c, snap, ageOff) {
     case 'refused': {
       const last = c.events.filter(e => e.kind === 'bad').pop();
       t.title = 'Stopped: the order was rejected';
-      t.sub = (last ? last.text + ' ' : '') + 'Nothing filled. No order of yours rests on the simulated exchange.';
+      t.sub = (last ? esc(last.text) + ' ' : '') + 'Nothing filled. No order of yours rests on the simulated exchange.';
       break;
     }
     case 'cancelfail':

@@ -708,3 +708,36 @@ def test_while_a_read_retries_no_second_read_of_the_leg_waits_in_the_queue(live,
     fake.errors["QueryOrders"] = []
     wait_for(lambda: eng.sending is None)
     assert eng.chase.phase == "resting"
+
+
+def test_the_key_cannot_be_saved_tested_or_removed_while_a_live_chase_runs(live, fake, memory_keyring):
+    """KEY-CHANGE-DURING-LIVE-CHASE: the chase keeps the key that it started with; after its end the key can change."""
+    eng, f, clock, call, client = live
+    ready(client, f, call, fake)
+    assert call(eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
+    wait_for(lambda: eng.chase.phase == "resting")
+    busy = {"errors": ["A live chase runs now. It uses the saved key. Change, test or remove the key when the chase ends."]}
+    for path, body in (("/api/key/remove", None), ("/api/key", {"api_key": API, "private_key": SECRET}), ("/api/key/test", None)):
+        r = post(client, path, body)
+        assert (r.status_code, r.json()) == (409, busy)
+    assert list(memory_keyring.items) == [(keys.SERVICE, keys.ACCOUNT)] and eng.kgw.rest.key == KEY
+    assert post(client, "/api/chase/stop").status_code == 200
+    wait_for(lambda: eng.chase.phase == "done" and not eng.tasks)
+    assert fake.calls_of("CancelOrder") == [{"cl_ord_id": eng.chase.id}]    # the stop used the chase's key
+    assert post(client, "/api/key/remove").json() == {"removed": True} and memory_keyring.items == {}
+
+
+def test_a_key_with_query_funds_off_is_removed_from_the_keychain_like_a_key_that_can_withdraw(live, fake, memory_keyring,
+                                                                                              monkeypatch):
+    """WITHDRAW-UNKNOWN-KEY-KEPT: with Query Funds off, the tool cannot check Withdraw Funds, so it keeps no such key."""
+    from fake_kraken import KrakenRefusal
+
+    def denied(self, p):
+        raise KrakenRefusal("EGeneral:Permission denied")
+    monkeypatch.setattr(type(fake), "r_Balance", denied)
+    eng, f, clock, call, client = live
+    r = post(client, "/api/key/test").json()
+    assert (r["verdict"], r["removed"]) == ("nofunds", True)
+    assert memory_keyring.items == {} and eng.kgw.rest.key is None
+    assert "Save a Kraken API key in Setup, step 3." in eng.setup_state()["why"]
+    assert post(client, "/api/key/test").status_code == 409                  # no key is left to test
