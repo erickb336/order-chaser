@@ -1084,7 +1084,9 @@ def test_page_the_chase_page_after_a_restart_gives_one_number_for_the_gap(tool):
     got = tool.look([{"goto": "/chase"}, card_shown("ended"), {"eval": CARD, "as": "card"}, {"text": "#log", "as": "log"}])
     assert "The tool stopped and started again after 11 s off." in got["card"]
     assert "Tool started again after 11 s off." in got["log"]
-    assert " 0:09 " not in got["card"] + " " and "0:21" not in got["card"]
+    assert "ENDED: TOOL STOPPED OR RESTARTED · VALUES FROM BEFORE THE STOP" in got["card"]
+    assert "Prices: values from before the stop. There was no valid price at the end." in got["card"]
+    assert not any(f"{n} s" in got["card"].replace("11 s off", "") for n in range(1, 60)), got["card"]   # no other number of seconds
 
 
 def test_page_the_result_of_an_open_whose_position_closed_later_shows_no_present_costs(tool):

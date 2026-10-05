@@ -424,7 +424,9 @@ function card(st, c, snap, ageOff) {
   const now = done ? c.ended_at : st === 'pageoffline' ? lastNow + ageOff : snap ? snap.now : c.book_at;
   const age = c.book_at == null ? null : Math.max(0, Math.round(now - c.book_at));
   const stale = st === 'pageoffline' || st === 'disconnected' || (done && c.end_ask == null);
-  const ageText = age == null ? 'no valid values' : done ? `values from ${age} s before the end` : `values from ${age} s ago`;
+  // After a restart the gap has one number, in the text and the log: the prices are from before the stop.
+  const ageText = age == null ? 'no valid values' : st === 'ended' && c.off_from != null ? 'values from before the stop'
+    : done ? `values from ${age} s before the end` : `values from ${age} s ago`;
   let label = LABEL[st];
   if (c.margin && st === 'filled') label = !c.margin.close ? 'Position opened' : Number(c.margin_est.rest) > 0 ? 'Closed' : 'Position closed';
   if (c.margin && c.margin.close && st === 'partial') label = 'Partly closed';
