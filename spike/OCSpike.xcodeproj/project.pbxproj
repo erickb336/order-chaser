@@ -1,0 +1,179 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0C5A00000000000000000001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C5A00000000000000000002 /* main.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0C5A00000000000000000002 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		0C5A00000000000000000003 /* OCSpike.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OCSpike.entitlements; sourceTree = "<group>"; };
+		0C5A00000000000000000004 /* OCSpike.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OCSpike.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		0C5A00000000000000000010 = {
+			isa = PBXGroup;
+			children = (
+				0C5A00000000000000000011 /* OCSpike */,
+				0C5A00000000000000000012 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		0C5A00000000000000000011 /* OCSpike */ = {
+			isa = PBXGroup;
+			children = (
+				0C5A00000000000000000002 /* main.swift */,
+				0C5A00000000000000000003 /* OCSpike.entitlements */,
+			);
+			path = OCSpike;
+			sourceTree = "<group>";
+		};
+		0C5A00000000000000000012 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				0C5A00000000000000000004 /* OCSpike.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		0C5A00000000000000000020 /* OCSpike */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0C5A00000000000000000041 /* Build configuration list for PBXNativeTarget "OCSpike" */;
+			buildPhases = (
+				0C5A00000000000000000021 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OCSpike;
+			productName = OCSpike;
+			productReference = 0C5A00000000000000000004 /* OCSpike.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		0C5A00000000000000000030 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+			};
+			buildConfigurationList = 0C5A00000000000000000040 /* Build configuration list for PBXProject "OCSpike" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 0C5A00000000000000000010;
+			productRefGroup = 0C5A00000000000000000012 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				0C5A00000000000000000020 /* OCSpike */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		0C5A00000000000000000021 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0C5A00000000000000000001 /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		0C5A00000000000000000050 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		0C5A00000000000000000051 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		0C5A00000000000000000052 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = OCSpike/OCSpike.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				ENABLE_HARDENED_RUNTIME = YES;
+				EXECUTABLE_NAME = "oc-spike";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSUIElement = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.ocspike.helper";
+				PRODUCT_NAME = OCSpike;
+			};
+			name = Debug;
+		};
+		0C5A00000000000000000053 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = OCSpike/OCSpike.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Automatic;
+				ENABLE_HARDENED_RUNTIME = YES;
+				EXECUTABLE_NAME = "oc-spike";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSUIElement = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.ocspike.helper";
+				PRODUCT_NAME = OCSpike;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0C5A00000000000000000040 /* Build configuration list for PBXProject "OCSpike" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0C5A00000000000000000050 /* Debug */,
+				0C5A00000000000000000051 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		0C5A00000000000000000041 /* Build configuration list for PBXNativeTarget "OCSpike" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0C5A00000000000000000052 /* Debug */,
+				0C5A00000000000000000053 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 0C5A00000000000000000030 /* Project object */;
+}
