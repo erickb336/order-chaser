@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Mode switch · Order chaser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main class="app">
+  <h1>The switch from dry run to live: 3 options</h1>
+  <p class="muted" style="max-width:76ch">Where does the owner choose a live chase? Each option keeps the live confirm before Start. The options differ in where the choice is and how easy it is to send a live order by mistake. <b>Recommendation: A.</b> It is the form that the owner approved in T2 and T5, so it adds no new screen.</p>
+
+  <div class="cmp" style="margin-top:16px">
+    <div class="card"><h2>A. Per chase, on the form <span class="rec">Recommended</span></h2>
+      <div class="note plain small" style="margin:8px 0 12px">
+        <div class="f">Mode</div>
+        <div class="seg"><button class="dry">Dry run</button><button class="live" aria-pressed="true">Live</button></div>
+        <div class="help"><b style="color:var(--live)">Live sends real orders to Kraken.</b></div>
+      </div>
+      <ul class="small" style="padding-left:18px;margin:0 0 8px">
+        <li>The owner chooses for each chase. A dry run is one click away.</li>
+        <li>Live is off (crossed out) until setup is complete.</li>
+        <li>The first time the owner clicks Live, the form shows "What changes" once.</li>
+        <li>The form opens in Dry run each time. (Question Q1.)</li>
+      </ul>
+      <p class="small muted" style="margin:0">Against: a live chase is two clicks from the form (Live, Start) plus the confirm.</p>
+      <div class="row" style="margin-top:12px"><a class="btn sm" href="new.html#switch">Open A on the form</a></div>
+    </div>
+    <div class="card"><h2>B. Global switch in Setup</h2>
+      <div class="note plain small" style="margin:8px 0 12px">
+        <div class="f">Setup, step 4: Live trading</div>
+        <label class="check"><input type="checkbox" checked><div><b>Live trading on</b><div class="tiny muted">Every chase on the form is live.</div></div></label>
+      </div>
+      <ul class="small" style="padding-left:18px;margin:0 0 8px">
+        <li>One place to turn live on and off.</li>
+        <li>The form has no mode control. The top bar says LIVE or DRY RUN.</li>
+      </ul>
+      <p class="small muted" style="margin:0">Against: a dry run needs a trip to Setup and back. The owner can forget that live is on. It changes the approved form.</p>
+    </div>
+    <div class="card"><h2>C. Two Start buttons</h2>
+      <div class="note plain small" style="margin:8px 0 12px">
+        <div class="row"><button class="btn drybtn sm">Start dry run</button><button class="btn livebtn sm">Start live…</button></div>
+      </div>
+      <ul class="small" style="padding-left:18px;margin:0 0 8px">
+        <li>No mode to set. The button says what happens.</li>
+      </ul>
+      <p class="small muted" style="margin:0">Against: the two buttons sit side by side, so a mis-click is easy. The form cannot change its text (worst case, fees) before the click. It changes the approved form.</p>
+    </div>
+  </div>
+
+  <h2 style="margin-top:28px">What changes when a chase is live</h2>
+  <p class="small muted">The form shows this table the first time the owner chooses Live (option A), and the README keeps it.</p>
+  <div class="card" style="padding:8px 16px">
+  <table class="t chg">
+    <tr><th>Thing</th><th>Dry run</th><th>Live</th></tr>
+    <tr><td>Orders</td><td>Simulated. Nothing goes to Kraken.</td><td><b>Real orders on your Kraken account</b>, signed with the key from the Keychain.</td></tr>
+    <tr><td>Fills</td><td>Simulated from public trades.</td><td>From Kraken's private executions feed (fills, fees, maker or taker).</td></tr>
+    <tr><td>Fees</td><td>Estimated at the highest rates.</td><td>Real fees, charged by Kraken.</td></tr>
+    <tr><td>Safety timer</td><td>Off.</td><td>On while an order rests. If the tool stops, Kraken cancels <b>all</b> your orders in 60 s.</td></tr>
+    <tr><td>Your Mac</td><td>Can sleep.</td><td>Stays awake during the chase (the tool runs caffeinate). It can sleep again after the chase.</td></tr>
+    <tr><td>After a crash</td><td>The dry run ends. Nothing to check.</td><td>At restart, the tool reads Kraken and shows what happened to each order.</td></tr>
+    <tr><td>Colours</td><td>Purple, striped strip.</td><td>Orange strip and the LIVE badge on every page.</td></tr>
+  </table></div>
+</main>
+<script src="assets/proto.js"></script>
+<script>OC.chrome('mode', 'none');</script>
+</body></html>

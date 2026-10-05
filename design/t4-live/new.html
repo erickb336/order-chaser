@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>New chase · Order chaser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main class="app">
+  <div class="switcher" id="sw"></div>
+  <div id="strip" style="margin-bottom:16px"></div>
+  <div class="split">
+    <div class="card">
+      <h1 style="font-size:20px">New chase</h1>
+      <div class="field"><label class="f">Pair</label><div class="input" style="width:220px">BTC/USD</div></div>
+      <div class="field"><label class="f">What to do</label><div id="what"></div></div>
+      <div class="grid2">
+        <div class="field"><label class="f">Amount</label><div class="input num" id="amt">0.0500 BTC</div><div class="help" id="amthelp">Kraken minimum: 0.0001 BTC.</div></div>
+        <div class="field"><label class="f">Timeout</label><div class="input num">2 min</div><div class="help">Then one IOC at the cap for the rest.</div></div>
+      </div>
+      <div class="field"><label class="f">Mode</label>
+        <div class="seg lg" id="mode"><button class="dry" data-m="dry">Dry run</button><button class="live" data-m="live" id="livebtn">Live</button></div>
+        <div class="help" id="modehelp"></div>
+      </div>
+      <div id="whatchanges"></div>
+      <div class="row" style="margin-top:8px"><button class="btn" id="startbtn">Start</button><span class="small muted" id="starthelp"></span></div>
+    </div>
+    <aside class="side">
+      <div class="card"><h3>BTC/USD now <span class="sample" style="margin-left:6px">sample</span></h3>
+        <table class="kv"><tr><td class="muted">Best bid</td><td class="num tone-fill">62,410.20</td></tr><tr><td class="muted">Best ask = your cap</td><td class="num tone-bad">62,418.50</td></tr></table></div>
+      <div class="card" id="acct"></div>
+    </aside>
+  </div>
+</main>
+
+<div class="scrim hidden" id="confirm"><div class="modal" role="dialog" aria-labelledby="ct" style="width:580px">
+  <div class="row"><span class="badge live">LIVE</span><span id="firstbadge"></span></div>
+  <h2 id="ct" style="margin-top:10px">Send a real order to Kraken?</h2>
+  <div id="cfirst"></div>
+  <table class="kv" id="ctab"></table>
+  <div class="note warn small" style="margin:12px 0"><b>Safety timer:</b> while the order rests, the tool renews a 60 s cancel-all on Kraken every 20 s. If the tool stops, Kraken cancels <b>all</b> your orders on all pairs, also stop-losses.</div>
+  <p class="tiny muted" style="margin:0 0 12px">Your Mac stays awake until the chase ends. Your fee tier and balance are from Kraken, read at 09:52 (sample).</p>
+  <div id="ccheck"></div>
+  <div class="row"><span class="spacer"></span><button class="btn" id="cno">Back</button><button class="btn livebtn" id="cyes">Start live chase</button></div>
+</div></div>
+<script src="assets/proto.js"></script>
+<script>
+OC.chrome('new', 'dry');
+const $ = OC.$;
+const ORDER = [
+  ['dry', 'Dry run (form opens like this)', 'Spot'], ['nokey', 'Live off: setup not complete'], ['switch', 'First click on Live: what changes'], ['live', 'Live ready'],
+  ['confirm', 'Live confirm'], ['first', 'Live confirm: first live order'], ['starting', 'Starting (loading)'], ['refused', 'Failure: Kraken refused the order'],
+  ['m-confirm', 'Live confirm: margin open', 'Margin'], ['m-first', 'First live margin order'], ['m-close', 'Live confirm: margin close'],
+];
+const SPOT = [['Order', '<b>Buy 0.0500 BTC</b> on BTC/USD'], ['Cap (the ask now)', '<span class="num">62,418.50</span>. The tool never pays more.'], ['Timeout', '2 min, then one IOC at the cap for the rest'],
+  ['Worst case', '<b class="num">3,145.89 USD</b><div class="tiny muted">0.0500 × 62,418.50 + 0.80% taker fee (the highest Kraken rate)</div>'],
+  ['Fees at your tier', '<span class="num">0.25%</span> maker when the order rests and fills; <span class="num">0.40%</span> taker for the IOC'], ['Available', '<span class="num">4,210.55 USD</span>: enough']];
+const MOPEN = [['Order', '<b>Open long 0.0500 BTC, 3x</b> on BTC/USD'], ['Cap (the ask now)', '<span class="num">62,418.50</span>'], ['Timeout', '2 min, then one IOC at the cap for the rest'],
+  ['Worst case, price and fees', '<b class="num">3,147.45 USD</b><div class="tiny muted">cap × amount + 0.80% taker + 0.05% opening fee. Plus rollover, up to 1.56 USD per started 4 h.</div>'],
+  ['Collateral', '<span class="num">1,040.31 USD</span> of 4,210.55 USD free margin'],
+  ['Margin level after', '<b class="num">405%</b>. Kraken liquidates at <b class="num">40%</b>. The tool has no liquidation guard.'],
+  ['After the chase', 'The position stays open on Kraken until you close it. The safety timer cancels orders, not positions.']];
+const MCLOSE = [['Order', '<b>Close long 0.0300 BTC</b>, reduce-only, oldest position first'], ['Floor (the bid now)', '<span class="num">62,410.20</span>. The tool never sells lower.'], ['Closes', 'the 3x position opened 13:00:12 (0.0300 BTC)'],
+  ['Worst case', 'receives at least <b class="num">1,857.27 USD</b><div class="tiny muted">0.0300 × 62,410.20 − 0.80% taker fee. A close has no opening fee.</div>'],
+  ['Stays open', '0.0200 BTC at 3x, opened 13:00:12']];
+let cur = 'dry';
+function draw(id) {
+  cur = id;
+  const live = id !== 'dry' && id !== 'nokey';
+  const mg = id.startsWith('m-');
+  OC.setMode(live ? 'live' : 'dry');
+  $('strip').innerHTML = live ? '<div class="livestrip">LIVE: this chase sends real orders to your Kraken account.</div>' : '<div class="drystrip">DRY RUN: no real orders. Prices are live public prices; fills are simulated.</div>';
+  $('what').innerHTML = mg ? `<div class="seg"><button>Buy</button><button>Sell</button></div> <div class="seg"><button class="long" ${id !== 'm-close' ? 'aria-pressed="true"' : ''}>Open long</button><button>Open short</button><button class="close" ${id === 'm-close' ? 'aria-pressed="true"' : ''}>Close</button></div> <span class="badge mg">margin 3x</span>` : '<div class="seg"><button class="buy" aria-pressed="true">Buy</button><button>Sell</button></div>';
+  $('amt').textContent = id === 'first' || id === 'm-first' ? '0.0001 BTC' : id === 'm-close' ? '0.0300 BTC' : '0.0500 BTC';
+  document.querySelectorAll('#mode button').forEach(b => b.setAttribute('aria-pressed', String((b.dataset.m === 'live') === live)));
+  $('livebtn').disabled = id === 'nokey';
+  $('livebtn').style.textDecoration = id === 'nokey' ? 'line-through' : '';
+  $('modehelp').innerHTML = id === 'nokey' ? 'Live is off: no working key. <a href="setup.html#empty">Finish setup</a> to turn it on.'
+    : live ? '<b style="color:var(--live)">Live sends real orders to Kraken.</b> Key: in the macOS Keychain, tested 09:41.' : '<b style="color:var(--dry)">Dry run sends no orders.</b> The form opens in Dry run each time.';
+  $('whatchanges').innerHTML = id === 'switch' ? `<div class="note info small" style="margin-bottom:14px"><b>You chose Live for the first time. What changes:</b>
+    <ul style="margin:6px 0 4px;padding-left:18px"><li>The tool sends real orders to your Kraken account and pays real fees.</li><li>Fills come from Kraken, not from a simulation.</li><li>While an order rests, the safety timer is on. If the tool stops, Kraken cancels all your orders in 60 s.</li><li>Your Mac stays awake until the chase ends.</li></ul>
+    <a href="mode.html">See the full table</a>. This note shows one time only.</div>` : '';
+  const sb = $('startbtn');
+  sb.className = 'btn ' + (live ? 'livebtn' : 'drybtn');
+  sb.textContent = id === 'starting' ? 'Sending the order…' : live ? 'Start live chase…' : 'Start dry run';
+  sb.disabled = id === 'starting';
+  $('starthelp').innerHTML = id === 'refused' ? '' : live ? 'Next: you confirm. Nothing goes to Kraken before that.' : '';
+  if (id === 'refused') $('starthelp').innerHTML = '<span class="tone-bad"><b>Kraken refused the order: "EOrder:Insufficient funds".</b> Nothing was placed. The safety timer is off. Lower the amount, or add funds in Kraken Pro.</span>';
+  $('acct').innerHTML = live ? `<h3>Your Kraken account <span class="sample" style="margin-left:6px">sample</span></h3><table class="kv"><tr><td class="muted">Available</td><td class="num">${id === 'refused' ? '1,980.10' : '4,210.55'} USD</td></tr><tr><td class="muted">Fee tier</td><td class="num">0.25% / 0.40%</td></tr><tr><td class="muted">Other open orders</td><td>${id === 'confirm' ? '<span class="tone-warn">2: the safety timer can cancel them</span>' : 'none'}</td></tr></table>` : '<h3>Dry run account</h3><p class="small muted" style="margin:0">Simulated. Margin dry runs use 5,000 USD.</p>';
+  const conf = ['confirm', 'first', 'm-confirm', 'm-first', 'm-close'].includes(id);
+  $('confirm').classList.toggle('hidden', !conf);
+  if (conf) {
+    const first = id === 'first' || id === 'm-first';
+    let rows = mg && id !== 'm-close' ? MOPEN : id === 'm-close' ? MCLOSE : SPOT;
+    if (first) rows = rows.map(([k, v]) => [k, v.replace(/0\.0500/g, '0.0001').replace('3,145.89', '6.29').replace('3,147.45', '6.29').replace('1,040.31', '2.08').replace('405%', '>10,000%')]);
+    $('ctab').innerHTML = rows.map(([k, v]) => `<tr><td class="muted" style="width:38%">${k}</td><td style="text-align:left">${v}</td></tr>`).join('') +
+      (id === 'confirm' ? '<tr><td class="muted">Other open orders</td><td style="text-align:left" class="tone-warn">2 orders on ETH/USD. The safety timer cancels them too if the tool stops.</td></tr>' : '');
+    $('firstbadge').innerHTML = first ? `<span class="badge warn">FIRST LIVE ${mg ? 'MARGIN ' : ''}ORDER</span>` : mg ? '<span class="badge mg">margin</span>' : '';
+    $('ct').textContent = first ? 'Your first real order: send it to Kraken?' : mg && id !== 'm-close' ? 'Open a real margin position on Kraken?' : id === 'm-close' ? 'Close a real margin position on Kraken?' : 'Send a real order to Kraken?';
+    $('cfirst').innerHTML = first ? `<div class="note info small" style="margin-bottom:12px">This is the first real ${mg ? 'margin ' : ''}order the tool sends. Use a very small amount: the form set the Kraken minimum, 0.0001 BTC. After it ends, check the order in Kraken Pro, then compare it with the result page.</div>` : '';
+    $('ccheck').innerHTML = first ? '<label class="check" style="margin-bottom:12px"><input type="checkbox" id="ok1"><div><b>I checked the amount and the worst case.</b><div class="tiny muted">Asked one time only, for the first live order' + (mg ? ' on margin' : '') + '.</div></div></label>' : '';
+    $('cyes').disabled = first;
+    const ok1 = $('ok1'); if (ok1) ok1.onchange = () => { $('cyes').disabled = !ok1.checked; };
+    $('cyes').textContent = mg && id !== 'm-close' ? 'Open live position' : id === 'm-close' ? 'Close live' : 'Start live chase';
+  }
+}
+$('startbtn').onclick = () => { if (cur === 'live' || cur === 'switch') pick('confirm'); else if (cur === 'dry') location.href = '../chase.html'; };
+$('mode').onclick = e => { const b = e.target.closest('button'); if (!b || b.disabled) return; pick(b.dataset.m === 'live' ? 'switch' : 'dry'); };
+$('cno').onclick = () => pick('live');
+$('cyes').onclick = () => { const to = 'chase.html#' + (cur.startsWith('m-') ? 'm-resting' : 'placing'); pick('starting'); setTimeout(() => { location.href = to; }, 700); };
+const pick = OC.switcher($('sw'), 'new chase state', ORDER, draw, 'dry');
+</script>
+</body></html>

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Live chase · Order chaser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main class="app">
+  <div class="switcher" id="sw"></div>
+  <div id="strip" style="margin-bottom:16px"></div>
+  <div class="split">
+    <div>
+      <div class="status" id="card"></div>
+      <div id="ign"></div>
+      <div class="row" id="actions" style="margin:14px 0 18px"></div>
+      <div class="card">
+        <div class="row"><h2 style="margin:0">What the tool did</h2><span class="spacer"></span><span class="small muted">Newest first · sample events</span></div>
+        <div id="log" style="margin-top:8px"></div>
+      </div>
+    </div>
+    <aside class="side">
+      <div class="card"><h3>This chase</h3><table class="kv" id="facts"></table></div>
+      <div class="card"><h3>Safety timer</h3>
+        <div class="meter"><span id="dmstext"></span><span class="num" id="dmsnum"></span><div class="bar"><i id="dmsbar"></i></div></div>
+        <p class="tiny muted" style="margin:8px 0 0">The tool renews a 60 s cancel-all on Kraken every 20 s. If it stops, Kraken cancels <b>all</b> your orders on all pairs.</p></div>
+      <div class="card"><h3>Connections</h3><table class="kv" id="feeds"></table>
+        <p class="awake" style="margin:8px 0 0" id="awake"></p></div>
+      <div class="card hidden" id="poscard"><h3>Position <span class="badge mg">margin</span></h3><div id="pos" class="small"></div></div>
+    </aside>
+  </div>
+</main>
+<div class="scrim hidden" id="stopdlg"><div class="modal">
+  <h2>Stop this live chase?</h2>
+  <p>The tool cancels your order on Kraken and waits for Kraken to confirm. You keep what filled: <b class="num" id="stopq"></b>. The rest does not fill.</p>
+  <div class="row"><span class="spacer"></span><button class="btn" id="stopno">Keep chasing</button><button class="btn danger" id="stopyes">Stop and cancel</button></div>
+</div></div>
+<script src="assets/proto.js"></script>
+<script>
+OC.chrome('chase', 'live');
+const $ = OC.$;
+const ORDER = [
+  ['placing', 'Placing (loading)', 'Spot'], ['resting', 'Resting'], ['amended', 'Amended'], ['renew', 'Safety timer renewing'], ['fallback', 'IOC fallback'],
+  ['pfeed', 'Private feed lost', 'Failure'], ['net', 'Connection lost: timer counting'], ['fired', 'Timer fired: Kraken cancelled all'],
+  ['ign-fill', 'Fill now ignored', 'Ignored click'], ['ign-stop', 'Stop ignored'],
+  ['m-resting', 'Margin open: resting', 'Margin'], ['m-fired', 'Margin: timer fired, position stays'],
+];
+const T0 = '09:52:';
+const E = {
+  start: [T0 + '04', 'Placed post-only buy 0.0500 BTC at 62,410.20. Kraken order OQX3T4-… (sample), cl_ord_id oc-0412-1.'],
+  timer: [T0 + '04', 'Safety timer on: Kraken cancels all orders at 09:53:04 unless renewed.'],
+  fill1: [T0 + '31', 'Filled 0.0180 BTC at 62,412.00 as maker. Fee 2.81 USD (from the private feed).', 'fill'],
+  am1: [T0 + '36', 'Amended to 62,414.90: the bid rose. Price only; the order keeps its place in the queue for the same price.'],
+  ren: [T0 + '44', 'Renewed the safety timer: cancel-all now at 09:53:44.'],
+};
+const S = {
+  placing: { st: ['Placing', 'you', 1], head: 'Sending the order to Kraken…', sub: 'The tool signed the order and sent it. It waits for Kraken to accept it. Kraken usually answers in under 1 s.', q: 0, you: 'sending…', dms: null, priv: 'ok', pub: 'ok', ev: [[T0 + '04', 'Sent post-only buy 0.0500 BTC at 62,410.20. Waiting for Kraken.']], act: ['stop'] },
+  resting: { st: ['Resting at the best bid', 'you', 1], head: 'Your order rests on Kraken at 62,410.20', sub: 'Nothing filled yet. The tool moves the order up when the bid rises, never above the cap 62,418.50.', q: 0, you: '62,410.20', dms: 12, priv: 'ok', pub: 'ok', ev: [E.timer, E.start], act: ['stop', 'fillnow'] },
+  amended: { st: ['Amended', 'you', 1], head: 'Moved up to 62,414.90', sub: 'The bid rose, so the tool amended your order on Kraken. 0.0180 of 0.0500 BTC filled (36%).', q: 0.018, you: '62,414.90', dms: 32, priv: 'ok', pub: 'ok', ev: [E.am1, E.fill1, E.timer, E.start], act: ['stop', 'fillnow'] },
+  renew: { st: ['Resting · timer renewed', 'you', 1], head: 'Your order rests at 62,414.90', sub: 'The tool renewed the safety timer 0 s ago. 0.0180 of 0.0500 BTC filled (36%).', q: 0.018, you: '62,414.90', dms: 0, priv: 'ok', pub: 'ok', ev: [E.ren, E.am1, E.fill1, E.timer, E.start], act: ['stop', 'fillnow'] },
+  fallback: { st: ['IOC fallback', 'warn', 1], head: 'Time is up: buying the rest at the cap', sub: 'The tool cancelled the resting order, Kraken confirmed it, and the tool re-read the fill: 0.0180 BTC. It sent one IOC for 0.0320 BTC at the cap 62,418.50.', q: 0.018, you: 'IOC 62,418.50', dms: 4, priv: 'ok', pub: 'ok', ev: [['09:54:04', 'Timeout. Cancelled the order; Kraken confirmed. Filled so far 0.0180 BTC. Sent IOC 0.0320 BTC at 62,418.50.', 'warn'], E.ren, E.am1, E.fill1, E.timer, E.start], act: [] },
+  pfeed: { st: ['Private feed lost', 'warn', 1], head: 'The order rests, but the fill feed is down', sub: 'The private feed of your fills stopped 6 s ago. Until it is back, the tool reads your order from Kraken every 3 s (REST), so it misses no fill. It does not amend until the feed is back. Attempt 2: next try in 4 s.', q: 0.018, you: '62,414.90', dms: 9, priv: 'bad', pub: 'ok', ev: [[T0 + '50', 'Private feed lost. Reading the order by REST every 3 s. Amends paused.', 'warn'], E.ren, E.am1, E.fill1, E.timer, E.start], act: ['stop', 'fillnow'] },
+  net: { st: ['No connection to Kraken', 'bad', 1], head: 'The tool cannot reach Kraken', sub: 'No connection since 09:52:46. The tool cannot renew the safety timer. If the connection is not back in 39 s, Kraken cancels all your orders. That is the safety timer working: no order rests without control.', q: 0.018, you: '62,414.90 (last known)', dms: 21, bad: true, priv: 'bad', pub: 'bad', ev: [['09:52:46', 'Lost the connection to Kraken. Trying again every 2 s.', 'bad'], E.ren, E.am1, E.fill1, E.timer, E.start], act: ['stop-off'] },
+  fired: { st: ['Ended: safety timer fired', 'bad', 0], head: 'Kraken cancelled your order at 09:53:44', sub: 'The connection was lost for more than 60 s, so Kraken cancelled all your orders. The tool is back, read your fills from Kraken and ended the chase. Filled 0.0180 of 0.0500 BTC (36%). The tool sent no IOC.', q: 0.018, you: 'cancelled', dms: 'fired', priv: 'ok', pub: 'ok', done: true, note: '<b>Check your other orders:</b> Kraken cancelled all your open orders, on all pairs. Kraken had 2 other open orders on ETH/USD before the timer fired (sample). Place them again in Kraken Pro if you need them.', ev: [['09:54:10', 'Back online. Read the order from Kraken: cancelled by the safety timer at 09:53:44. Filled 0.0180 BTC. Chase ended. No IOC sent.', 'bad'], ['09:52:46', 'Lost the connection to Kraken.', 'bad'], E.ren, E.am1, E.fill1, E.timer, E.start], act: ['result', 'again'] },
+  'ign-fill': { st: ['Resting', 'you', 1], head: 'Your order rests at 62,414.90', sub: '0.0180 of 0.0500 BTC filled (36%).', q: 0.018, you: '62,414.90', dms: 14, priv: 'ok', pub: 'ok', ign: 'The tool ignored <b>Fill the rest now</b>: the timeout already started the IOC 1 s ago. Wait 1 to 2 s for the result.', ev: [['09:54:05', 'Fill the rest now: ignored. Reason: the IOC is already sent.', 'warn'], E.ren, E.am1, E.fill1, E.timer, E.start], act: ['stop', 'fillnow'] },
+  'ign-stop': { st: ['Filled', 'fill', 0], head: 'Filled 0.0500 BTC', sub: 'The order filled before your Stop reached Kraken. 100% filled.', q: 0.05, you: 'filled', dms: null, priv: 'ok', pub: 'ok', done: true, ign: 'The tool ignored <b>Stop</b>: the order was already filled. Nothing to cancel.', ev: [['09:53:13', 'Stop: ignored. Reason: the order is filled.', 'warn'], ['09:53:12', 'Filled 0.0320 BTC at 62,414.90 as maker. Fully filled. Safety timer off.', 'fill'], E.am1, E.fill1, E.timer, E.start], act: ['result'] },
+  'm-resting': { mg: true, st: ['Resting at the best bid', 'you', 1], head: 'Open long 3x: your order rests at 62,410.20', sub: 'Nothing filled yet. Each fill adds to a 3x long position on Kraken.', q: 0, you: '62,410.20', dms: 12, priv: 'ok', pub: 'ok', ev: [E.timer, [T0 + '04', 'Placed post-only margin buy 0.0500 BTC, leverage 3, at 62,410.20.']], act: ['stop', 'fillnow'] },
+  'm-fired': { mg: true, st: ['Ended: safety timer fired', 'bad', 0], head: 'Kraken cancelled your order. The position stays open.', sub: 'Filled 0.0180 of 0.0500 BTC (36%) before the timer fired. That part is an open 3x long position on Kraken. The safety timer cancels orders, not positions.', q: 0.018, you: 'cancelled', dms: 'fired', priv: 'ok', pub: 'ok', done: true, note: '<b>A position is open:</b> 0.0180 BTC long at 3x, entry 62,412.00, margin level 1,890%. Kraken liquidates at 40%. Close it on the form, or keep it.', ev: [['09:54:10', 'Back online. Order cancelled by the safety timer. Position: 0.0180 BTC long 3x stays open.', 'bad'], E.fill1, E.timer], act: ['result', 'close'] },
+};
+let cur;
+function draw(id) {
+  cur = id; const s = S[id];
+  $('strip').innerHTML = '<div class="livestrip">LIVE: this chase sends real orders to your Kraken account.</div>' + (s.mg ? '<div class="mgstrip" style="margin-top:6px">MARGIN: this chase opens a 3x long position. A position stays open when the tool stops.</div>' : '');
+  const pct = Math.floor(s.q / 0.05 * 100 + 1e-9);
+  $('card').innerHTML = `<div class="state tone-${s.st[1]} ${s.st[2] ? 'pulse' : ''}"><i></i>${s.st[0]}</div><div class="head">${s.head}</div><p class="sub">${s.sub}</p>
+    <div class="row small" style="margin-top:10px"><span>Filled <b class="num">${s.q.toFixed(4)}</b> of 0.0500 BTC</span><span class="spacer"></span><b class="num">${pct}%</b></div>
+    <div class="bar" style="margin-top:6px"><i class="m" style="width:${pct}%"></i></div>` + (s.note ? `<div class="note warn small" style="margin-top:14px">${s.note}</div>` : '');
+  $('ign').innerHTML = s.ign ? `<div class="note warn small ignored" style="margin-top:12px" role="status">${s.ign}</div>` : '';
+  $('log').innerHTML = OC.tl(s.ev);
+  $('facts').innerHTML = [['Order', s.mg ? 'Open long 0.0500 BTC, 3x' : 'Buy 0.0500 BTC'], ['Cap (start ask)', '<span class="num">62,418.50</span>'], ['Your price now', `<span class="num">${s.you}</span>`], ['Timeout', '2 min, then IOC at the cap'], ['Worst case', `<span class="num">${s.mg ? '3,147.45' : '3,145.89'} USD</span>`]].map(r => `<tr><td class="muted">${r[0]}</td><td>${r[1]}</td></tr>`).join('');
+  const F = { ok: '<span class="tone-fill">connected</span>', bad: '<span class="tone-bad">lost, reconnecting</span>' };
+  $('feeds').innerHTML = `<tr><td class="muted">Public prices</td><td>${F[s.pub]}</td></tr><tr><td class="muted">Your fills (private feed)</td><td>${s.priv === 'bad' && s.pub === 'ok' ? '<span class="tone-warn">lost: REST every 3 s</span>' : F[s.priv]}</td></tr>`;
+  $('awake').textContent = s.done ? 'Mac: can sleep again (the chase ended).' : 'Mac: kept awake during this chase (caffeinate).';
+  OC.conn(s.pub === 'bad' ? 'bad' : s.priv === 'bad' ? 'warn' : 'ok', s.pub === 'bad' ? 'Kraken: not reachable' : s.priv === 'bad' ? 'Fill feed: lost' : 'Kraken feed: connected');
+  if (s.dms === null) { $('dmstext').textContent = s.done ? 'Off: no order rests.' : 'Starts when Kraken accepts the order.'; $('dmsnum').textContent = ''; $('dmsbar').style.width = '0%'; }
+  else if (s.dms === 'fired') { $('dmstext').innerHTML = '<b class="tone-bad">Fired at 09:53:44</b>'; $('dmsnum').textContent = ''; $('dmsbar').style.width = '0%'; }
+  else { const left = 60 - s.dms; $('dmstext').innerHTML = s.bad ? `<b class="tone-bad">Not renewed for ${s.dms} s</b>` : `Renewed ${s.dms} s ago`; $('dmsnum').textContent = `cancel-all in ${left} s`; $('dmsbar').style.width = (left / 60 * 100) + '%'; $('dmsbar').style.background = s.bad ? 'var(--bad)' : 'var(--ink)'; }
+  $('poscard').classList.toggle('hidden', !s.mg);
+  if (s.mg) $('pos').innerHTML = s.q ? `<div class="pstat tone-fill"><i></i>Open: 0.0180 BTC long, 3x</div><p class="tiny muted" style="margin:4px 0 0">Margin level 1,890% (sample). Kraken liquidates at 40%. No guard in the tool.</p>` : '<p class="muted" style="margin:0">Nothing open yet.</p>';
+  const a = [];
+  if (s.act.includes('stop')) a.push('<button class="btn danger" id="stop">Stop</button>');
+  if (s.act.includes('stop-off')) a.push('<button class="btn" disabled>Stop</button><span class="small muted">Stop needs a connection to Kraken. To stop now, cancel the order in Kraken Pro on another device.</span>');
+  if (s.act.includes('fillnow')) a.push(`<button class="btn" id="fillnow">Fill the rest now</button>`);
+  if (s.act.includes('result')) a.push(`<a class="btn primary" href="result.html#${id === 'fired' ? 'timer' : id === 'm-fired' ? 'm-open' : 'filled'}">See the result</a>`);
+  if (s.act.includes('again')) a.push('<a class="btn" href="new.html#live">Chase the rest (0.0320 BTC), new cap</a>');
+  if (s.act.includes('close')) a.push('<a class="btn" href="new.html#m-close">Close this position</a>');
+  if (!s.act.length) a.push('<span class="small muted">No action during the fallback. It ends in 1 to 2 s.</span>');
+  if (!s.done && !s.act.includes('stop-off')) a.push('<span class="spacer"></span><span class="small muted">You can close this page. The tool keeps the chase.</span>');
+  $('actions').innerHTML = a.join(' ');
+  const st = $('stop'); if (st) st.onclick = () => { $('stopq').textContent = s.q.toFixed(4) + ' BTC'; $('stopdlg').classList.remove('hidden'); };
+  const fn = $('fillnow'); if (fn && id !== 'ign-fill') fn.onclick = () => pick('fallback');
+  document.title = (s.done ? '' : '● ') + 'LIVE · ' + s.st[0] + ' · Order chaser';
+}
+$('stopno').onclick = () => $('stopdlg').classList.add('hidden');
+$('stopyes').onclick = () => { $('stopdlg').classList.add('hidden'); location.href = 'result.html#stopped'; };
+const pick = OC.switcher($('sw'), 'live chase state', ORDER, draw, 'resting');
+</script>
+</body></html>

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>After a restart · Order chaser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main class="app">
+  <div class="switcher" id="sw"></div>
+  <div style="max-width:880px">
+    <div class="status" id="card"></div>
+    <div class="card" id="what" style="margin-top:16px"></div>
+    <div class="card" id="tlcard" style="margin-top:16px"><h2>What the tool did after the restart</h2><div id="tl"></div></div>
+    <div class="row" style="margin-top:16px" id="actions"></div>
+  </div>
+</main>
+<script src="assets/proto.js"></script>
+<script>
+OC.chrome('reconcile', 'live');
+const $ = OC.$;
+const ORDER = [['checking', 'Reading Kraken (loading)'], ['filled', 'Found: filled'], ['partial', 'Found: partly filled'], ['open', 'Found: still open'], ['timer', 'Found: cancelled by the timer'], ['cantread', 'Failure: cannot read Kraken'], ['m-timer', 'Margin: position stays open', 'Margin']];
+const NAME = 'Buy 0.0500 BTC · 09:52:04';
+const base = [['10:01:15', 'The tool started. It found 1 live chase that did not end: ' + NAME + '.']];
+const S = {
+  checking: { st: ['Reading Kraken', 'you', 1], head: 'The tool stopped during a live chase', sub: 'It started again at 10:01:15. It reads your orders and fills on Kraken with our order ids (cl_ord_id), to see what happened. New chases wait until this ends, in about 3 s.', tl: base, skel: true },
+  filled: { st: ['Found: filled', 'fill', 0], head: 'Your order filled while the tool was down', sub: 'Kraken filled all 0.0500 BTC. The tool recorded the fills from Kraken. Nothing more to do.', rows: [['Chase order', 'Filled 0.0500 of 0.0500 BTC (100%)', 'tone-fill']], tl: [['10:01:17', 'Read the order from Kraken: closed, filled 0.0500 BTC. Recorded 2 fills.', 'fill'], ...base], act: 'result' },
+  partial: { st: ['Found: partly filled', 'warn', 0], head: 'Your order partly filled. Kraken cancelled the rest.', sub: '0.0180 of 0.0500 BTC filled (36%) before the tool stopped. The safety timer cancelled the rest. The tool did not send the IOC: it never sends an order after a restart without you.', rows: [['Chase order', 'Filled 0.0180 of 0.0500 BTC (36%)', 'tone-warn'], ['IOC fallback', 'Not sent', 'muted']], tl: [['10:01:17', 'Read the order from Kraken: cancelled at 09:53:44, filled 0.0180 BTC.', 'warn'], ...base], act: 'rest' },
+  open: { st: ['Found: still open', 'warn', 0], head: 'Your order was still open on Kraken. The tool cancelled it.', sub: 'The tool started again within 60 s, so the safety timer had not fired yet. The order rested without control, so the tool cancelled it at once. 0.0180 of 0.0500 BTC filled (36%).', rows: [['Chase order', 'Was open at 62,414.90. Cancelled by the tool at 10:01:16.', 'tone-warn'], ['Filled', '0.0180 of 0.0500 BTC (36%)', '']], tl: [['10:01:16', 'Kraken confirmed the cancel. Filled 0.0180 BTC.', ''], ['10:01:16', 'Read the order from Kraken: open. Sent a cancel.', 'warn'], ...base], act: 'rest' },
+  timer: { st: ['Found: cancelled by the timer', 'bad', 0], head: 'The safety timer cancelled your order', sub: 'The tool stopped at 09:52:44. Kraken cancelled all your orders at 09:53:44. Nothing filled.', rows: [['Chase order', 'Cancelled by the safety timer at 09:53:44. Filled 0 BTC.', 'tone-bad']], warn: 'The timer cancels all your orders, on all pairs. If you had other orders on Kraken, check them in Kraken Pro and place them again if you need them.', tl: [['10:01:17', 'Read the order from Kraken: cancelled at 09:53:44, filled 0 BTC.', 'bad'], ...base], act: 'again' },
+  cantread: { st: ['Cannot read Kraken', 'bad', 1], head: 'The tool cannot see what happened yet', sub: 'Kraken does not answer (attempt 4, next try in 8 s). Your order can still be open on Kraken. The last safety timer ran out at 09:53:44, so Kraken cancelled every order that rested then. An order can only be open if Kraken did not get that timer.', rows: [['Chase order', 'Unknown: not read yet', 'tone-bad']], warn: 'To be sure now, open Kraken Pro, Orders, and cancel any open order on BTC/USD. The tool blocks new live chases until it reads Kraken.', tl: [['10:01:31', 'Kraken not reachable. Trying again in 8 s.', 'bad'], ['10:01:15', 'The tool started. It found 1 live chase that did not end: ' + NAME + '.']], act: 'none' },
+  'm-timer': { mg: true, st: ['Found: partly filled · position open', 'warn', 0], head: 'Part of your margin open filled. The position is open.', sub: 'The safety timer cancelled the order at 09:53:44. 0.0180 of 0.0500 BTC filled (36%). That part is a 3x long position on Kraken, and it stays open.', rows: [['Chase order', 'Open long 3x: filled 0.0180 of 0.0500 BTC (36%)', 'tone-warn'], ['Position', '0.0180 BTC long, 3x, entry 62,412.00. Margin level 1,890% (sample). Liquidation at 40%.', 'tone-warn']], tl: [['10:01:17', 'Read the order and the open positions from Kraken. Position 0.0180 BTC long 3x is open.', 'warn'], ...base], act: 'close' },
+};
+function draw(id) {
+  const s = S[id];
+  $('card').innerHTML = `<div class="state tone-${s.st[1]} ${s.st[2] ? 'pulse' : ''}"><i></i>${s.st[0]}</div><div class="head">${s.head}</div><p class="sub">${s.sub}</p>` + (s.warn ? `<div class="note ${id === 'cantread' ? 'bad' : 'warn'} small" style="margin-top:10px">${s.warn}</div>` : '');
+  $('what').innerHTML = `<h2>${NAME}${s.mg ? ' <span class="badge mg">margin 3x</span>' : ''}</h2><table class="kv">` + (s.skel ? '<tr><td class="muted">Chase order</td><td><span class="skel">reading the order</span></td></tr><tr><td class="muted">Fills</td><td><span class="skel">reading the fills</span></td></tr>' : s.rows.map(r => `<tr><td class="muted">${r[0]}</td><td class="${r[2]}">${r[1]}</td></tr>`).join('')) + '</table><p class="tiny muted" style="margin:8px 0 0">Our order id (cl_ord_id): <span class="mono">oc-0412-1</span> (sample). The chase names show seconds, so two chases in the same minute differ.</p>';
+  $('tl').innerHTML = OC.tl(s.tl);
+  const A = { result: '<a class="btn primary" href="result.html#filled">See the result</a>', rest: '<a class="btn primary" href="result.html#stopped">See the result</a><a class="btn" href="new.html#live">Chase the rest (0.0320 BTC), new cap</a>', again: '<a class="btn primary" href="new.html#live">Chase again, new cap</a>', none: '<button class="btn" disabled>New live chase</button><span class="small muted">Blocked until the tool reads Kraken.</span>', close: '<a class="btn primary" href="new.html#m-close">Close this position</a><a class="btn" href="result.html#m-open">See the result</a>' };
+  $('actions').innerHTML = s.skel ? '' : A[s.act];
+  OC.conn(id === 'cantread' ? 'bad' : 'ok', id === 'cantread' ? 'Kraken: not reachable' : 'Kraken feed: connected');
+}
+OC.switcher($('sw'), 'restart reconcile state', ORDER, draw, 'partial');
+</script>
+</body></html>

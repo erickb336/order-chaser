@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Live trading prototype · Order chaser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main class="app">
+  <div style="max-width:900px">
+  <h1>Live trading (T4): clickable prototype</h1>
+  <p class="muted">This prototype shows how the order chaser sends real orders to Kraken. It follows direction B of the dry run (status card and event log) and the margin screens of T5. Every number, id and date is <b>sample data</b>: there is no real key and no real order.</p>
+  <p class="small"><b>What I need from you:</b> answer the <a href="questions.html">8 product questions</a>, or say nothing to keep the recommendations. Then the build (T4) starts.</p>
+
+  <h2 style="margin-top:22px">The flow</h2>
+  <div class="flow">
+    <a href="setup.html#empty">1. Setup: key in Keychain</a><span class="arr">→</span>
+    <a href="mode.html">2. Switch to live</a><span class="arr">→</span>
+    <a href="new.html#confirm">3. Live confirm</a><span class="arr">→</span>
+    <a href="chase.html#resting">4. Live chase</a><span class="arr">→</span>
+    <a href="result.html#filled">5. Result</a>
+  </div>
+  <div class="flow" style="margin-top:8px"><span class="small muted">After a crash:</span><a href="reconcile.html#partial">6. Restart reconcile</a><span class="arr">→</span><a href="result.html#stopped">Result</a></div>
+
+  <h2 style="margin-top:22px">Screens and states</h2>
+  <div class="card" style="padding:8px 16px"><table class="t">
+    <tr><th>Screen</th><th>States (click a state on the screen)</th></tr>
+    <tr><td><a href="setup.html">Setup</a></td><td>No key · macOS Keychain prompt · testing (loading) · key OK · permission missing · withdraw on = refused · Keychain denied · setup complete</td></tr>
+    <tr><td><a href="mode.html">Mode switch</a></td><td>3 options side by side · what changes from dry run to live</td></tr>
+    <tr><td><a href="new.html">New chase and live confirm</a></td><td>Dry run · live off (no key) · first click on Live · live ready · confirm · first live order · starting · Kraken refused · margin open confirm · first live margin order · margin close confirm</td></tr>
+    <tr><td><a href="chase.html">Live chase</a></td><td>Placing · resting · amended · timer renewing · IOC fallback · private feed lost · connection lost · timer fired · Fill now ignored · Stop ignored · margin resting · margin timer fired</td></tr>
+    <tr><td><a href="result.html">Result</a></td><td>Filled 100% · almost filled (rounds down to 99%) · ended by the timer · stopped · margin part filled</td></tr>
+    <tr><td><a href="reconcile.html">Restart reconcile</a></td><td>Reading Kraken (loading) · filled · partly filled · still open · cancelled by the timer · cannot read Kraken · margin position open</td></tr>
+  </table></div>
+
+  <h2 style="margin-top:22px">Rules the screens keep</h2>
+  <ul class="small">
+    <li>The key never shows on a page after it is saved, not even a part of it.</li>
+    <li>Permission names are Kraken's exact labels: Modify Orders, Cancel/Close Orders, Query Open Orders &amp; Trades, Query Closed Orders &amp; Trades, Access WebSockets API, Query Funds, Withdraw Funds.</li>
+    <li>Setup shows the real host and port (<span class="mono">127.0.0.1:5180</span> in the sample).</li>
+    <li>The fill percent rounds down. It shows 100% only when all of the amount filled.</li>
+    <li>When the tool ignores Fill the rest now or Stop, the page says so and gives the reason.</li>
+    <li>Chase names show seconds (<span class="mono">Buy 0.0500 BTC · 09:52:04</span>).</li>
+    <li>Dark by default. No text uses an opacity fade.</li>
+  </ul>
+  <p class="small muted">Not in this prototype: the history list (unchanged from T2 and T5), the light theme, and the first live test itself (it needs your go-ahead at that time).</p>
+  </div>
+</main>
+<script src="assets/proto.js"></script>
+<script>OC.chrome('index', 'none');</script>
+</body></html>

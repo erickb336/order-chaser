@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Questions · Order chaser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main class="app">
+  <div style="max-width:860px">
+  <h1>Product questions for live trading (T4)</h1>
+  <p class="muted">8 questions. Each has options and a recommendation. The screens show the recommendation now. To decide, tell the chief the number and the option, for example "Q2: B". If you say nothing, the recommendation stays.</p>
+  <div id="qs"></div>
+  </div>
+</main>
+<script src="assets/proto.js"></script>
+<script>
+OC.chrome('questions', 'none');
+const Q = [
+  ['Q1', 'Where do you switch a chase from dry run to live?', [['A', 'On the form, for each chase (the approved mode control).'], ['B', 'One switch in Setup for all chases.'], ['C', 'Two Start buttons: Start dry run and Start live.']], 'A', 'It is the approved form, a dry run stays one click away, and the live confirm guards each live chase.', 'mode.html'],
+  ['Q2', 'In which mode does the form open?', [['A', 'Dry run, each time.'], ['B', 'The mode of your last chase.'], ['C', 'Live, once setup is complete.']], 'A', 'A live order never starts from habit. Cost: one more click for each live chase. Easy to change later.', 'new.html#dry'],
+  ['Q3', 'How do you give the key to the tool?', [['A', 'Paste it once in the Setup page. The tool puts it in the Keychain and the page forgets it.'], ['B', 'Run a terminal command that asks for it with a hidden prompt. The key never passes through the browser.']], 'A', 'You work in pages, not the terminal. The key goes only to 127.0.0.1, one time, under the page CSP and token.', 'setup.html#empty'],
+  ['Q4', 'What does the tool do with a key that has Withdraw Funds?', [['A', 'Refuse it and remove it from the Keychain at once.'], ['B', 'Refuse it, but keep it in the Keychain until you fix the key in Kraken.'], ['C', 'Warn, but use it.']], 'A', 'A key that can withdraw must not stay on the Mac. The fix in Kraken is a new key anyway.', 'setup.html#withdraw'],
+  ['Q5', 'After a crash, the tool finds our order still open on Kraken. What does it do?', [['A', 'Cancel it at once, then show you what filled.'], ['B', 'Continue the chase where it stopped.'], ['C', 'Leave it and ask you first.']], 'A', 'The cap and the timeout are old after a crash. The tool never sends or keeps an order without control. You can chase the rest with a new cap in one click.', 'reconcile.html#open'],
+  ['Q6', 'What marks the first live order?', [['A', 'The confirm asks one time for a check box, and the form sets the amount to the Kraken minimum (0.0001 BTC).'], ['B', 'Nothing special: the normal confirm.'], ['C', 'A check box on every live confirm.']], 'A', 'It makes the very small first test the easy path, and it asks only once. The same moment comes once more for the first live margin order, after your go-ahead.', 'new.html#first'],
+  ['Q7', 'You have other open orders on the account when you start a live chase. What happens?', [['A', 'The confirm warns that the safety timer can cancel them, with the count.'], ['B', 'The tool blocks the live chase until you cancel them or use a sub-account.'], ['C', 'Nothing: you accepted the timer in setup.']], 'A', 'You accepted the timer, but a count at the moment of risk costs nothing. It needs Query Open Orders & Trades, which the key has.', 'new.html#confirm'],
+  ['Q8', 'The private feed of your fills stops during a chase. What does the tool do?', [['A', 'Keep the order, read it by REST every 3 s, and pause amends until the feed is back.'], ['B', 'Cancel the order and end the chase.'], ['C', 'Keep amending as usual.']], 'A', 'The tool misses no fill and does not move an order it cannot see well. The safety timer still covers a crash. REST every 3 s stays inside the rate limits.', 'chase.html#pfeed'],
+];
+document.getElementById('qs').innerHTML = Q.map(([id, t, opts, rec, why, link]) => `<div class="card q" style="margin-top:14px"><h2>${id}. ${t}</h2>` +
+  opts.map(([k, o]) => `<div class="opt ${k === rec ? 'r' : ''}"><b class="n">${k}</b><span>${o}${k === rec ? ' <span class="rec">Recommended</span>' : ''}</span></div>`).join('') +
+  `<p class="small" style="margin:8px 0 0"><b>Why ${rec}:</b> ${why} <a href="${link}">See it on the screen</a>.</p></div>`).join('');
+</script>
+</body></html>
