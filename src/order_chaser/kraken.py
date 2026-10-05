@@ -207,7 +207,7 @@ class KrakenGateway:
         self.refused: set[str] = set()    # the legs that Kraken refused: no order exists
         self.ioc_sent = False             # the IOC went out: the chase leg is gone, so no order of the chase can rest
         self.timer = {"on": False, "renewed_at": None, "deadline": None, "tried_at": None}
-        self.renewing = False
+        self.renewing: asyncio.Task | None = None   # a renewal on its way: close() waits for it, then sends 0
         self.bg: set[asyncio.Task] = set()   # the read of the orders that the timer cancelled (C8)
 
     async def open_key(self) -> None:
@@ -230,6 +230,7 @@ class KrakenGateway:
             if time.monotonic() > end:
                 raise ConnectionError("the private feed of the fills did not connect")
             await asyncio.sleep(0.05)
+        self.timer["on"] = True   # on from the send: an answer that is lost can still have set it
         await self._set_timer(TIMER)
         try:
             self.awake = subprocess.Popen([*self.awake_cmd, "-w", str(os.getpid())], stdout=subprocess.DEVNULL,
@@ -255,6 +256,8 @@ class KrakenGateway:
         if not self.timer["on"]:
             return True
         self.timer["on"] = False
+        if self.renewing is not None:   # its 60 must reach Kraken before the 0, not after it
+            await asyncio.wait({self.renewing})
         if noanswer and not self.ioc_sent and not await self._cancel_leg():
             return False
         try:
@@ -283,25 +286,23 @@ class KrakenGateway:
     # ----- the safety timer -----
     async def _set_timer(self, seconds: int) -> None:
         now = self.clock()
-        self.timer.update(on=True, tried_at=now)   # on from the send: an answer that is lost can still set it
+        self.timer["tried_at"] = now
         await self.rest.call("CancelAllOrdersAfter", timeout=seconds)
         self.timer.update(renewed_at=now, deadline=now + seconds)
 
     def tick(self, now: float) -> None:
         """Renew the timer every 20 s; after a failure, every 2 s until it works."""
         t = self.timer
-        if not t["on"] or self.renewing or now - t["renewed_at"] < RENEW_EVERY or now - t["tried_at"] < RETRY_EVERY:
+        if not t["on"] or self.renewing is not None or now - t["renewed_at"] < RENEW_EVERY or now - t["tried_at"] < RETRY_EVERY:
             return
-        self.renewing = True
-
         async def renew():
             try:
                 await self._set_timer(TIMER)
             except (KrakenError, httpx.HTTPError) as e:
                 log.warning(f"The safety timer was not renewed: {e}")
             finally:
-                self.renewing = False
-        asyncio.get_running_loop().create_task(renew())
+                self.renewing = None
+        self.renewing = asyncio.get_running_loop().create_task(renew())
 
     def _venue_canceled(self, reason: str) -> core.VenueCanceled:
         """Kraken cancelled the order without the tool: after the timer's deadline, that is the safety timer."""

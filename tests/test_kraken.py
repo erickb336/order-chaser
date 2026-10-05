@@ -220,6 +220,7 @@ def test_a_live_chase_end_to_end_timer_post_only_amend_fill_timeout_ioc_and_the_
     call(eng.tick)                                                           # timeout: cancel, reread, IOC at the cap
     wait_for(lambda: eng.chase.phase == "done")
     wait_for(lambda: awake.poll() is not None and eng.kgw.task is None)      # caffeinate and the feed stopped
+    wait_for(lambda: not eng.tasks)                                          # the end (timer 0) is done
     c = eng.chase
     assert (c.outcome, c.filled) == ("notfilled", D("0.028"))                # the IOC got the 0.01 at the ask
     assert fake.calls_of("CancelOrder") == [{"cl_ord_id": cid}]
@@ -342,7 +343,8 @@ def test_kraken_not_answering_ends_the_chase_in_a_clear_state_keeps_the_timer_an
         clock.t += 61
         return eng.chase.phase == "done"
     wait_for(later)
-    assert eng.chase.outcome == "noanswer"
+    assert eng.chase.outcome == "noanswer", texts(eng)
+    assert texts(eng)[-1].startswith("Kraken did not"), (texts(eng), fake.calls)
     assert texts(eng)[-1] == ("Kraken did not answer for 60 s. The chase ended. The safety timer cancels the order "
                               "on Kraken within 60 s. Check Kraken Pro for fills.")
     wait_for(lambda: eng.kgw.task is None)
@@ -741,3 +743,18 @@ def test_a_key_with_query_funds_off_is_removed_from_the_keychain_like_a_key_that
     assert memory_keyring.items == {} and eng.kgw.rest.key is None
     assert "Save a Kraken API key in Setup, step 3." in eng.setup_state()["why"]
     assert post(client, "/api/key/test").status_code == 409                  # no key is left to test
+
+
+def test_a_renewal_on_its_way_when_the_chase_ends_reaches_kraken_before_the_0(fake):
+    """A renewal's 60 that came after the 0 left the account's cancel-all armed after the chase (CI, test above)."""
+    async def run():
+        async with httpx.AsyncClient() as http:
+            t = [1000.0]
+            gw = gateway(fake, http, clock=lambda: t[0])
+            await gw.open()
+            t[0] += 21
+            gw.tick(t[0])                                                    # the renewal is due: its task starts
+            await gw.close()                                                 # at once, before it sent anything
+    asyncio.run(run())
+    assert fake.calls_of("CancelAllOrdersAfter") == [{"timeout": "60"}, {"timeout": "60"}, {"timeout": "0"}]
+    assert fake.timer is None
