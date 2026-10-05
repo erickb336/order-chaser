@@ -20,6 +20,8 @@ create table if not exists event (
 create index if not exists event_chase on event(chase_id, seq);
 create table if not exists leg (
   id text primary key, chase_id text not null references chase(id));
+create table if not exists setting (
+  key text primary key, value text not null);
 create table if not exists sim_account (
   id integer primary key check (id = 1), state text not null);
 """
@@ -82,6 +84,22 @@ class Db:
 
     def save_account(self, state: str) -> None:
         self.cx.execute("insert into sim_account(id, state) values (1, ?) on conflict(id) do update set state=excluded.state", (state,))
+
+    def setting(self, key: str) -> str | None:
+        r = self.cx.execute("select value from setting where key = ?", (key,)).fetchone()
+        return r[0] if r else None
+
+    def set_setting(self, key: str, value: str | None) -> None:
+        """None deletes the setting."""
+        if value is None:
+            self.cx.execute("delete from setting where key = ?", (key,))
+        else:
+            self.cx.execute("insert into setting(key, value) values (?, ?) on conflict(key) do update set value=excluded.value",
+                            (key, value))
+
+    def any_live(self) -> bool:
+        """A live chase was started before (Q6: the first live order is marked one time)."""
+        return self.cx.execute("select 1 from chase where mode = 'live' limit 1").fetchone() is not None
 
     def touch(self, chase_id: str, now: float) -> None:
         """Heartbeat: after a crash, "updated" tells when the tool last ran."""

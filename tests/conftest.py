@@ -12,8 +12,10 @@ class MemoryKeyring(KeyringBackend):
     def __init__(self):
         super().__init__()
         self.items: dict[tuple[str, str], str] = {}
+        self.reads = 0          # each read is one macOS prompt on a real Mac (Q9)
 
     def get_password(self, service, username):
+        self.reads += 1
         return self.items.get((service, username))
 
     def set_password(self, service, username, password):

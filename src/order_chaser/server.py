@@ -32,7 +32,6 @@ HOST, PORT = "127.0.0.1", 5180
 WATCH_EVERY = 1.0   # s: at most one pair change each second, so that Kraken does not refuse the subscriptions
 STATIC = Path(__file__).parent / "static"
 PAGES = ("new", "chase", "result", "history", "setup")
-MODE = "dry"   # the pages offer only dry runs until U6; Engine.start_live is the live path (tests use a local fake)
 PLAIN_NUMBER = re.compile(r"[0-9]{1,15}(\.[0-9]{1,18})?")   # ASCII digits only: no "١" or "０"
 NUMBER_MAX = Decimal(10) ** 12
 WHAT = {"buy": "buy", "sell": "sell", "long": "buy", "short": "sell", "close-long": "sell", "close-short": "buy"}  # -> side
@@ -49,6 +48,10 @@ AMOUNT_TEXT = "Enter the amount as a plain number, such as 0.0500."
 WITHDRAW_NOT_REMOVED = ("This key can withdraw funds. The tool refused it, but macOS did not let it remove the key. "
                         "Delete the item \"Kraken API key (order-chaser)\" in Keychain Access, and delete the key in Kraken Pro.")
 KEYCHAIN_TEXT = keys.KEYCHAIN_TEXT
+ACCOUNT_ANSWERS = ("no", "yes", "sub")   # Q10: no other tool; another tool (live stays off); "I use a sub-account" (G19 P2)
+PROTECT = ("stop-loss", "take-profit", "trailing-stop")   # Kraken ordertypes that protect a position (Q7, C8)
+OTHERS_TICK_TEXT = ("Tick the box to start: the safety timer can cancel your stop-loss and take-profit orders.")
+FIRST_TICK_TEXT = "Tick the box for your first live order."
 STOP_TIMER_TEXT = ("The tool stopped during a live chase. The safety timer stays on: within 60 s Kraken cancels ALL "
                    "open orders on this account, also stop-loss and take-profit orders.")
 
@@ -63,6 +66,15 @@ def number(v) -> Decimal | None:
     else:
         return None
     return d if d.is_finite() and 0 <= d < NUMBER_MAX else None
+
+
+def others(open_orders: dict) -> list[dict]:
+    """The open orders of the account (Kraken OpenOrders), stop-loss and take-profit orders first (Q7, C8)."""
+    rows = [{"id": k, "pair": o.get("descr", {}).get("pair", ""), "type": o.get("descr", {}).get("ordertype", ""),
+             "text": o.get("descr", {}).get("order", ""), "cl_ord_id": o.get("cl_ord_id")} for k, o in open_orders.items()]
+    for r in rows:
+        r["protect"] = r["type"].startswith(PROTECT)
+    return sorted(rows, key=lambda r: not r["protect"])
 
 
 def _plain(o):
@@ -102,6 +114,7 @@ class Engine:
         self.touched = 0.0
         self.feed: feed.PublicFeed | None = None
         self.kgw: KrakenGateway | None = None   # the live gateway (create_app gives it); a dry run uses self.gw
+        self.blocked: str | None = None         # why no live chase can start now (the restart reconcile could not read Kraken)
 
     # ----- start of the tool -----
     def end_unfinished(self) -> None:
@@ -206,6 +219,47 @@ class Engine:
         if errors := self.start(symbol, what, qty, limit, timeout, venue=core.LIVE_VENUE):   # the prices moved
             await self.kgw.close()
         return errors
+
+    # ----- setup and the live check (Q6, Q7, Q9, Q10) -----
+    def setup_state(self) -> dict:
+        """What Setup recorded, and why a live chase cannot start now (empty: it can)."""
+        a = json.loads(self.db.setting("account") or "null")    # {"answer", "at"}
+        k = json.loads(self.db.setting("key") or "null")        # {"saved", "tested", "verdict", "permissions"}
+        why = []
+        if a is None:
+            why.append("Answer Setup, step 2: does another bot or API tool use this Kraken account?")
+        elif a["answer"] == "yes":
+            why.append("Setup, step 2: use a Kraken sub-account for this tool. Live chases stay off until you confirm it.")
+        if k is None:
+            why.append("Save a Kraken API key in Setup, step 3.")
+        elif k.get("verdict") != "ok":
+            why.append("Test the Kraken API key in Setup, step 3. It must pass.")
+        if self.blocked:
+            why.append(self.blocked)
+        return {"account": a, "key": k, "ready": not why, "why": why, "first": not self.db.any_live()}
+
+    async def live_check(self, symbol: str) -> dict:
+        """The checks before a live start: Setup, live prices, the key (macOS asks one time at each start, Q9),
+        the private feed's token, and the other open orders of the account (Q7). Nothing changes on Kraken."""
+        s = self.setup_state()
+        pair = self.pairs.get(symbol)
+        out = {"errors": list(s["why"]), "first": s["first"], "min_qty": str(pair.ordermin) if pair else None,
+               "others": None}
+        if pair is None:
+            out["errors"].append("Unknown pair, or the pair list did not load.")
+        elif symbol != self.watched or not self.fresh():
+            out["errors"].append("Start needs live prices.")
+        if out["errors"]:
+            return out
+        try:
+            await self.kgw.open_key()
+            got = await self.kgw.rest.call("OpenOrders")
+            await self.kgw.rest.call("GetWebSocketsToken")   # Access WebSockets API: the private feed can connect
+        except Exception as e:
+            out["errors"].append(f"Nothing was placed. {keys.why(e)}")
+            return out
+        out["others"] = others(got.get("open", {}))
+        return out
 
     def on_private(self, ev) -> None:
         if self.active and not self.chase.dry:
@@ -356,7 +410,7 @@ class Engine:
         now = self.clock()
         return {
             "now": now,
-            "mode": MODE,
+            "live": self.setup_state(),
             "watched": self.watched,
             "feed": {"bid": str(self.bid) if self.bid else None, "ask": str(self.ask) if self.ask else None,
                      "ok": self.book_ok, "fresh": self.fresh(), "age": None if self.book_at is None else now - self.book_at,
@@ -509,10 +563,32 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
                  else None)
         if error:
             return JSONResponse({"errors": [error]}, status_code=400)
-        errors = eng.start(pair, what, qty, limit, timeout, lev)
+        mode = d.get("mode", "dry")
+        if mode == "live":
+            errors = await live_start(d, pair, what, qty, limit, timeout)
+        elif mode == "dry":
+            errors = eng.start(pair, what, qty, limit, timeout, lev)
+        else:
+            errors = ['Send the mode "dry" or "live".']
         if errors:
             return JSONResponse({"errors": errors}, status_code=400)
         return JSONResponse({"id": eng.chase.id})
+
+    async def live_start(d: dict, pair: str, what: str, qty: Decimal, limit: Decimal | None, timeout: int) -> list[str]:
+        """A live chase starts only after the live check, with its ticks (Q6, Q7)."""
+        if eng.active:
+            return ["A chase runs now. You can start a new chase when it ends."]
+        chk = await eng.live_check(pair)
+        if chk["errors"]:
+            return chk["errors"]
+        p = eng.pairs[pair]
+        if chk["first"] and qty != p.ordermin:
+            return [f"Your first live order uses the Kraken minimum: {core.fmt_qty(p.ordermin)} {p.base}."]
+        if chk["first"] and d.get("first_ok") is not True:
+            return [FIRST_TICK_TEXT]
+        if any(o["protect"] for o in chk["others"]) and d.get("others_ok") is not True:
+            return [OTHERS_TICK_TEXT]
+        return await eng.start_live(pair, what, qty, limit, timeout)
 
     async def action(request: Request):
         ok = eng.user(request.url.path.rsplit("/", 1)[1])
@@ -582,6 +658,29 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
             return JSONResponse({"errors": errors}, status_code=400)
         return JSONResponse(json.loads(json.dumps(eng.close_preview(pair.symbol, d, qty), default=_plain)))
 
+    # ----- Setup (Q10, G19) and the live check -----
+
+    async def setup_get(request: Request):
+        return JSONResponse({**eng.setup_state(), "host": f"{HOST}:{port}"})
+
+    async def setup_post(request: Request):
+        d = await body(request)
+        if d.get("account") not in ACCOUNT_ANSWERS:
+            return JSONResponse({"errors": ['Send the account answer "no", "yes" or "sub".']}, status_code=400)
+        db.set_setting("account", json.dumps({"answer": d["account"], "at": eng.clock()}))
+        eng.version += 1
+        return JSONResponse(eng.setup_state())
+
+    async def live_check(request: Request):
+        d = await body(request)
+        if not isinstance(d.get("pair"), str):
+            return JSONResponse({"errors": ["Unknown pair."]}, status_code=400)
+        return JSONResponse(await eng.live_check(d["pair"]))
+
+    def key_state(**k) -> None:
+        db.set_setting("key", json.dumps(k) if k else None)
+        eng.version += 1
+
     # ----- the Kraken API key (T4 U2): token + Origin guard (Guard), JSON only, never logged or sent back -----
 
     async def key_save(request: Request):
@@ -593,6 +692,8 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
             await asyncio.to_thread(store.save, key)   # a macOS prompt must not stop the chase loop
         except Exception:   # the text of a Keychain error is not shown: say what to do
             return JSONResponse({"errors": [KEYCHAIN_TEXT]}, status_code=503)
+        kraken.key = None                              # the next live call takes the new key (from memory)
+        key_state(saved=eng.clock(), tested=None, verdict=None, permissions=None)
         return JSONResponse({"saved": True})
 
     async def key_remove(request: Request):
@@ -600,6 +701,8 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
             await asyncio.to_thread(store.remove)
         except Exception:
             return JSONResponse({"errors": [KEYCHAIN_TEXT]}, status_code=503)
+        kraken.key = None
+        key_state()
         return JSONResponse({"removed": True})
 
     async def key_test(request: Request):
@@ -610,6 +713,7 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         except Exception:
             return JSONResponse({"errors": [KEYCHAIN_TEXT]}, status_code=503)
         if kraken.key is None:
+            key_state()
             return JSONResponse({"errors": ["No key is saved. Paste the key first."]}, status_code=409)
         p = await rest.check(kraken)
         removed = False
@@ -619,7 +723,12 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
                 await asyncio.to_thread(store.remove)
                 removed = True
             except Exception:
+                key_state(saved=eng.clock(), tested=eng.clock(), verdict="withdraw", permissions=p.on)
                 return JSONResponse({"errors": [WITHDRAW_NOT_REMOVED]}, status_code=503)
+            key_state()
+        else:
+            saved = (eng.setup_state()["key"] or {}).get("saved", eng.clock())
+            key_state(saved=saved, tested=eng.clock(), verdict=p.verdict, permissions=p.on)
         return JSONResponse({"verdict": p.verdict, "permissions": p.on, "error": p.error, "removed": removed})
 
     async def no_icon(request: Request):
@@ -631,6 +740,8 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         Route("/api/chase/stop", action, methods=["POST"]), Route("/api/chase/fillnow", action, methods=["POST"]),
         Route("/api/key", key_save, methods=["POST"]), Route("/api/key/remove", key_remove, methods=["POST"]),
         Route("/api/key/test", key_test, methods=["POST"]),
+        Route("/api/setup", setup_get), Route("/api/setup", setup_post, methods=["POST"]),
+        Route("/api/live/check", live_check, methods=["POST"]),
         Route("/api/chase/{id:str}", one), Route("/api/history", history), Route("/api/account", account), Route("/api/plan", plan),
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]

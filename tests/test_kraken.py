@@ -354,3 +354,75 @@ def test_a_stop_of_the_tool_during_a_live_chase_says_that_the_timer_cancels_all_
     with live_app(tmp_path, fake) as (eng, *_):
         events = [e["text"] for e in eng.db.events(cid)]
     assert any("The safety timer of the live chase stayed on" in t for t in events), events
+
+
+# ---------- U6: Setup (Q10, G19), the tested key, the live check (Q6, Q7, Q9) and the live start ----------
+
+def post(client, path, body=None):
+    from test_server import ORIGIN, token_of
+    return client.post(path, json=body or {}, headers={**ORIGIN, "X-Session-Token": token_of(client)})
+
+
+LIVE = {"pair": "BTC/USD", "what": "buy", "qty": "0.00005", "timeout": 60, "mode": "live"}
+
+
+def test_a_live_start_is_refused_until_setup_is_complete_and_sends_nothing_to_kraken(live, fake):
+    eng, f, clock, call, client = live
+    book(f, call, "snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")])
+    r = post(client, "/api/chase", LIVE)
+    assert (r.status_code, r.json()["errors"]) == (400, [
+        "Answer Setup, step 2: does another bot or API tool use this Kraken account?",
+        "Save a Kraken API key in Setup, step 3."])
+    post(client, "/api/setup", {"account": "yes"})                           # G19 P1: another tool, no sub-account
+    assert post(client, "/api/chase", LIVE).json()["errors"][0] == (
+        "Setup, step 2: use a Kraken sub-account for this tool. Live chases stay off until you confirm it.")
+    assert post(client, "/api/setup", {"account": "maybe"}).status_code == 400
+    assert fake.calls == []                                                   # no call reached Kraken
+    assert client.get("/api/setup").json()["host"] == "127.0.0.1:5180"
+
+
+def test_setup_then_the_live_check_lists_other_orders_and_the_start_needs_its_ticks(live, fake, memory_keyring):
+    eng, f, clock, call, client = live
+    book(f, call, "snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")])
+    fake.add_other("limit", "XBTUSD", "sell 1 XBTUSD @ limit 70000")
+    fake.add_other("stop-loss", "XBTUSD", "sell 0.1 XBTUSD @ stop loss 58000")
+    memory_keyring.reads = 0
+    assert post(client, "/api/setup", {"account": "sub"}).json()["why"] == ["Save a Kraken API key in Setup, step 3."]
+    assert post(client, "/api/key", {"api_key": API, "private_key": SECRET}).json() == {"saved": True}
+    assert post(client, "/api/chase", LIVE).json()["errors"] == ["Test the Kraken API key in Setup, step 3. It must pass."]
+    t = post(client, "/api/key/test").json()
+    assert (t["verdict"], t["permissions"]["Withdraw Funds"]) == ("ok", False)
+    assert client.get("/api/setup").json()["ready"] is True
+
+    chk = post(client, "/api/live/check", {"pair": "BTC/USD"}).json()
+    assert (chk["errors"], chk["first"], chk["min_qty"]) == ([], True, "0.00005")
+    assert [(o["type"], o["protect"]) for o in chk["others"]] == [("stop-loss", True), ("limit", False)]  # stop-loss first
+
+    assert post(client, "/api/chase", {**LIVE, "qty": "0.01"}).json()["errors"] == [
+        "Your first live order uses the Kraken minimum: 0.00005 BTC."]
+    assert post(client, "/api/chase", LIVE).json()["errors"] == ["Tick the box for your first live order."]
+    assert post(client, "/api/chase", {**LIVE, "first_ok": True}).json()["errors"] == [
+        "Tick the box to start: the safety timer can cancel your stop-loss and take-profit orders."]
+    assert fake.calls_of("AddOrder") == [fake.calls_of("AddOrder")[0]] and "validate" in fake.calls_of("AddOrder")[0]
+    r = post(client, "/api/chase", {**LIVE, "first_ok": True, "others_ok": True})
+    assert r.status_code == 200, r.text
+    wait_for(lambda: eng.chase.phase == "resting")
+    assert (eng.db.get(r.json()["id"])[1], eng.chase.qty) == ("live", D("0.00005"))
+    assert memory_keyring.reads == 0                                          # saved this start: no Keychain read
+    assert client.get("/api/setup").json()["first"] is False                  # the tick is one time only (Q6)
+
+
+def test_the_keychain_is_read_one_time_at_each_start_of_the_tool(tmp_path, fake, memory_keyring):
+    with live_app(tmp_path, fake) as (eng, f, clock, call, client):           # the key is in the Keychain from before
+        post(client, "/api/setup", {"account": "no"})
+        memory_keyring.reads = 0
+        assert post(client, "/api/key/test").json()["verdict"] == "ok"
+        book(f, call, "snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")])
+        assert post(client, "/api/live/check", {"pair": "BTC/USD"}).json()["errors"] == []
+        assert post(client, "/api/live/check", {"pair": "BTC/USD"}).json()["errors"] == []
+        assert memory_keyring.reads == 1
+    with live_app(tmp_path, fake) as (eng, f, clock, call, client):           # the next start asks again, one time
+        assert client.get("/api/setup").json()["ready"] is True                # the answers and the test stay
+        book(f, call, "snapshot", [("62417.9", "1.0")], [("62418.5", "1.0")])
+        post(client, "/api/live/check", {"pair": "BTC/USD"})
+        assert memory_keyring.reads == 2

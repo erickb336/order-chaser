@@ -148,7 +148,12 @@ class FakeKraken:
         self.timer = self.clock() + t if t else None
         return {"currentTime": "2026-10-04T09:52:04Z", "triggerTime": "0" if not t else "2026-10-04T09:53:04Z"}
 
+    def r_WithdrawMethods(self, p):
+        raise KrakenRefusal("EGeneral:Permission denied")    # the dummy key cannot withdraw
+
     def r_AddOrder(self, p):
+        if p.get("validate"):                                 # the permission test: Kraken checks, places nothing
+            return {"descr": {"order": "validated"}}
         assert len(p["cl_ord_id"]) <= 18
         price, qty, buy = D(p["price"]), D(p["volume"]), p["type"] == "buy"
         ioc = p.get("timeinforce") == "IOC"
