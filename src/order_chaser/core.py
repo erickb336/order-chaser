@@ -1011,8 +1011,9 @@ def _restarted(c: Chase, ev: Restarted, t: float) -> tuple[Chase, list]:
         return replace(c, phase="restart", off_from=ev.last_seen, price=None, pending=None), [
             Log(t, f"Tool started again after {off} s off. Reading the orders of this chase on Kraken by cl_ord_id. "
                    "The chase does not continue.", "bad"),
-            Log(t, "The safety timer of the live chase stayed on: within 60 s of the stop, Kraken cancelled all "
-                   "open orders on the account, also stop-loss and take-profit orders.", "warn")]
+            Log(t, "The safety timer of the live chase stayed on: 60 s after its last renewal, Kraken cancels all "
+                   "open orders on the account, also stop-loss and take-profit orders. The tool sets it to 0 when it "
+                   "has read the chase.", "warn")]
     c, more = _end(replace(c, off_from=ev.last_seen), ev.now, "ended")
     return c, lines + more
 

@@ -464,6 +464,7 @@ def test_at_restart_an_order_still_open_is_cancelled_and_its_fills_are_recorded(
     assert (c.phase, c.outcome, c.found, c.filled) == ("done", "ended", "open", D("0.018"))
     assert fake.calls_of("CancelOrder") == [{"cl_ord_id": cid}]
     assert fake.by_cl(cid)[1]["status"] == "canceled"
+    assert fake.calls_of("CancelAllOrdersAfter")[-1] == {"timeout": "0"} and fake.timer is None   # the other orders stay
     assert [e["text"] for e in eng.db.events(cid)][-2:] == [
         "Kraken reports 0.0180 BTC more filled than the tool saw. Recorded it at 62,417.90 (maker).",
         "The order was still open on Kraken. The tool cancelled it. The safety timer had not fired: your other orders "

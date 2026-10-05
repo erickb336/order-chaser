@@ -320,6 +320,8 @@ class KrakenGateway:
                 found = "timer"      # cancelled after the tool stopped, not by the tool: the safety timer
             if info:
                 out.append(st)
+        # The timer of the last stop can still run: no chase runs now, so set it to 0 (the other orders stay).
+        await self.rest.call("CancelAllOrdersAfter", timeout=0)
         gone = await self.cancelled_by_timer(c, c.off_from, c.off_from + TIMER + 5) if found == "timer" else None
         return out + [core.Reconciled(self.clock(), found, gone)]
 
