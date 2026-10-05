@@ -146,8 +146,8 @@ function margin(c, w, snap) {
 
 function actions(st, c, snap) {
   const a = [], rest = Number(c.qty) - Number(c.filled);
-  const canStop = ['placing', 'resting', 'amending', 'partial', 'rejected', 'ratenear', 'disconnected', 'replacing'].includes(st);
-  const canFill = ['resting', 'amending', 'partial', 'rejected', 'ratenear', 'replacing'].includes(st);
+  const canStop = ['placing', 'resting', 'amending', 'partial', 'rejected', 'ratenear', 'disconnected', 'replacing', 'placeagain'].includes(st);
+  const canFill = ['resting', 'amending', 'partial', 'rejected', 'ratenear', 'replacing', 'placeagain'].includes(st);
   if (canStop) a.push('<button class="btn danger" id="stop">Stop</button>');
   if (canFill) a.push('<button class="btn" style="white-space:nowrap" id="fillnow">Fill the rest now</button>');
   if (OC.DONE.includes(st)) a.push(`<a class="btn primary" href="/result?id=${encodeURIComponent(c.id)}">See the result</a>`);

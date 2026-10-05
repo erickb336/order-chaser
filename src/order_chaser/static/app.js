@@ -130,6 +130,8 @@ function stateOf(c, now) {
   if (c.phase === 'done') return c.outcome;
   // A cancel and replace in flight (or waiting for a price for the new leg).
   if (c.replace && c.exit == null && (['cancelling', 'reread', 'placing'].includes(c.phase) || (c.phase === 'resting' && c.price == null))) return 'replacing';
+  // The exchange refused a new order (it would cross, or the rate limit): no order rests until the tool places it again.
+  if (c.exit == null && c.phase === 'resting' && c.price == null) return 'placeagain';
   if (c.phase === 'placing') return 'placing';
   if (c.phase === 'amending') return 'amending';
   if (c.phase === 'feed_lost' || (c.phase === 'reconcile' && c.reconcile_for === 'feed')) return 'disconnected';
@@ -144,12 +146,12 @@ const LABEL = {
   notfilled: 'Rest not filled', belowmin: 'Rest below the minimum', rejected: 'Amend rejected', disconnected: 'Disconnected',
   ratenear: 'Rate limit near', ended: 'Ended: tool stopped or restarted', stopped: 'Stopped by you', stopping: 'Stopping', refused: 'Order rejected',
   pageoffline: 'Page lost the tool', cancelfail: 'Cancel failed',
-  replacing: 'Amend refused: cancel and replace', liquidated: 'Liquidated', nopos: 'Ended: position closed',
+  replacing: 'Amend refused: cancel and replace', placeagain: 'Order rejected: placing again', liquidated: 'Liquidated', nopos: 'Ended: position closed',
 };
 const TONE = {
   placing: 'you', resting: 'you', amending: 'you', partial: 'fill', filled: 'fill', fallback: 'warn', notfilled: 'bad', belowmin: 'bad',
   rejected: 'warn', disconnected: 'bad', ratenear: 'warn', ended: 'bad', stopped: 'muted', stopping: 'muted', refused: 'bad', pageoffline: 'bad', cancelfail: 'bad',
-  replacing: 'warn', liquidated: 'bad', nopos: 'warn',
+  replacing: 'warn', placeagain: 'warn', liquidated: 'bad', nopos: 'warn',
 };
 const DONE = ['filled', 'notfilled', 'belowmin', 'stopped', 'ended', 'refused', 'cancelfail', 'liquidated', 'nopos'];
 const SIM = ' (Simulated. No order goes to Kraken.)';
@@ -226,6 +228,13 @@ function copy(st, c, snap, ageOff) {
         [mark(3), waiting ? `Place a new post-only ${c.side} for the rest, ${qty(rest)} ${B}, when the price is valid.`
           : `Place a new post-only ${c.side} for the rest, ${qty(rest)} ${B}${c.pending ? ' at ' + p(c.pending) : ''}${w.close ? ', reduce-only' : ', leverage ' + w.lev + 'x'}.`]];
       t.note = REPLACE_COST;
+      break;
+    }
+    case 'placeagain': {
+      const last = c.events.filter(e => e.kind === 'warn' && e.text.includes(' rejected ')).pop();
+      t.title = `Order rejected: placing it again at the ${w.best}`;
+      t.sub = (last ? last.text + ' ' : '') + `No order rests now. The new order never goes ${w.above} the ${w.limitWord}, ${p(c.limit)}. ` +
+        `At the timeout, the tool places no new order. If the price is valid then, it sends one IOC at the ${w.limitWord} for the rest.` + SIM;
       break;
     }
     case 'filled': {
@@ -337,7 +346,7 @@ function copy(st, c, snap, ageOff) {
     }
     case 'stopped':
       t.title = 'Stopped by you';
-      t.sub = `You stopped the chase. The tool cancelled the order and the simulated exchange confirmed the cancel. ${qty(filled)} ${B} filled before the stop.` +
+      t.sub = `You stopped the chase. ${stopCancelled(c) ? 'The tool cancelled the order and the simulated exchange confirmed the cancel.' : 'No order rested, so there was nothing to cancel.'} ${qty(filled)} ${B} filled before the stop.` +
         (w.m ? positionLine(c) : ' No order of yours rests on the simulated exchange.');
       break;
     case 'liquidated':
@@ -372,7 +381,19 @@ function copy(st, c, snap, ageOff) {
 
 // The cost of a cancel and replace, in plain words (shown while it runs and in the result).
 const REPLACE_COST = 'What a replace costs: each move is a cancel and a new order, not one amend. A cancel adds up to 8 to the rate counter and the new order adds 1, so moves can come less often. The new order also loses its place in the queue at its price, and for a moment no order rests.';
-const replaceNote = c => c.replace ? ` ${c.mode === 'live' ? 'Kraken' : 'The simulated exchange'} refuses amends of this order, so each move is a cancel and a new order (${c.legs.length - 1} so far).` : '';
+// The new orders of a chase, from its log: placed again after the exchange rejected the first order (T44), and
+// placed after the switch to cancel and replace. Each new order logs "Placing a …".
+function newOrders(c) {
+  const i = c.events.findIndex(e => e.text.includes('Switched to cancel and replace'));
+  const replaced = i < 0 ? 0 : c.events.slice(i).filter(e => e.text.startsWith('Placing a ')).length;
+  return { again: c.legs.length - 1 - replaced, replaced };
+}
+// Stop: a cancel only when the exchange confirmed one after it. No order rests after a rejected place (T44).
+function stopCancelled(c) {
+  const i = c.events.findIndex(e => e.text.startsWith('You pressed Stop'));
+  return i >= 0 && c.events.slice(i).some(e => e.text.includes('confirmed the cancel'));
+}
+const replaceNote = c => c.replace ? ` ${c.mode === 'live' ? 'Kraken' : 'The simulated exchange'} refuses amends of this order, so each move is a cancel and a new order (${newOrders(c).replaced} so far).` : '';
 
 // ---------- The price rail (from the approved prototype) ----------
 function rail(c, bid, ask, stale) {
@@ -455,5 +476,5 @@ function eventLog(c) {
   return `<ul class="log">${c.events.slice().reverse().map(e => `<li><span class="ts">${mmss(e.t)}</span><span class="${kind[e.kind] || ''}">${esc(e.text)}</span></li>`).join('')}</ul>`;
 }
 
-return { closeBadge, stillOpen, planLine, markNote, clock, closeLink, closeText, gauge, orderName, positionLine, MARGIN_FEES, REPLACE_COST, TOKEN, $, esc, beyond, pct, fillWord, againText, restBelowMin, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
+return { newOrders, stopCancelled, closeBadge, stillOpen, planLine, markNote, clock, closeLink, closeText, gauge, orderName, positionLine, MARGIN_FEES, REPLACE_COST, TOKEN, $, esc, beyond, pct, fillWord, againText, restBelowMin, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
 })();
