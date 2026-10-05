@@ -23,7 +23,7 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, R
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import core, feed
+from . import core, feed, keys
 from .db import DEFAULT_DIR, Db, lock_folder
 from .sim import SimAccount, SimGateway
 
@@ -45,6 +45,8 @@ SECURITY_HEADERS = [(b"x-frame-options", b"DENY"), (b"content-security-policy", 
 
 
 AMOUNT_TEXT = "Enter the amount as a plain number, such as 0.0500."
+KEYCHAIN_TEXT = ("macOS did not let the tool use the Keychain. Unlock the Keychain, click Allow in the macOS prompt, "
+                 "and try again.")
 
 
 def number(v) -> Decimal | None:
@@ -519,6 +521,27 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
             return JSONResponse({"errors": errors}, status_code=400)
         return JSONResponse(json.loads(json.dumps(eng.close_preview(pair.symbol, d, qty), default=_plain)))
 
+    # ----- the Kraken API key (T4 U2): token + Origin guard (Guard), JSON only, never logged or sent back -----
+    store = keys.KeyStore()
+
+    async def key_save(request: Request):
+        d = await body(request)
+        key = keys.parse(d.get("api_key"), d.get("private_key"))
+        if key is None:
+            return JSONResponse({"errors": [keys.SHAPE_TEXT]}, status_code=400)
+        try:
+            await asyncio.to_thread(store.save, key)   # a macOS prompt must not stop the chase loop
+        except Exception:   # the text of a Keychain error is not shown: say what to do
+            return JSONResponse({"errors": [KEYCHAIN_TEXT]}, status_code=503)
+        return JSONResponse({"saved": True})
+
+    async def key_remove(request: Request):
+        try:
+            await asyncio.to_thread(store.remove)
+        except Exception:
+            return JSONResponse({"errors": [KEYCHAIN_TEXT]}, status_code=503)
+        return JSONResponse({"removed": True})
+
     async def no_icon(request: Request):
         return PlainTextResponse("", status_code=204)
 
@@ -526,11 +549,12 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
         Route("/api/state", state), Route("/api/stream", stream),
         Route("/api/watch", watch, methods=["POST"]), Route("/api/chase", start, methods=["POST"]),
         Route("/api/chase/stop", action, methods=["POST"]), Route("/api/chase/fillnow", action, methods=["POST"]),
+        Route("/api/key", key_save, methods=["POST"]), Route("/api/key/remove", key_remove, methods=["POST"]),
         Route("/api/chase/{id:str}", one), Route("/api/history", history), Route("/api/account", account), Route("/api/plan", plan),
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
-    app.state.engine, app.state.token = eng, token
+    app.state.engine, app.state.token, app.state.keys = eng, token, store
     return Guard(app, token, port)
 
 
