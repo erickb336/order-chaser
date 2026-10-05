@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 470" width="960" height="470" role="img" aria-labelledby="title desc">
+<title id="title">Order chaser: one chase, sample data</title><desc id="desc">A chase of a buy order of 0.0500 BTC on BTC/USD, drawn with sample data. The cap is the ask at the start, 62,420.00. The tool places a post-only buy at the best bid, 62,400.00, and moves it up as the bid rises, never above the cap. At 1:20, 0.0300 BTC fills at 62,413.00 (simulated). At the 2:00 timeout the tool cancels, reads the filled quantity again, and sends one IOC for the rest, 0.0200 BTC, at the cap. The IOC fills at the ask, 62,418.00.</desc>
+<defs><marker id="arrow-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a7aebb"/></marker><marker id="arrow-order" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8fb6ff"/></marker><marker id="arrow-ioc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c5b3ff"/></marker><marker id="arrow-ask" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff8a80"/></marker><marker id="arrow-cap" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f6bd5a"/></marker></defs>
+<rect x="0.5" y="0.5" width="959" height="469" rx="14" fill="#0f1115" stroke="#3a404b"/>
+<text x="32" y="46" fill="#e8eaee" font-size="26" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Order chaser</text>
+<text x="32" y="72" fill="#a7aebb" font-size="15" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">One chase of a buy order, 0.0500 BTC on BTC/USD. Dry run, sample data.</text>
+<line x1="104" y1="317.7142857142857" x2="900" y2="317.7142857142857" stroke="#3a404b" stroke-width="1"/>
+<text x="98" y="321.7142857142857" fill="#a7aebb" font-size="12" font-weight="400" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">62,400</text>
+<line x1="104" y1="232.0" x2="900" y2="232.0" stroke="#3a404b" stroke-width="1"/>
+<text x="98" y="236.0" fill="#a7aebb" font-size="12" font-weight="400" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">62,410</text>
+<line x1="104" y1="146.28571428571428" x2="900" y2="146.28571428571428" stroke="#3a404b" stroke-width="1"/>
+<text x="98" y="150.28571428571428" fill="#a7aebb" font-size="12" font-weight="400" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">62,420</text>
+<text x="110.0" y="374" fill="#a7aebb" font-size="12" font-weight="400" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">0:00</text>
+<text x="400.0" y="374" fill="#a7aebb" font-size="12" font-weight="400" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">1:00</text>
+<text x="690.0" y="374" fill="#a7aebb" font-size="12" font-weight="400" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">2:00</text>
+<line x1="110" y1="352" x2="900" y2="352" stroke="#3a404b" stroke-width="1"/>
+<line x1="110" y1="146.28571428571428" x2="900" y2="146.28571428571428" stroke="#f6bd5a" stroke-width="2" stroke-dasharray="7 5"/>
+<text x="114" y="165.28571428571428" fill="#f6bd5a" font-size="13" font-weight="600" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">cap 62,420.00 = the ask at the start. The order never goes above it.</text>
+<path d="M110.0,146.3 H230.8 V137.7 H351.7 V129.1 H472.5 V137.7 H593.3 V154.9 H690.0 V163.4 H835.0 V163.4" fill="none" stroke="#ff8a80" stroke-width="1.6" stroke-linejoin="round"/>
+<path d="M110.0,317.7 H206.7 V283.4 H327.5 V240.6 H448.3 V206.3 H569.2 V180.6 H690.0 V180.6 H835.0 V180.6" fill="none" stroke="#5ee08f" stroke-width="1.6" stroke-linejoin="round"/>
+<text x="841.0" y="167.42857142857142" fill="#ff8a80" font-size="12" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">best ask</text>
+<text x="841.0" y="198.57142857142858" fill="#5ee08f" font-size="12" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">best bid</text>
+<path d="M110.0,317.7 H211.5 V283.4 H332.3 V240.6 H453.2 V206.3 H574.0 V180.6 H690.0 V180.6" fill="none" stroke="#8fb6ff" stroke-width="4" stroke-linejoin="round"/>
+<text x="129.33333333333334" y="339.7142857142857" fill="#8fb6ff" font-size="13" font-weight="600" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">your order: post-only at the best bid</text>
+<circle cx="496.6666666666667" cy="206.28571428571428" r="6" fill="#5ee08f" stroke="#5ee08f" stroke-width="2"/>
+<line x1="496.6666666666667" y1="214.28571428571428" x2="496.6666666666667" y2="252.28571428571428" stroke="#5ee08f" stroke-width="1.2"/>
+<text x="496.6666666666667" y="268.2857142857143" fill="#5ee08f" font-size="13" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">fill 0.0300 BTC at 62,413.00</text>
+<line x1="690.0" y1="106" x2="690.0" y2="352" stroke="#a7aebb" stroke-width="1.5" stroke-dasharray="4 4"/>
+<text x="690.0" y="100" fill="#e8eaee" font-size="13" font-weight="700" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">timeout 2:00</text>
+<path d="M741,146.28571428571428 L750,137.28571428571428 L759,146.28571428571428 L750,155.28571428571428 z" fill="#191c22" stroke="#c5b3ff" stroke-width="2" stroke-linejoin="round"/>
+<line x1="750" y1="156.28571428571428" x2="750" y2="159.42857142857142" stroke="#c5b3ff" stroke-width="2" marker-end="url(#arrow-ioc)"/>
+<text x="704" y="220.85714285714286" fill="#c5b3ff" font-size="13" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">IOC 0.0200 BTC at the cap</text>
+<text x="704" y="238.85714285714286" fill="#c5b3ff" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">fills at the ask, 62,418.00</text>
+<rect x="32" y="398" width="214" height="52" rx="10" fill="#191c22" stroke="#3a404b" stroke-width="1.2"/>
+<circle cx="56" cy="424" r="13" fill="#191c22" stroke="#8fb6ff" stroke-width="2"/>
+<text x="56" y="429" fill="#8fb6ff" font-size="14" font-weight="700" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">1</text>
+<text x="78" y="419" fill="#e8eaee" font-size="14" font-weight="600" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Place post-only</text>
+<text x="78" y="438" fill="#a7aebb" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">at the best bid</text>
+<rect x="260" y="398" width="214" height="52" rx="10" fill="#191c22" stroke="#3a404b" stroke-width="1.2"/>
+<circle cx="284" cy="424" r="13" fill="#191c22" stroke="#8fb6ff" stroke-width="2"/>
+<text x="284" y="429" fill="#8fb6ff" font-size="14" font-weight="700" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">2</text>
+<text x="306" y="419" fill="#e8eaee" font-size="14" font-weight="600" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Move up with the bid</text>
+<text x="306" y="438" fill="#a7aebb" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">never above the cap</text>
+<rect x="488" y="398" width="214" height="52" rx="10" fill="#191c22" stroke="#3a404b" stroke-width="1.2"/>
+<circle cx="512" cy="424" r="13" fill="#191c22" stroke="#e8eaee" stroke-width="2"/>
+<text x="512" y="429" fill="#e8eaee" font-size="14" font-weight="700" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">3</text>
+<text x="534" y="419" fill="#e8eaee" font-size="14" font-weight="600" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Timeout: cancel</text>
+<text x="534" y="438" fill="#a7aebb" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">read the fill again</text>
+<rect x="716" y="398" width="214" height="52" rx="10" fill="#191c22" stroke="#3a404b" stroke-width="1.2"/>
+<circle cx="740" cy="424" r="13" fill="#191c22" stroke="#c5b3ff" stroke-width="2"/>
+<text x="740" y="429" fill="#c5b3ff" font-size="14" font-weight="700" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">4</text>
+<text x="762" y="419" fill="#e8eaee" font-size="14" font-weight="600" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">One IOC at the cap</text>
+<text x="762" y="438" fill="#a7aebb" font-size="13" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">for the rest</text>
+</svg>
