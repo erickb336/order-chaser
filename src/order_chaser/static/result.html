@@ -56,7 +56,7 @@ function mrender(c, acct) {
   // What stays of the position: a fact, not a failure.
   const stays = m.close && open ? `Stays open: ${e.stays}.` : null;
   if (gone === 'Liquidated by the simulated exchange') todo = ['The margin level is for the whole account: the form lists the positions that are left, under "Close a position".'];
-  if (c.outcome === 'ended' && open) todo = [`Your ${c.dir} is still open: ${m.close ? e.stays : `${OC.qty(filled)} ${B} at ${m.leverage}x`}. Close it from the form.`];
+  if (c.outcome === 'ended' && open) todo = [OC.stillOpen(c)];
   const level = acct && acct.level != null ? Math.round(Number(acct.level)) + '%' : 'no position';
   $('out').innerHTML = `
   <div class="mgstrip" style="margin-bottom:16px">MARGIN · ${m.close ? `close ${c.dir}, reduce-only` : `open ${c.dir}, ${m.leverage}x`} · simulated account: no position is on Kraken</div>
@@ -76,11 +76,11 @@ function mrender(c, acct) {
     ${stays ? `<div class="note plain" style="margin-top:${rest ? 8 : 16}px" id="stays">${stays}</div>` : ''}
     ${todo ? `<div class="note info small" style="margin-top:12px"><b>What to do now</b><ul style="margin:4px 0 0;padding-left:18px">${todo.map(x => `<li>${x}</li>`).join('')}</ul></div>` : ''}
     ${c.legs.length > 1 ? `<p class="small" id="replacenote" style="margin:12px 0 0"><b>Cancel and replace: ${c.legs.length - 1} time${c.legs.length > 2 ? 's' : ''}.</b> The simulated exchange refused to amend this margin order, so the tool cancelled and placed a new order for each move. ${OC.REPLACE_COST}</p>` : ''}
-    <div class="row" style="margin-top:18px">${open ? `<a class="btn primary" href="${OC.closeLink(c)}">${OC.closeText(c)}</a>` : '<a class="btn primary" href="/new">New chase</a>'}<a class="btn" href="/history">History</a></div>
+    <div class="row" style="margin-top:18px">${open ? `<a class="btn primary" href="${OC.closeLink(c)}">${OC.closeText(c, acct)}</a>` : '<a class="btn primary" href="/new">New chase</a>'}<a class="btn" href="/history">History</a></div>
   </div>
   <div class="grid2" style="margin-top:16px">
     <div class="card"><h2>Position (simulated)</h2>
-      <div class="pstat ${gone ? 'tone-bad' : open ? 'tone-fill' : ''}" style="font-size:17px"><i></i>${gone || (!open ? 'Closed' : m.close ? `Open: ${e.stays}` : `Open: ${OC.qty(posRest)} ${B} ${c.dir}, ${m.leverage}x`)}</div>
+      <div class="pstat ${gone ? 'tone-bad' : open ? 'tone-fill' : ''}" style="font-size:17px"><i></i>${gone || (!open ? (!m.close && !filled ? 'Nothing opened' : 'Closed') : m.close ? `Open: ${e.stays}` : `Open: ${OC.qty(posRest)} ${B} ${c.dir}, ${m.leverage}x`)}</div>
       <table class="t small" style="margin-top:10px">
         ${!m.close ? `<tr><td>Leverage</td><td class="r num">${m.leverage}x</td></tr><tr><td>Entry price, average</td><td class="r num">${filled ? P(s.avg) : '—'}</td></tr><tr><td>Collateral it uses <span class="badge plain">estimate</span></td><td class="r num">${OC.usd(e.collateral)} ${Q}</td></tr>`
           : `<tr><td>${m.positions.length > 1 ? 'Positions' : 'Position'} at the start</td><td class="r num" id="pstart">${e.start}</td></tr><tr><td>Closed by this chase</td><td class="r num">${OC.qty(filled)} ${B}${filled ? ' at ' + P(s.avg) : ''}</td></tr>

@@ -56,7 +56,14 @@ function markNote(a, watched) {
 
 // After a margin chase: the link to close its position. Whether one is open comes from the account (c.open_now).
 const closeLink = c => `/new?what=close&pair=${encodeURIComponent(c.pair.symbol)}&dir=${c.dir}`;
-const closeText = c => c.margin.close ? `Close the position (${qty(c.margin_est.rest)} ${c.pair.base})` : 'Close this position';
+// The link closes the whole row of the pair and direction, oldest first, so the button names that row (acct: an account read).
+function closeText(c, acct) {
+  const row = acct && acct.positions.find(p => p.pair === c.pair.symbol && p.dir === c.dir);
+  if (!row) return 'Close the position';
+  return row.count > 1 ? `Close the ${c.dir} (${qty(row.qty)} ${c.pair.base}, ${row.count} positions)` : `Close the position (${qty(row.qty)} ${c.pair.base})`;
+}
+// After a restart: the position of this chase that the account still has.
+const stillOpen = c => `Your ${c.dir} is still open: ${c.margin.close ? c.margin_est.stays : `${qty(c.filled)} ${c.pair.base} at ${c.margin.leverage}x`}. Close it from the form.`;
 // The badge of a close on the result and in the history. A close is judged by its order, not by the position (owner, G16):
 // all of the order filled is "Closed as asked", or "Position closed" when nothing stays. rest: what stays of the position.
 function closeBadge(outcome, filled, total, rest) {
@@ -232,7 +239,7 @@ function copy(st, c, snap, ageOff) {
         } else {
           t.title = 'Position opened';
           t.sub = `All ${qty(c.qty)} ${B} filled ${how}, at an average of ${p(s.avg)}. Your ${w.lev}x ${w.dir} position is open (simulated). It stays open until you close it.`;
-          t.todo = [`Rollover: up to ${usd(c.margin_est.rollover_4h)} ${c.pair.quote} for each 4 h that the position is open (estimate at the 0.05% maximum).`, 'To close it, use "Close this position".'];
+          t.todo = [`Rollover: up to ${usd(c.margin_est.rollover_4h)} ${c.pair.quote} for each 4 h that the position is open (estimate at the 0.05% maximum).`, `To close it, use "${closeText(c, snap && snap.account)}".`];
         }
         break;
       }
@@ -322,7 +329,7 @@ function copy(st, c, snap, ageOff) {
       t.title = 'Ended: the tool stopped or restarted';
       t.sub = (off == null ? 'The tool stopped and started again.' : `The tool stopped at ${mmss(off)} and started again at ${mmss(on)}.`) + ' After a restart the tool does not continue a dry run. It did these steps:';
       t.steps = [['done', 'Ended the simulated order. No order was on Kraken.'], ['done', `Recorded the simulated fills: ${qty(filled)} of ${qty(c.qty)} ${B}.`], ['done', 'Did not continue the dry run.']];
-      t.todo = [DRY_TODO, 'To test again, start a new dry run.'];
+      t.todo = [DRY_TODO, w.m && c.open_now ? stillOpen(c) : 'To test again, start a new dry run.'];
       if (w.m) t.note = 'A restart does not close a position. The simulated position stays in the simulated account.' + positionLine(c);
       break;
     }
@@ -444,5 +451,5 @@ function eventLog(c) {
   return `<ul class="log">${c.events.slice().reverse().map(e => `<li><span class="ts">${mmss(e.t)}</span><span class="${kind[e.kind] || ''}">${esc(e.text)}</span></li>`).join('')}</ul>`;
 }
 
-return { closeBadge, planLine, markNote, clock, closeLink, closeText, gauge, orderName, positionLine, MARGIN_FEES, REPLACE_COST, TOKEN, $, esc, beyond, pct, fillWord, againText, restBelowMin, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
+return { closeBadge, stillOpen, planLine, markNote, clock, closeLink, closeText, gauge, orderName, positionLine, MARGIN_FEES, REPLACE_COST, TOKEN, $, esc, beyond, pct, fillWord, againText, restBelowMin, DRY_TODO, LIVE_CANCEL_TODO, px, usd, qty, mmss, timeoutWords, post, stream, chrome, stateOf, card, eventLog, words, copy, LABEL, DONE };
 })();

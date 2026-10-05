@@ -884,11 +884,12 @@ def test_page_a_disabled_start_keeps_a_readable_label(tool):
 
 def test_page_an_open_short_shows_its_worst_case_as_the_short_value(tool):
     # UX-SHORT-OPEN-WORST-CASE-WORDS-DIFFER: a margin short gives no cash, so no "received".
+    # SHORT-WORST-CASE-LESS-FEES: the value already has the fees taken off: "after fees".
     tool.start("short", "0.01", leverage=3)
     got = tool.look([{"goto": "/chase"}, {"waitFor": "OC.$('worst').textContent"}, {"text": "#worsthead", "as": "head"},
                      {"text": "#worst", "as": "worst"}])
     value = core.worst_case("sell", D("0.01"), D("62417.9"), core.Margin(3))
-    assert got == {"head": "The short never sells for less than this, less fees:", "worst": f"Short value: {value:,.2f} USD"}
+    assert got == {"head": "The short never sells for less than this, after fees:", "worst": f"Short value: {value:,.2f} USD"}
 
 
 # ---------- repair round 5: liquidation reaches the pages ----------
@@ -963,3 +964,66 @@ def test_page_a_close_that_filled_nothing_gives_the_one_cause_on_its_result(tool
     assert (tool.eng.chase.outcome, tool.eng.chase.filled) == ("notfilled", 0)
     got = tool.look([{"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"}, {"text": "#out h1 + p", "as": "line"}])
     assert got["line"] == "The price fell below your floor before the rest could close. The reduce-only IOC at the floor filled nothing."
+
+
+# ---------- repair round 8: the close button names the whole row; ends judged as the result judges them ----------
+
+BUTTON = "Array.from(document.querySelectorAll('#out a.btn.primary, #actions a.btn')).map(e => e.textContent).filter(t => t.startsWith('Close'))[0]"
+
+
+def test_page_the_close_button_of_an_open_names_the_whole_row_it_closes(tool):
+    # CLOSE-THIS-POSITION-CLOSES-ALL: the link closes the whole row (2x and 4x), oldest first.
+    opened_long(tool, "0.01", 2)
+    got = tool.look([{"goto": "/chase"}, card_shown("filled"), {"eval": BUTTON, "as": "one"}])
+    assert got == {"one": "Close the position (0.0100 BTC)"}
+    two_longs(tool)
+    cid = tool.eng.chase.id
+    got = tool.look([{"goto": "/chase"}, card_shown("filled"), {"eval": BUTTON, "as": "chase"},
+                     {"text": "#statuscard .note.info li:last-child", "as": "todo"},
+                     ALL_TEXT, {"shot": "r85-close-row-chase.png"},
+                     {"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"}, {"eval": BUTTON, "as": "result"},
+                     ALL_TEXT, {"shot": "r85-close-row-result.png"}])
+    assert got.pop("all")["c"] >= 4.5
+    row = "Close the long (0.0400 BTC, 3 positions)"     # the first 2x, then the 2x and the 4x of two_longs
+    assert got == {"chase": row, "todo": f'To close it, use "{row}".', "result": row}
+
+
+def test_page_an_open_refused_with_nothing_filled_says_nothing_opened_in_the_position_card(tool):
+    # NOTHING-OPENED-SAYS-CLOSED
+    send = tool.eng.gw.send
+    tool.eng.gw.send = lambda cmd, now: [core.Rejected(now, "place", "EOrder:Insufficient margin")] if isinstance(cmd, core.Place) else send(cmd, now)
+    cid = tool.start("long", "0.01", leverage=2)
+    assert (tool.eng.chase.outcome, tool.eng.chase.filled) == ("refused", 0)
+    got = tool.look([{"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"},
+                     {"text": "#out .pstat", "as": "pstat"}, ALL_TEXT, {"shot": "r85-refused-open-result.png"}])
+    assert got.pop("all")["c"] >= 4.5
+    assert got == {"pstat": "Nothing opened"}
+
+
+def test_page_a_close_ended_by_a_restart_names_the_open_position_on_the_chase_page(tool):
+    # RESTART-CLOSE-SAYS-TEST-AGAIN: the chase page says what the result page says.
+    opened_long(tool, "0.02", 3)
+    tool.beat(1)
+    cid = tool.start("close-long", "0.02")
+    tool.call(tool.eng.handle, core.Restarted(tool.clock.t + 30, tool.clock.t))
+    todo = "Array.from(document.querySelectorAll('.note.info li')).map(x => x.textContent)"
+    got = tool.look([{"goto": "/chase"}, card_shown("ended"), {"eval": todo, "as": "chase"}, ALL_TEXT, {"shot": "r85-restart-close-chase.png"},
+                     {"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('.facts')"}, {"eval": todo, "as": "result"}])
+    assert got.pop("all")["c"] >= 4.5
+    still = "Your long is still open: 0.0200 BTC at 3x. Close it from the form."
+    assert got == {"chase": ["Nothing to check in Kraken Pro: a dry run sends no orders.", still], "result": [still]}
+
+
+def test_page_the_chase_page_judges_a_whole_close_order_by_the_order_and_what_stays_is_neutral(tool):
+    # CHASE-PAGE-CLOSE-JUDGED-BY-POSITION (G16 = A), as the result and the history judge it
+    t1, t2 = two_longs(tool)
+    tool.start("close-long", "0.015")
+    tool.trade("buy", "62001.0", "0.015")
+    assert tool.eng.chase.outcome == "filled"
+    got = tool.look([{"goto": "/chase"}, card_shown("filled"), {"text": "#pstat", "as": "pstat"},
+                     {"eval": "OC.$('pstat').className", "as": "tone"}, {"text": "#pdet", "as": "pdet"},
+                     ALL_TEXT, {"shot": "r85-close-as-asked-chase.png"}])
+    assert got.pop("all")["c"] >= 4.5
+    assert got == {"pstat": "Closed as asked", "tone": "pstat tone-fill",
+                   "pdet": f"Closed: the 2x position opened {t1} (0.0100 BTC) and 0.0050 BTC of the 4x position opened {t2}. "
+                           "Stays open: 0.0150 BTC at 4x. (simulated)"}
