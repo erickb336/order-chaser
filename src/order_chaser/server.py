@@ -528,6 +528,7 @@ def create_app(data_dir: Path, connect: bool = True, rate_start: float = 0.0, cl
     """connect=False leaves out the Kraken feed and the pair list: tests drive the engine.
     kraken_transport, kraken_url, kraken_ws: where the private calls go (tests give a local fake Kraken).
     awake_cmd: the command that keeps the Mac awake during a live chase (caffeinate -i)."""
+    keys.backend()   # ORDER_CHASER_KEYRING=memory with a real keyring: the tool does not start (keys.RealKeyring)
     token = secrets.token_urlsafe(32)
     db = Db(data_dir)
     eng = Engine(db, clock=clock, latency=latency, rate_start=rate_start, refuse_margin_amends=refuse_margin_amends)
@@ -858,6 +859,9 @@ def main() -> None:
     except BlockingIOError:
         raise SystemExit(f"Another order chaser runs on {a.data_dir}. Stop it first.")
     print(f"Order chaser on http://{HOST}:{a.port}  data: {a.data_dir}  (a chase is a dry run unless you choose Live)")
+    try:
+        app = create_app(a.data_dir, rate_start=a.rate_start, port=a.port, refuse_margin_amends=a.refuse_margin_amends)
+    except keys.RealKeyring as e:
+        raise SystemExit(str(e))
     # A short graceful shutdown: an open page (SSE) must not keep a stopped tool alive.
-    uvicorn.run(create_app(a.data_dir, rate_start=a.rate_start, port=a.port, refuse_margin_amends=a.refuse_margin_amends), host=HOST, port=a.port, log_level="warning",
-                timeout_graceful_shutdown=2)
+    uvicorn.run(app, host=HOST, port=a.port, log_level="warning", timeout_graceful_shutdown=2)

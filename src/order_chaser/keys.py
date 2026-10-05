@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import base64
 import binascii
+import os
 import re
 from dataclasses import dataclass
 
 import httpx
 import keyring
 import keyring.errors
+from keyring.backend import KeyringBackend
 
 SERVICE = "Kraken API key (order-chaser)"   # the name of the item in Keychain Access
 ACCOUNT = "order-chaser"
@@ -52,6 +54,48 @@ def parse(api_key, private_key) -> Key | None:
     return Key(api_key, private_key) if len(secret) == 64 else None
 
 
+MODE = "ORDER_CHASER_KEYRING"   # "memory": tests and demos; the key calls go only to an in-memory keyring
+
+
+class MemoryKeyring(KeyringBackend):
+    """A keyring in memory, with keyring's contract: delete of a missing item raises PasswordDeleteError.
+    For tests and demos: PYTHON_KEYRING_BACKEND=order_chaser.keys.MemoryKeyring with ORDER_CHASER_KEYRING=memory."""
+    priority = 1
+
+    def __init__(self):
+        super().__init__()
+        self.items: dict[tuple[str, str], str] = {}
+        self.reads = 0          # each read is one macOS prompt on a real Mac (Q9)
+
+    def get_password(self, service, username):
+        self.reads += 1
+        return self.items.get((service, username))
+
+    def set_password(self, service, username, password):
+        self.items[(service, username)] = password
+
+    def delete_password(self, service, username):
+        if self.items.pop((service, username), None) is None:
+            raise keyring.errors.PasswordDeleteError("not found")
+
+
+class RealKeyring(RuntimeError):
+    """ORDER_CHASER_KEYRING asks for the in-memory keyring, but keyring's active backend is another one."""
+
+
+def backend():
+    """keyring's active backend, checked before each key call. With ORDER_CHASER_KEYRING=memory it must be a
+    MemoryKeyring: a test or a demo never reaches the real macOS Keychain. Any other value of the setting is refused."""
+    mode = os.environ.get(MODE)
+    if mode is None:
+        return keyring.get_keyring()
+    k = keyring.get_keyring() if mode == "memory" else None
+    if not isinstance(k, MemoryKeyring):
+        raise RealKeyring(f"{MODE}={mode!r}: the tool runs only with the in-memory keyring in this mode. Start it with "
+                          "PYTHON_KEYRING_BACKEND=order_chaser.keys.MemoryKeyring, or without " + MODE + ".")
+    return k
+
+
 class KeyStore:
     """The one Keychain item of the tool. Each call can wait for a macOS prompt: the server runs it in a thread."""
 
@@ -59,23 +103,24 @@ class KeyStore:
         self.key: Key | None = None   # in memory only, after save() or the first read() of this start
 
     def save(self, key: Key) -> None:
-        keyring.set_password(SERVICE, ACCOUNT, f"{key.api_key}\n{key.private_key}")
+        backend().set_password(SERVICE, ACCOUNT, f"{key.api_key}\n{key.private_key}")
         self.key = key
 
     def read(self) -> Key | None:
         """The key: from memory, or from the Keychain one time (macOS asks). None when no item is there.
         Raises keyring.errors.KeyringError when macOS refuses (Deny, or a locked Keychain): a later read tries again."""
         if self.key is None:
-            text = keyring.get_password(SERVICE, ACCOUNT)
+            text = backend().get_password(SERVICE, ACCOUNT)
             self.key = parse(*text.split("\n", 1)) if text and "\n" in text else None
         return self.key
 
     def remove(self) -> None:
         """Delete the item from the Keychain and forget the key. No item is not an error; any other failure raises,
         so that the page never says "removed" for a key that is still there."""
+        k = backend()
         self.key = None
         try:
-            keyring.delete_password(SERVICE, ACCOUNT)
+            k.delete_password(SERVICE, ACCOUNT)
         except keyring.errors.PasswordDeleteError as e:
             # keyring's contract: PasswordDeleteError = not found. Its macOS backend also wraps a refusal in it;
             # only its NotFound cause means "no item".

@@ -2,10 +2,16 @@
 No test touches the real macOS Keychain. The key here is a dummy value, not a Kraken key."""
 import base64
 import logging
+import os
 import re
+import subprocess
+import sys
+from pathlib import Path
 
+import keyring
 import keyring.errors
 import pytest
+from keyring.backend import KeyringBackend
 from starlette.testclient import TestClient
 
 from order_chaser import keys
@@ -146,3 +152,70 @@ def test_the_key_is_in_no_file_log_or_response(tmp_path, memory_keyring, caplog,
         assert secret not in caplog.text + out + err
         assert [t[:40] for t in texts if secret in t] == []
     assert "Key(hidden)" in caplog.text
+
+
+# ----- the Keychain guard: no test, probe or demo reaches the real macOS Keychain -----
+
+class OtherKeyring(KeyringBackend):
+    """A stand-in for a real backend (the macOS Keychain): it records each call and stores nothing."""
+    priority = 1
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def get_password(self, service, username):
+        self.calls.append("get")
+
+    def set_password(self, service, username, password):
+        self.calls.append("set")
+
+    def delete_password(self, service, username):
+        self.calls.append("delete")
+
+
+def test_the_memory_mode_refuses_a_real_keyring_before_any_key_call(tmp_path, monkeypatch):
+    other = OtherKeyring()
+    keyring.set_keyring(other)
+    assert os.environ[keys.MODE] == "memory"                        # conftest.py sets it for every pytest run
+    store = keys.KeyStore()
+    for call in (store.read, lambda: store.save(keys.Key(API, PRIV)), store.remove):
+        with pytest.raises(keys.RealKeyring):
+            call()
+    with pytest.raises(keys.RealKeyring):
+        create_app(tmp_path, connect=False, latency=0)              # the tool does not start
+    assert other.calls == []
+    monkeypatch.setenv(keys.MODE, "memroy")                         # a typo is not the real Keychain either
+    keyring.set_keyring(keys.MemoryKeyring())
+    with pytest.raises(keys.RealKeyring):
+        keys.KeyStore().read()
+
+
+def test_the_main_command_stops_with_a_message_in_the_memory_mode_with_a_real_keyring(tmp_path):
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHON_KEYRING_BACKEND", "PYTHONPATH")}
+    env.update({keys.MODE: "memory", "PYTHON_KEYRING_BACKEND": "keyring.backends.fail.Keyring"})
+    r = subprocess.run([sys.executable, "-c", "from order_chaser.server import main; main()",
+                        "--data-dir", str(tmp_path)],
+                       env=env, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 1
+    assert "runs only with the in-memory keyring" in r.stderr
+    r = subprocess.run([sys.executable, "-c", "import keyring; from order_chaser import keys; "
+                        "keys.KeyStore().save(keys.Key('A' * 56, 'B' * 88)); print(keyring.get_keyring().items)"],
+                       env={**env, "PYTHON_KEYRING_BACKEND": "order_chaser.keys.MemoryKeyring"},
+                       capture_output=True, text=True, timeout=60)
+    assert r.stdout.startswith("{('Kraken API key (order-chaser)', 'order-chaser'): 'AAAA")   # the demo setting works
+
+
+def test_the_active_backend_is_the_memory_keyring():
+    assert type(keyring.get_keyring()) is keys.MemoryKeyring
+    assert os.environ[keys.MODE] == "memory"
+
+
+def test_a_pytest_run_of_one_file_alone_never_selects_the_macos_backend():
+    """With no PYTHON_KEYRING_BACKEND, no PYTHONPATH and no ORDER_CHASER_KEYRING: conftest.py alone gives the
+    memory keyring and the memory mode, also when one file runs alone."""
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHON_KEYRING_BACKEND", "PYTHONPATH", keys.MODE)}
+    r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                        "tests/test_keys.py::test_the_active_backend_is_the_memory_keyring"],
+                       cwd=Path(__file__).parent.parent, env=env, capture_output=True, text=True, timeout=120)
+    assert "1 passed" in r.stdout, r.stdout + r.stderr

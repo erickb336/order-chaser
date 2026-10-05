@@ -1,32 +1,17 @@
-"""Every test uses an in-memory keyring: no test reads or writes the real macOS Keychain."""
+"""Every test uses an in-memory keyring: no test reads or writes the real macOS Keychain.
+
+At import (before any test module, also when one file runs alone): the tool's memory mode (ORDER_CHASER_KEYRING=memory),
+in which each key call refuses any backend but a MemoryKeyring, and a MemoryKeyring as keyring's active backend.
+PYTHON_KEYRING_BACKEND=conftest.MemoryKeyring (with PYTHONPATH=tests) names the same class."""
+import os
+
 import keyring
-import keyring.errors
 import pytest
-from keyring.backend import KeyringBackend
 
+from order_chaser.keys import MODE, MemoryKeyring
 
-class MemoryKeyring(KeyringBackend):
-    """A keyring in memory, with keyring's contract: delete of a missing item raises PasswordDeleteError."""
-    priority = 1
-
-    def __init__(self):
-        super().__init__()
-        self.items: dict[tuple[str, str], str] = {}
-        self.reads = 0          # each read is one macOS prompt on a real Mac (Q9)
-
-    def get_password(self, service, username):
-        self.reads += 1
-        return self.items.get((service, username))
-
-    def set_password(self, service, username, password):
-        self.items[(service, username)] = password
-
-    def delete_password(self, service, username):
-        if self.items.pop((service, username), None) is None:
-            raise keyring.errors.PasswordDeleteError("not found")
-
-
-keyring.set_keyring(MemoryKeyring())   # at import: before any app of any test can run
+os.environ[MODE] = "memory"
+keyring.set_keyring(MemoryKeyring())
 
 
 @pytest.fixture(autouse=True)
