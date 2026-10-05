@@ -1165,8 +1165,8 @@ WIDTH_JS = """(scrolls) => {
 
 
 def test_page_every_page_fits_a_375_px_phone_with_no_sideways_scroll_and_readable_text(tool):
-    spot = tool.start(timeout=30)                                 # a spot result with a maker and a taker (IOC) fill
-    tool.trade("sell", "62417.0", "0.01")
+    spot = tool.start(qty="0.5", timeout=30)                      # the widest fills: 8-decimal quantities and a taker (IOC) fill
+    tool.trade("sell", "62417.0", "0.49345678")                   # the IOC fills the rest, 0.00654322
     tool.timeout(30)
     assert [f.maker for f in tool.eng.chase.fills] == [True, False]
     tool.beat(1)
@@ -1190,6 +1190,9 @@ def test_page_every_page_fits_a_375_px_phone_with_no_sideways_scroll_and_readabl
         *phone("/new close"),
         {"goto": f"/result?id={cid}"}, {"waitFor": "document.querySelector('#pl') && document.querySelector('#plan')"}, *phone("/result close"),
         {"goto": f"/result?id={spot}"}, {"waitFor": "document.querySelector('.facts')"}, *phone("/result spot"),
+        {"eval": "Array.from(document.querySelectorAll('table.fills tr'), r => Array.from(r.cells, c => c.textContent))", "as": "fills"},
+        {"viewport": [390, 844]}, {"goto": f"/result?id={spot}"}, {"waitFor": "document.querySelector('.facts')"}, *phone("/result spot 390"),
+        {"viewport": [375, 812]},
         {"goto": "/history"}, {"waitFor": "document.querySelector('tr.click')"}, *phone("/history", "#out"),
         {"eval": "getComputedStyle(OC.$('out'), '::before').content", "as": "hint"},
         {"goto": "/setup"}, {"waitFor": "OC.$('mgline').textContent"}, *phone("/setup"),
@@ -1204,6 +1207,9 @@ def test_page_every_page_fits_a_375_px_phone_with_no_sideways_scroll_and_readabl
     pages = ["/new buy", "/new open long", "/new close", "/result close", "/result spot", "/history", "/setup", "/chase",
              "/chase stop dialog", "/chase stopped with a long rest"]
     assert {p: got[p] for p in pages} == {p: {"scroll": 375, "wide": [], "cut": [], "split": []} for p in pages}
+    assert got["/result spot 390"] == {"scroll": 390, "wide": [], "cut": [], "split": []}
+    assert got["fills"] == [["Time", "BTC", "Price", "Type", "Fee USD"], ["0:00", "0.49345678", "62,417.90", "maker", "123.20"],
+                            ["0:30", "0.00654322", "62,418.50", "taker (IOC)", "3.27"]]
     assert got["stop button in view"] is True
     assert got["rest button"] == "Chase the rest (0.49846501 BTC), new cap"
     assert (got["hint"], got["desktop hint"]) == ('"Scroll sideways to see every column \u2192"', "none")
