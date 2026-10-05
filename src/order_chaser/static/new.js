@@ -164,7 +164,7 @@ function draw() {
   OC.setMode(live);
   put($('modehelp'), !ready ? 'Live is off: ' + (s && s.live ? s.live.why.map(OC.esc).join(' ') : 'setup is not complete.') + ' <a href="/setup">Finish setup</a> to turn it on.'
     : margin ? '<b style="color:var(--dry)">Dry run sends no orders.</b> It simulates the fills and the position on live public prices, on a simulated account. Margin live comes only after your go-ahead.'
-    : live ? `<b style="color:var(--live)">Live sends real orders to Kraken.</b> Key: in the macOS Keychain, tested ${new Date(s.live.key.tested * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}.`
+    : live ? '<b style="color:var(--live)">Live stages the order and places nothing.</b> The signed helper (coming) places it on Kraken after a Touch ID. Spot only.'
     : '<b style="color:var(--dry)">Dry run sends no orders.</b> It runs the chase on live public prices and simulates the fills. The form opens in Dry run each time.');
   $('capword').textContent = buy ? 'Cap' : 'Floor';
   $('ovbtn').textContent = buy ? 'Set a higher limit' : 'Set a lower limit';
@@ -404,7 +404,7 @@ function draw() {
   }
   $('pairsel').disabled = busy;
   $('start').disabled = !startOk;
-  $('start').textContent = live ? 'Start live chase…' : !margin ? 'Start dry run' : close ? 'Start dry run: close' : `Start dry run: open ${what}`;
+  $('start').textContent = live ? 'Stage live order…' : !margin ? 'Start dry run' : close ? 'Start dry run: close' : `Start dry run: open ${what}`;
   $('start').className = 'btn ' + (live ? 'livebtn' : 'drybtn');
   if (!$('startnote').dataset.err && $('startnote').textContent !== note) $('startnote').textContent = note;
 }
@@ -430,7 +430,7 @@ $('start').onclick = async () => {
   refused(r.data.errors);
 };
 
-// ---------- Live: the check, then the confirm (Q6, Q7, Q9) ----------
+// ---------- Live: the confirm, then the order is staged (R2: nothing is placed) ----------
 $('mode').onclick = e => {
   const b = e.target.closest('button');
   if (!b || b.disabled) return;
@@ -438,41 +438,31 @@ $('mode').onclick = e => {
   let seen = false;
   try { seen = localStorage.getItem('oc-live-seen') === '1'; localStorage.setItem('oc-live-seen', '1'); } catch (err) { /* private window: show it again */ }
   $('whatchanges').innerHTML = mode === 'live' && !seen ? `<div class="note info small" style="margin-top:10px"><b>You chose Live for the first time. What changes:</b>
-    <ul style="margin:6px 0 4px;padding-left:18px"><li>The tool sends real orders to your Kraken account and pays real fees.</li><li>Fills come from Kraken, not from a simulation.</li><li>While an order rests, the safety timer is on. If the tool stops, Kraken cancels all your orders in 60 s.</li><li>Your Mac stays awake until the chase ends.</li></ul>This note shows one time only.</div>` : '';
+    <ul style="margin:6px 0 4px;padding-left:18px"><li>The tool stages the order: it saves a copy and places nothing.</li><li>The signed helper (coming) holds your Kraken key and places the order after a Touch ID. This tool never receives the key.</li><li>Live is spot only: buy or sell.</li></ul>This note shows one time only.</div>` : '';
   draw();
 };
-async function liveCheck() {
-  $('startnote').textContent = snap.live.unlocked ? 'Reading your other orders on Kraken…'
-    : 'macOS asks now for the key: click Allow (not Always Allow). The prompt can name python3. Nothing goes to Kraken before you confirm.';
-  const r = await OC.post('/api/live/check', { pair: $('pairsel').value });
-  check = r.data;
-  if (!r.ok || check.errors.length) { refused(check.errors); return; }
-  $('startnote').textContent = '';
-  if (check.first && $('amt').value.trim() !== check.min_qty) { $('amt').value = check.min_qty; draw(); }   // Q6: the Kraken minimum
+function liveCheck() {
+  const p = snap.pairs[$('pairsel').value];
+  check = { first: snap.live.first, min_qty: p ? p.ordermin : null };
+  if (check.first && check.min_qty && $('amt').value.trim() !== check.min_qty) { $('amt').value = check.min_qty; draw(); }   // Q6: the Kraken minimum
   openConfirm();
 }
 function openConfirm() {
-  const c = check, oth = c.others, prot = oth.filter(o => o.protect), B = $('pairsel').value.split('/')[0];
+  const c = check, B = $('pairsel').value.split('/')[0];
   $('firstbadge').innerHTML = c.first ? '<span class="badge warn">FIRST LIVE ORDER</span>' : '';
-  $('ct').textContent = c.first ? 'Your first real order: send it to Kraken?' : 'Send a real order to Kraken?';
+  $('ct').textContent = c.first ? 'Your first real order: stage it for the helper?' : 'Stage a real order for the helper?';
   $('cfirst').innerHTML = c.first ? `<div class="note info small" style="margin-bottom:12px">This is the first real order the tool sends. The form set the Kraken minimum, ${OC.qty(c.min_qty)} ${OC.esc(B)}. After it ends, check the order in Kraken Pro, then compare it with the result page.</div>` : '';
   const rows = [['Order', `<b>${what === 'buy' ? 'Buy' : 'Sell'} ${OC.qty($('amt').value)} ${OC.esc(B)}</b> on ${OC.esc($('pairsel').value)}`],
     [$('capword').textContent, OC.esc($('capline').textContent) + `<div class="tiny muted">${OC.esc($('capsub').textContent)}</div>`],
     ['Timeout', `${OC.esc($('to').selectedOptions[0].textContent)}, then one IOC at the ${what === 'buy' ? 'cap' : 'floor'} for the rest`],
-    ['Worst case', $('worst').innerHTML],
-    ['Other open orders', oth.length ? `<b class="tone-warn">${oth.length}</b>: see below` : 'none']];
+    ['Worst case', $('worst').innerHTML]];
   $('ctab').innerHTML = rows.map(([k, v]) => `<tr><td class="muted" style="width:34%;text-align:left">${k}</td><td style="text-align:left">${v}</td></tr>`).join('');
-  $('cread').textContent = new Date().toLocaleTimeString('en-GB');
-  $('cother').innerHTML = oth.length ? `<div class="note ${prot.length ? 'bad' : 'warn'} small" style="margin-top:12px" id="otherlist"><b>You have ${oth.length} other open order${oth.length > 1 ? 's' : ''} on Kraken. If the tool stops during this chase, the safety timer cancels all of them.</b>` +
-    (prot.length ? `<div style="margin-top:6px"><b>${prot.length} of them protect a position.</b> After a cancel, that position has no stop-loss or take-profit:</div>` : '') +
-    '<ul style="margin:4px 0 0;padding-left:18px">' + oth.map(o => `<li>${o.protect ? '<b>' + OC.esc(o.type) + '</b>' : OC.esc(o.type)} on ${OC.esc(o.pair)}: ${OC.esc(o.text)}</li>`).join('') + '</ul>' +
-    '<div class="tiny" style="margin-top:6px">To avoid this, use a Kraken sub-account for the chaser (Setup, step 2).</div></div>' : '';
-  $('ccheck').innerHTML = (prot.length ? '<label class="check" style="margin-bottom:12px"><input type="checkbox" id="okothers"><div><b>I accept that the safety timer can cancel my stop-loss and take-profit orders.</b><div class="tiny muted">Asked at each live chase while such an order is open.</div></div></label>' : '') +
-    (c.first ? '<label class="check" style="margin-bottom:12px"><input type="checkbox" id="okfirst"><div><b>I checked the amount and the worst case.</b><div class="tiny muted">Asked one time only, for the first live order.</div></div></label>' : '');
-  const ticks = () => { $('cyes').disabled = ($('okothers') && !$('okothers').checked) || ($('okfirst') && !$('okfirst').checked); };
+  $('ccheck').innerHTML = (c.first ? '<label class="check" style="margin-bottom:12px"><input type="checkbox" id="okfirst"><div><b>I checked the amount and the worst case.</b><div class="tiny muted">Asked one time only, for the first live order.</div></div></label>' : '');
+  const ticks = () => { $('cyes').disabled = $('okfirst') && !$('okfirst').checked; };
   document.querySelectorAll('#ccheck input').forEach(i => { i.onchange = ticks; });
   ticks();
   $('cmsg').textContent = '';
+  $('cyes').classList.remove('hidden');
   $('confirm').classList.remove('hidden');
   document.querySelector('.app').inert = true;
   $('cno').focus();
@@ -481,10 +471,14 @@ function closeConfirm() { $('confirm').classList.add('hidden'); document.querySe
 $('cno').onclick = closeConfirm;
 $('confirm').addEventListener('keydown', e => { if (e.key === 'Escape') closeConfirm(); });
 $('cyes').onclick = async () => {
-  $('cyes').disabled = true; $('cyes').textContent = 'Sending the order…';
-  const r = await OC.post('/api/chase', { ...body(), first_ok: !!($('okfirst') && $('okfirst').checked), others_ok: !!($('okothers') && $('okothers').checked) });
-  $('cyes').textContent = 'Start live chase';
-  if (r.ok) { location.href = '/chase'; return; }
+  $('cyes').disabled = true; $('cyes').textContent = 'Staging the order…';
+  const r = await OC.post('/api/chase', { ...body(), first_ok: !!($('okfirst') && $('okfirst').checked) });
+  $('cyes').textContent = 'Stage the order';
+  if (r.ok) {
+    $('cyes').classList.add('hidden');
+    $('cmsg').innerHTML = `<div class="note ok small" id="stagednote"><b>Staged: waiting for the helper.</b> Nothing was placed on Kraken. Order <span class="mono">${OC.esc(r.data.staged.id)}</span>, SHA-256 <span class="mono">${OC.esc(r.data.sha256.slice(0, 16))}…</span></div>`;
+    return;
+  }
   $('cmsg').innerHTML = `<span class="tone-bad">${(r.data.errors || ['Refused.']).map(OC.esc).join(' ')}</span>`;
   $('cyes').disabled = false;
 };

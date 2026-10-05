@@ -24,6 +24,8 @@ create table if not exists txid (
   leg text primary key, txid text not null);
 create table if not exists setting (
   key text primary key, value text not null);
+create table if not exists staged (
+  id text primary key, at real not null, sha256 text not null, json text not null, state text not null);
 create table if not exists sim_account (
   id integer primary key check (id = 1), state text not null);
 """
@@ -106,6 +108,13 @@ class Db:
     def txids(self, chase_id: str) -> dict[str, str]:
         rows = self.cx.execute("select t.leg, t.txid from txid t join leg l on l.id = t.leg where l.chase_id = ?", (chase_id,))
         return {r[0]: r[1] for r in rows}
+
+    def stage(self, order_id: str, text: str, sha256: str, state: str, at: float) -> None:
+        """A staged live order (R2): its JSON and the SHA-256 of that text. Insert only: no code changes the copy."""
+        self.cx.execute("insert into staged(id, at, sha256, json, state) values (?,?,?,?,?)", (order_id, at, sha256, text, state))
+
+    def staged(self) -> list[dict]:
+        return [dict(r) for r in self.cx.execute("select id, at, sha256, json, state from staged order by at")]
 
     def any_live(self) -> bool:
         """A live chase was started before (Q6: the first live order is marked one time)."""

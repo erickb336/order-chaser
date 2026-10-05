@@ -99,15 +99,13 @@
 
 <div class="scrim hidden" id="confirm"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="ct" style="width:600px;max-width:100%">
   <div class="row"><span class="badge live">LIVE</span><span id="firstbadge"></span></div>
-  <h2 id="ct" style="margin-top:10px">Send a real order to Kraken?</h2>
+  <h2 id="ct" style="margin-top:10px">Stage a real order for the helper?</h2>
   <div id="cfirst"></div>
   <table class="kv" id="ctab"></table>
-  <div id="cother"></div>
-  <div class="note warn small" style="margin:12px 0"><b>Safety timer:</b> while the order rests, the tool renews a 60 s cancel-all on Kraken every 20 s. If the tool stops, Kraken cancels <b>all</b> your orders on all pairs, also stop-loss and take-profit orders.</div>
-  <p class="tiny muted" style="margin:0 0 12px">Your Mac stays awake until the chase ends. The other open orders are from Kraken, read at <span id="cread"></span>.</p>
+  <p class="small" style="margin:12px 0">The tool saves a copy of this order and places nothing. The signed helper (coming) places it on Kraken after a Touch ID.</p>
   <div id="ccheck"></div>
   <div class="small" id="cmsg" role="status" aria-live="polite" style="margin-bottom:10px"></div>
-  <div class="row"><span class="spacer"></span><button class="btn" id="cno" type="button">Back</button><button class="btn livebtn" id="cyes" type="button">Start live chase</button></div>
+  <div class="row"><span class="spacer"></span><button class="btn" id="cno" type="button">Back</button><button class="btn livebtn" id="cyes" type="button">Stage the order</button></div>
 </div></div>
 
 <script src="/static/app.js"></script>

@@ -1247,9 +1247,6 @@ def test_page_a_liquidation_before_the_ioc_fills_ends_liquidated_with_the_positi
 
 # ---------- T4 U6: the live pages, against the LOCAL fake Kraken (tests/fake_kraken.py; sample data, no real key) ----------
 
-AWAKE = ["/bin/sh", "-c", "sleep 30", "sh"]   # stands in for caffeinate -i
-
-
 @pytest.fixture
 def fake():
     from fake_kraken import FakeKraken
@@ -1267,7 +1264,7 @@ def live_tool(tmp_path, fake, ready=True):
     shots.mkdir(parents=True, exist_ok=True)
     if ready:
         keys.KeyStore().save(keys.Key(API, SECRET))    # the in-memory keyring of conftest.py
-    t = Tool(tmp_path, shots, kraken_url=fake.url, kraken_ws=fake.ws_url, awake_cmd=AWAKE)
+    t = Tool(tmp_path, shots, kraken_url=fake.url)
     fake.clock = t.clock
     if ready:
         t.eng.db.set_setting("account", json.dumps({"answer": "no", "at": t.clock()}))
@@ -1300,137 +1297,6 @@ def test_page_setup_asks_the_account_question_then_saves_and_tests_the_key(tmp_p
     assert got["host"] == f"127.0.0.1:{t.port}" and got["shown"] is False
     assert got["all"]["c"] >= 4.5 and got["all2"]["c"] >= 4.5, (got["all"], got["all2"])
 
-
-def test_page_live_confirm_names_stop_loss_orders_then_the_chase_renews_the_timer_and_loses_the_private_feed(tmp_path, fake):
-    fake.add_other("stop-loss", "XETHZUSD", "sell 0.4 ETHUSD @ stop loss 2310.00")
-    fake.add_other("take-profit", "XETHZUSD", "sell 0.4 ETHUSD @ take profit 2780.00")
-    fake.add_other("limit", "SOLUSD", "buy 12 SOLUSD @ limit 138.50")
-    t = live_tool(tmp_path, fake)
-    renewed = clock_text(t.clock.t + 21)
-
-    def renew():
-        t.beat(21)
-        t.call(t.eng.tick)
-
-    def lose_feed():
-        fake.ws_down = True
-        fake.run(fake.drop_ws)
-    try:
-        got = t.look([{"goto": "/new"}, {"waitFor": "!OC.$('livebtn').disabled && !OC.$('start').disabled"},
-                      {"click": "#livebtn"}, {"text": "#whatchanges", "as": "changes"}, {"text": "#modebadge", "as": "badge"},
-                      {"click": "#start"}, {"waitFor": "!OC.$('confirm').classList.contains('hidden')"},
-                      {"shot": "live-confirm-stop-loss.png"}, {"text": "#otherlist", "as": "others"}, {"eval": "OC.$('amt').value", "as": "amt"},
-                      {"eval": "OC.$('cyes').disabled", "as": "blocked"}, {**ALL_TEXT, "as": "cc"},
-                      {"click": "#okothers"}, {"click": "#okfirst"}, {"click": "#cyes"},
-                      {"waitFor": "location.pathname === '/chase' && document.getElementById('timerline') && /Renewed/.test(OC.$('timerline').textContent)"},
-                      {"signal": "renew"}, {"waitFor": f"OC.$('timerline').textContent.includes('Renewed at {renewed}')"},
-                      {"shot": "live-chase-timer-renewing.png"}, {"text": "#livepanel", "as": "panel"}, {**ALL_TEXT, "as": "ct"},
-                      {"signal": "lose"}, {"waitFor": "document.getElementById('pfeedline')"},
-                      {"shot": "live-chase-private-feed-lost.png"}, {"text": "#pfeedline", "as": "pfeed"}, {**ALL_TEXT, "as": "pt"}],
-                     on={"renew": renew, "lose": lose_feed})
-    finally:
-        t.stop()
-    assert "You chose Live for the first time." in got["changes"] and got["badge"] == "LIVE: real orders"
-    assert got["others"].index("stop-loss") < got["others"].index("limit") and "2 of them protect a position." in got["others"]
-    assert got["amt"] == "0.00005" and got["blocked"] is True                   # Q6 minimum; the ticks come first
-    assert "If the tool stops, Kraken cancels ALL orders on this account" in got["panel"]
-    assert "Reading the order by REST every 5 s" in got["pfeed"] or "reads the order by REST every 5 s" in got["pfeed"]
-    for k in ("cc", "ct", "pt"):
-        assert got[k]["c"] >= 4.5, (k, got[k])
-
-
-def test_page_the_timer_fired_lists_the_orders_that_kraken_cancelled(tmp_path, fake):
-    fake.add_other("take-profit", "XETHZUSD", "sell 0.4 ETHUSD @ take profit 2780.00")
-    fake.add_other("stop-loss", "XETHZUSD", "sell 0.4 ETHUSD @ stop loss 2310.00")
-    t = live_tool(tmp_path, fake)
-
-    def fire():
-        t.beat(61)                                                            # no renewal reached Kraken in 60 s
-        t.eng.kgw.timer["deadline"] = t.clock.t - 1
-        fake.run(fake.fire_timer)
-    try:
-        assert t.call(t.eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
-        got = t.look([{"goto": "/chase"}, {"waitFor": "document.getElementById('timerline')"}, {"signal": "fire"},
-                      card_shown("timer"), {"waitFor": "document.getElementById('othersgone')"},
-                      {"shot": "live-chase-timer-fired.png"}, {"text": "#othersgone", "as": "gone"}, {"text": "#statuscard", "as": "card"},
-                      ALL_TEXT], on={"fire": fire})
-    finally:
-        t.stop()
-    assert "Kraken also cancelled 2 of your other open orders, 2 of them stop-loss or take-profit orders." in got["gone"]
-    assert "The tool does not place them for you." in got["gone"] and len(fake.calls_of("AddOrder")) == 1
-    assert got["all"]["c"] >= 4.5, got["all"]
-
-
-def test_page_kraken_not_answering_ends_the_chase_in_a_clear_state(tmp_path, fake):
-    t = live_tool(tmp_path, fake)
-    try:
-        assert t.call(t.eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
-        got = t.look([{"goto": "/chase"}, {"waitFor": "document.getElementById('timerline')"}, {"signal": "silent"},
-                      card_shown("noanswer"), {"shot": "live-chase-kraken-not-answering.png"}, {"text": "#statuscard", "as": "card"}, ALL_TEXT],
-                     on={"silent": lambda: t.call(t.eng.handle, core.NoAnswer(t.clock(), ""))})
-    finally:
-        t.stop()
-    assert "Kraken did not answer the reads of the order for 60 s." in got["card"]
-    assert "The safety timer cancels the order on Kraken within 60 s." in got["card"]
-    assert got["all"]["c"] >= 4.5, got["all"]
-
-
-def test_page_reconcile_says_why_new_live_chases_wait_then_what_it_found(tmp_path, fake):
-    t = live_tool(tmp_path, fake)
-    assert t.call(t.eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
-    cid = t.eng.chase.id
-    t.look([{"goto": "/chase"}, card_shown("resting"), {"signal": "fill"}],
-           on={"fill": lambda: fake.run(fake.fill, cid, "0.018", None, False)})   # a fill that the tool does not see
-    t.stop()                                                                  # the tool stops during the chase
-    fake.rest_down = True
-    t = live_tool(tmp_path, fake, ready=False)
-    try:
-        got = t.look([{"goto": "/"}, {"waitFor": "document.querySelector('#statuscard[data-state=\"cantread\"]')"},
-                      {"shot": "live-reconcile-cannot-read.png"}, {"text": "#root", "as": "cant"}, {**ALL_TEXT, "as": "a1"},
-                      {"signal": "back"}, {"waitFor": "document.querySelector('#statuscard[data-state=\"open\"]')", "timeout": 20000},
-                      {"shot": "live-reconcile-found-open.png"}, {"text": "#root", "as": "found"}, {**ALL_TEXT, "as": "a2"}],
-                     on={"back": lambda: setattr(fake, "rest_down", False)})
-    finally:
-        t.stop()
-    assert "The tool blocks new live chases until it reads Kraken." in got["cant"]
-    assert "Your order was still open on Kraken. The tool cancelled it." in got["found"] and "0.0180 of 0.0500 BTC (36%)" in got["found"]
-    assert got["a1"]["c"] >= 4.5 and got["a2"]["c"] >= 4.5, (got["a1"], got["a2"])
-
-
-def test_page_setup_says_why_the_key_cannot_be_removed_while_a_live_chase_runs(tmp_path, fake, memory_keyring):
-    from order_chaser import keys
-    t = live_tool(tmp_path, fake)
-    try:
-        assert t.call(t.eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
-        got = t.look([{"goto": "/setup"}, {"waitFor": "document.getElementById('remove')"}, {"click": "#remove"},
-                      {"waitFor": "OC.$('keymsg').textContent.length > 0"}, {"shot": "live-setup-key-busy.png"},
-                      {"text": "#keymsg", "as": "msg"}, ALL_TEXT])
-    finally:
-        t.stop()
-    assert got["msg"] == "A live chase runs now. It uses the saved key. Change, test or remove the key when the chase ends."
-    assert list(memory_keyring.items) == [(keys.SERVICE, keys.ACCOUNT)]
-    assert got["all"]["c"] >= 4.5, got["all"]
-
-
-def test_page_a_kraken_text_with_html_shows_as_text(tmp_path, fake):
-    """KRAKEN-TEXT-UNESCAPED: Kraken's error text goes into the page as text, never as HTML."""
-    evil = 'EOrder:<img src=x id=pwn><a id=pwnlink href="https://evil.example">Re-enter your key</a>'
-    fake.errors["AddOrder"] = [evil]
-    t = live_tool(tmp_path, fake)
-    try:
-        assert t.call(t.eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
-        cid = t.eng.chase.id
-        got = t.look([{"goto": "/chase"}, card_shown("refused"), {"text": "#statuscard", "as": "card"},
-                      {"eval": "!!document.getElementById('pwn') || !!document.getElementById('pwnlink')", "as": "html"},
-                      {"goto": f"/result?id={cid}"}, {"waitFor": "document.body.innerText.includes('Re-enter your key')"},
-                      {"eval": "!!document.getElementById('pwn') || !!document.getElementById('pwnlink')", "as": "html2"}])
-    finally:
-        t.stop()
-    assert f"Kraken rejected the order: {evil}." in got["card"]
-    assert got["html"] is False and got["html2"] is False
-
-
-# ---------- phone width (T45) ----------
 
 # The page width, each element that goes past the left or right edge of the window, or into the 16 px gutter of the
 # page (UX R90, QA R91 of T5, QA R138), and each box
@@ -1532,68 +1398,28 @@ def test_page_the_t44_states_fit_a_375_px_phone(tool):
     assert {p: got[p + " contrast"]["c"] >= 4.5 for p in pages} == {p: True for p in pages}
 
 
-def test_page_the_t4_live_pages_fit_a_375_px_phone(tmp_path, fake):
-    # T4 at phone width, with the fake Kraken and the memory keyring (sample data, no real key).
-    from fake_kraken import API, SECRET
+
+
+def test_page_a_live_order_is_staged_and_nothing_is_placed_also_on_a_375_px_phone(tmp_path, fake):
+    # R2: Live on the form stages the order. The signed helper (coming) places it. Sample prices, no key.
+    t = live_tool(tmp_path, fake)
     fit = lambda name: [{"eval": f"({WIDTH_JS})(null)", "as": name}, {**ALL_TEXT, "as": name + " contrast"},
                         {"shot": f"phone-live-{name.strip('/').replace(' ', '-')}.png"}]
-    fake.add_other("stop-loss", "XETHZUSD", "sell 0.4 ETHUSD @ stop loss 2310.00")
-    fake.add_other("take-profit", "XETHZUSD", "sell 0.4 ETHUSD @ take profit 2780.00")
-    fake.add_other("limit", "SOLUSD", "buy 12 SOLUSD @ limit 138.50")
-    got = {}
-    t = live_tool(tmp_path, fake, ready=False)
-
-    def renew():
-        t.beat(21)
-        t.call(t.eng.tick)
-    try:                                                          # Setup, the live confirm and a live chase that renews the timer
-        got |= t.look([{"viewport": [375, 812]},
-                       {"goto": "/setup"}, {"waitFor": "document.getElementById('ano')"}, *fit("/setup account question"),
-                       {"click": "#ano"}, {"waitFor": "!document.getElementById('keyform').classList.contains('hidden')"},
-                       *fit("/setup key fields"),
-                       {"fill": ["#k1", API]}, {"fill": ["#k2", SECRET]}, {"click": "#save"},
-                       {"waitFor": "OC.$('bK').textContent === 'Ready'"}, *fit("/setup key tested"),
-                       {"goto": "/new"}, {"waitFor": "!OC.$('livebtn').disabled && !OC.$('start').disabled"},
-                       {"click": "#livebtn"}, *fit("/new live"),
-                       {"click": "#start"}, {"waitFor": "!OC.$('confirm').classList.contains('hidden')"}, *fit("/new live confirm"),
-                       {"eval": "(r => r.right <= innerWidth)(OC.$('cyes').getBoundingClientRect())", "as": "confirm button in width"},
-                       {"click": "#okothers"}, {"click": "#okfirst"}, {"click": "#cyes"},
-                       {"waitFor": "location.pathname === '/chase' && document.getElementById('timerline')"},
-                       {"signal": "renew"}, {"waitFor": "/Renewed at/.test(OC.$('timerline').textContent)"}, *fit("/chase live renewing")],
-                      on={"renew": renew})
+    try:
+        got = t.look([{"viewport": [375, 812]}, {"goto": "/new"}, {"waitFor": "!OC.$('livebtn').disabled && !OC.$('start').disabled"},
+                      {"click": "#livebtn"}, {"text": "#modehelp", "as": "help"}, *fit("/new live"),
+                      {"click": "#start"}, {"waitFor": "!OC.$('confirm').classList.contains('hidden')"},
+                      {"eval": "OC.$('amt').value", "as": "amt"}, {"eval": "OC.$('cyes').disabled", "as": "blocked"},
+                      {"click": "#okfirst"}, {"click": "#cyes"}, {"waitFor": "document.getElementById('stagednote')"},
+                      {"text": "#stagednote", "as": "staged"}, *fit("/new live staged")])
     finally:
         t.stop()
-    t2 = live_tool(tmp_path / "fired", fake)
-
-    def fire():
-        t2.beat(61)
-        t2.eng.kgw.timer["deadline"] = t2.clock.t - 1
-        fake.run(fake.fire_timer)
-    try:                                                          # the timer fired: the list of the orders that Kraken cancelled
-        assert t2.call(t2.eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
-        got |= t2.look([{"viewport": [375, 812]}, {"goto": "/chase"}, {"waitFor": "document.getElementById('timerline')"},
-                        {"signal": "fire"}, card_shown("timer"), {"waitFor": "document.getElementById('othersgone')"},
-                        *fit("/chase timer fired")], on={"fire": fire})
-        cid = t2.eng.chase.id
-    finally:
-        t2.stop()
-    t3 = live_tool(tmp_path / "rec", fake)                        # reconcile: a live chase, a fill the tool does not see, a stop
-    assert t3.call(t3.eng.start_live, "BTC/USD", "buy", D("0.05"), None, 120) == []
-    cid = t3.eng.chase.id
-    t3.look([{"goto": "/chase"}, card_shown("resting"), {"signal": "fill"}],
-            on={"fill": lambda: fake.run(fake.fill, cid, "0.018", None, False)})
-    t3.stop()
-    fake.rest_down = True
-    t3 = live_tool(tmp_path / "rec", fake, ready=False)
-    try:
-        got |= t3.look([{"viewport": [375, 812]},
-                        {"goto": "/"}, {"waitFor": "document.querySelector('#statuscard[data-state=\"cantread\"]')"}, *fit("/reconcile cannot read"),
-                        {"signal": "back"}, {"waitFor": "document.querySelector('#statuscard[data-state=\"open\"]')", "timeout": 20000},
-                        *fit("/reconcile found open")], on={"back": lambda: setattr(fake, "rest_down", False)})
-    finally:
-        t3.stop()
-    pages = ["/setup account question", "/setup key fields", "/setup key tested", "/new live", "/new live confirm",
-             "/chase live renewing", "/chase timer fired", "/reconcile cannot read", "/reconcile found open"]
+    assert got["help"] == ("Live stages the order and places nothing. The signed helper (coming) places it on Kraken after a "
+                           "Touch ID. Spot only.")
+    assert got["amt"] == "0.00005" and got["blocked"] is True                   # Q6: the Kraken minimum; the tick first
+    assert got["staged"].startswith("Staged: waiting for the helper. Nothing was placed on Kraken. Order oc")
+    assert [s["state"] for s in t.eng.db.staged()] == ["staged: waiting for the helper"] and t.eng.db.history() == []
+    assert fake.calls == []
+    pages = ["/new live", "/new live staged"]
     assert {p: got[p] for p in pages} == {p: {"scroll": 375, "wide": [], "cut": [], "split": []} for p in pages}
-    assert got["confirm button in width"] is True
     assert {p: got[p + " contrast"]["c"] >= 4.5 for p in pages} == {p: True for p in pages}
